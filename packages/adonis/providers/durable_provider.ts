@@ -15,13 +15,23 @@ interface ContextAccessorLike {
 const CONTEXT_ACCESSOR = Symbol.for('@agora/context:accessor');
 
 /**
+ * Global slot `@agora/diagnostics-otel` publishes its `otelTraceparent` under: a
+ * `() => string | undefined` returning the active OTel span's W3C `traceparent`.
+ * Read structurally so durable continues the OpenTelemetry trace on remote steps
+ * with zero config when OTel is installed — and no hard dependency when it is not.
+ */
+const OTEL_TRACEPARENT = Symbol.for('@agora/otel:traceparent');
+
+/**
  * Wires `@agora/durable` into the AdonisJS application: binds a singleton
  * {@link WorkflowEngine} built from `config/durable.ts`.
  *
  * Defaults to an in-process store + transport (single-process, zero infra). When
  * `@agora/context` is installed, the originating tenant/user/correlation carrier
  * is attached to each dispatched task (best-effort, read structurally from the
- * global accessor slot — no hard dependency).
+ * global accessor slot — no hard dependency). When `@agora/diagnostics-otel` (and
+ * an OTel SDK such as `@adonisjs/otel`) is installed, each dispatched task is
+ * stamped with the active OTel `traceparent` so a worker continues the trace.
  *
  * ```ts
  * const engine = await app.container.make(WorkflowEngine)
@@ -37,6 +47,9 @@ export default class DurableProvider {
       const config = this.app.config.get<DurableConfig>('durable', {});
       const accessor = (globalThis as Record<symbol, unknown>)[CONTEXT_ACCESSOR] as
         | ContextAccessorLike
+        | undefined;
+      const otelTraceparent = (globalThis as Record<symbol, unknown>)[OTEL_TRACEPARENT] as
+        | (() => string | undefined)
         | undefined;
 
       const deps: WorkflowEngineDeps = {
@@ -55,6 +68,8 @@ export default class DurableProvider {
         ...(config.runDispatcher ? { runDispatcher: config.runDispatcher } : {}),
         // Best-effort context propagation from @agora/context (no hard dep).
         ...(accessor ? { context: () => accessor.get() } : {}),
+        // Best-effort OTel trace continuation from @agora/diagnostics-otel (no hard dep).
+        ...(otelTraceparent ? { traceparent: otelTraceparent } : {}),
       };
 
       return new WorkflowEngine(deps);

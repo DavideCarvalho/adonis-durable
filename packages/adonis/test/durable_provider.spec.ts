@@ -43,4 +43,22 @@ describe('DurableProvider', () => {
     new DurableProvider(app).register();
     expect(resolve()).toBeInstanceOf(WorkflowEngine);
   });
+
+  it('consumes the @agora/otel:traceparent global slot when present (no break)', async () => {
+    const OTEL_TRACEPARENT = Symbol.for('@agora/otel:traceparent');
+    const g = globalThis as Record<symbol, unknown>;
+    g[OTEL_TRACEPARENT] = () => '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01';
+    try {
+      const { app, resolve } = fakeApp();
+      new DurableProvider(app).register();
+      const engine = resolve();
+      engine.register('wf', '1', async (ctx) => ctx.step('s', async () => 'ok'));
+      await engine.start('wf', {}, 'otel-run');
+      const result = await engine.waitForRun('otel-run');
+      expect(result.status).toBe('completed');
+      expect(result.output).toBe('ok');
+    } finally {
+      delete g[OTEL_TRACEPARENT];
+    }
+  });
 });
