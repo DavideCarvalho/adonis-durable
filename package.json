@@ -10,7 +10,9 @@
   },
   "author": "Davi Carvalho <davi@goflip.ai>",
   "packageManager": "pnpm@9.0.0",
-  "engines": { "node": ">=20.6.0" },
+  "engines": {
+    "node": ">=20.6.0"
+  },
   "scripts": {
     "build": "turbo run build",
     "test": "turbo run test",
