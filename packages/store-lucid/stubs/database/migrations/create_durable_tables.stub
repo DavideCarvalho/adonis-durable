@@ -1,0 +1,86 @@
+{{{
+  exports({ to: app.migrationsPath(`${new Date().getTime()}_create_durable_tables.ts`) })
+}}}
+import { BaseSchema } from '@adonisjs/lucid/schema'
+
+/**
+ * Durable workflow tables for @agora/durable-store-lucid: runs, step checkpoints, the search-attribute
+ * side-table, signal waiters and buffered signals. JSON payloads are stored as TEXT (the store
+ * (de)serializes them) and timestamps as epoch-ms integers, so the schema is portable across
+ * SQLite / Postgres / MySQL.
+ */
+export default class extends BaseSchema {
+  async up() {
+    this.schema.createTable('durable_workflow_runs', (table) => {
+      table.string('id').primary()
+      table.string('workflow').notNullable()
+      table.string('workflow_version').notNullable()
+      table.string('status').notNullable()
+      table.text('input')
+      table.text('output')
+      table.text('error')
+      table.bigInteger('wake_at')
+      table.string('locked_by')
+      table.bigInteger('locked_until')
+      table.integer('recovery_attempts')
+      table.text('tags')
+      table.text('search_attributes')
+      table.bigInteger('created_at').notNullable()
+      table.bigInteger('updated_at').notNullable()
+      table.index(['status'], 'durable_runs_status_idx')
+      table.index(['status', 'wake_at'], 'durable_runs_due_idx')
+    })
+
+    this.schema.createTable('durable_step_checkpoints', (table) => {
+      table.string('run_id').notNullable()
+      table.integer('seq').notNullable()
+      table.string('name').notNullable()
+      table.string('kind').notNullable()
+      table.string('step_id').notNullable()
+      table.string('status').notNullable()
+      table.text('input')
+      table.text('output')
+      table.text('error')
+      table.text('events')
+      table.integer('attempts').notNullable()
+      table.string('worker_group')
+      table.bigInteger('wake_at')
+      table.bigInteger('enqueued_at')
+      table.bigInteger('started_at').notNullable()
+      table.bigInteger('finished_at').notNullable()
+      table.primary(['run_id', 'seq'])
+      table.index(['run_id', 'name'], 'durable_checkpoints_name_idx')
+    })
+
+    this.schema.createTable('durable_run_attributes', (table) => {
+      table.string('run_id').notNullable()
+      table.string('key').notNullable()
+      table.string('str_value')
+      table.double('num_value')
+      table.primary(['run_id', 'key'])
+      table.index(['key', 'num_value'], 'durable_run_attributes_num_idx')
+      table.index(['key', 'str_value'], 'durable_run_attributes_str_idx')
+    })
+
+    this.schema.createTable('durable_signal_waiters', (table) => {
+      table.string('token').primary()
+      table.string('run_id').notNullable()
+      table.integer('seq').notNullable()
+    })
+
+    this.schema.createTable('durable_buffered_signals', (table) => {
+      table.increments('id').primary()
+      table.string('token').notNullable()
+      table.text('payload')
+      table.index(['token'], 'durable_buffered_signals_token_idx')
+    })
+  }
+
+  async down() {
+    this.schema.dropTableIfExists('durable_buffered_signals')
+    this.schema.dropTableIfExists('durable_signal_waiters')
+    this.schema.dropTableIfExists('durable_run_attributes')
+    this.schema.dropTableIfExists('durable_step_checkpoints')
+    this.schema.dropTableIfExists('durable_workflow_runs')
+  }
+}
