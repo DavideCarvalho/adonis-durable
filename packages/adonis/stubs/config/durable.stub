@@ -1,0 +1,15 @@
+{{{
+  exports({ to: app.configPath('durable.ts') })
+}}}
+import { defineConfig } from '@agora/durable'
+
+/**
+ * Configuration for @agora/durable. Defaults to an in-process store + transport
+ * (single-process, no extra infrastructure). Supply a persistent store and a
+ * broker-backed transport for production / multi-process deployments.
+ */
+export default defineConfig({
+  // store: new MyPersistentStore(),
+  // transport: new MyQueueTransport(),
+  // leaseMs: 30_000,
+})
