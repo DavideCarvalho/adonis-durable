@@ -1,0 +1,91 @@
+import type {
+  GroupHealth,
+  Heartbeat,
+  NamedTransport,
+  RemoteTask,
+  StepResult,
+  WorkflowStepEvent,
+} from './interfaces.js';
+
+/**
+ * An ordered pool of named transports. The engine dispatches on the first and fails over to the
+ * next on a dispatch error; a step can pin one by id. Pure transport plumbing — no run lifecycle —
+ * so it lives apart from the engine.
+ */
+export class TransportPool {
+  constructor(private readonly transports: NamedTransport[]) {}
+
+  get size(): number {
+    return this.transports.length;
+  }
+
+  /** Register the engine's result/heartbeat/step-event handlers on EVERY transport — a result can come
+   *  back on whichever one delivered the task, so failover stays symmetric. `onStepEvent` is wired only
+   *  on transports that carry streamed workflow step lifecycle (BullMQ); others simply skip it. */
+  bind(
+    onResult: (result: StepResult) => Promise<void>,
+    onHeartbeat: (beat: Heartbeat) => Promise<void>,
+    onStepEvent?: (event: WorkflowStepEvent) => Promise<void>,
+  ): void {
+    for (const { transport } of this.transports) {
+      transport.onResult(onResult);
+      transport.onHeartbeat(onHeartbeat);
+      if (onStepEvent && transport.onStepEvent) {
+        transport.onStepEvent(onStepEvent);
+      }
+    }
+  }
+
+  /**
+   * Dispatch `task` over the pool: try the preferred (or first) transport, fail over to the next on
+   * a dispatch error, and stamp the task with the id of the transport that accepted it (so a worker
+   * replies on the matching one). Throws if every transport fails.
+   */
+  async dispatch(task: Omit<RemoteTask, 'transport'>, preferId?: string): Promise<void> {
+    let lastErr: unknown;
+    for (const { id, transport } of this.ordered(preferId)) {
+      try {
+        await transport.dispatch({ ...task, transport: id });
+        return;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw lastErr ?? new Error('no transport accepted the dispatch');
+  }
+
+  /** Worker-health for `group`, merged across every transport that can report it (a group's queue
+   *  and its workers may live on any pinned transport). Undefined when no transport implements
+   *  `groupHealth` (e.g. a pure in-process transport — nothing to introspect). */
+  async groupHealth(group: string): Promise<GroupHealth | undefined> {
+    const reports: GroupHealth[] = [];
+    for (const { transport } of this.transports) {
+      if (transport.groupHealth) reports.push(await transport.groupHealth(group));
+    }
+    if (reports.length === 0) return undefined;
+    return {
+      group,
+      depth: reports.reduce((sum, r) => sum + r.depth, 0),
+      liveWorkers: reports.flatMap((r) => r.liveWorkers),
+    };
+  }
+
+  /** Distinct worker groups with a live heartbeat, merged across every transport that can report it. */
+  async listWorkerGroups(): Promise<string[]> {
+    const groups = new Set<string>();
+    for (const { transport } of this.transports) {
+      if (transport.listWorkerGroups) {
+        for (const g of await transport.listWorkerGroups()) groups.add(g);
+      }
+    }
+    return [...groups];
+  }
+
+  /** Pinned `preferId` first, then the rest (failover order). */
+  private ordered(preferId?: string): NamedTransport[] {
+    if (!preferId) return this.transports;
+    const pref = this.transports.filter((t) => t.id === preferId);
+    if (pref.length === 0) throw new Error(`transport "${preferId}" is not registered`);
+    return [...pref, ...this.transports.filter((t) => t.id !== preferId)];
+  }
+}
