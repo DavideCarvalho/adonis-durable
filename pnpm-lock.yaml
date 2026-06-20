@@ -42,6 +42,9 @@ importers:
         specifier: workspace:^
         version: link:../core
     devDependencies:
+      '@agora/durable-testing':
+        specifier: workspace:*
+        version: link:../testing
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.43
@@ -204,12 +207,34 @@ importers:
       '@adonisjs/lucid':
         specifier: ^21.6.0
         version: 21.8.2(@adonisjs/assembler@7.8.2(typescript@5.9.3))(@adonisjs/core@6.21.0(@adonisjs/assembler@7.8.2(typescript@5.9.3)))(better-sqlite3@11.10.0)(luxon@3.7.2)
+      '@agora/durable-testing':
+        specifier: workspace:*
+        version: link:../testing
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.43
       better-sqlite3:
         specifier: ^11.0.0
         version: 11.10.0
+      typescript:
+        specifier: ^5.4.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.6(@types/node@20.19.43)
+
+  packages/testing:
+    dependencies:
+      '@agora/durable-core':
+        specifier: workspace:^
+        version: link:../core
+      zod:
+        specifier: ^3.23.0
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.43
       typescript:
         specifier: ^5.4.0
         version: 5.9.3
@@ -232,6 +257,9 @@ importers:
       '@adonisjs/lucid':
         specifier: ^21.6.0
         version: 21.8.2(@adonisjs/assembler@7.8.2(typescript@5.9.3))(@adonisjs/core@6.21.0(@adonisjs/assembler@7.8.2(typescript@5.9.3)))(better-sqlite3@11.10.0)(luxon@3.7.2)
+      '@agora/durable-testing':
+        specifier: workspace:*
+        version: link:../testing
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.43
@@ -260,6 +288,9 @@ importers:
       '@adonisjs/queue':
         specifier: ^0.6.1
         version: 0.6.1(@adonisjs/assembler@7.8.2(typescript@5.9.3))(@adonisjs/core@6.21.0(@adonisjs/assembler@7.8.2(typescript@5.9.3)))(@adonisjs/lucid@21.8.2(@adonisjs/assembler@7.8.2(typescript@5.9.3))(@adonisjs/core@6.21.0(@adonisjs/assembler@7.8.2(typescript@5.9.3)))(luxon@3.7.2))(@adonisjs/redis@9.2.0(@adonisjs/core@6.21.0(@adonisjs/assembler@7.8.2(typescript@5.9.3))))(@opentelemetry/api@1.9.1)(@opentelemetry/core@1.30.1(@opentelemetry/api@1.9.1))(ioredis@5.11.1)(knex@3.2.10)
+      '@agora/durable-testing':
+        specifier: workspace:*
+        version: link:../testing
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.43

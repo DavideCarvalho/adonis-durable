@@ -1,12 +1,12 @@
 {
-  "name": "@agora/durable-transport-queue",
+  "name": "@agora/durable-testing",
   "version": "0.1.0",
-  "description": "A @adonisjs/queue-backed Transport for @agora/durable-core — dispatch durable remote steps to queue workers. Part of the Agora ecosystem.",
+  "description": "Test harness + cross-backend conformance suites for @agora/durable-core (StateStore / Transport / AdmissionBackend). Part of the Agora ecosystem.",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/DavideCarvalho/adonis-durable.git",
-    "directory": "packages/transport-queue"
+    "directory": "packages/testing"
   },
   "author": "Davi Carvalho <davi@goflip.ai>",
   "type": "module",
@@ -19,7 +19,7 @@
       "default": "./dist/src/index.js"
     }
   },
-  "files": ["dist/", "README.md", "DESIGN.md", "CHANGELOG.md"],
+  "files": ["dist/", "README.md", "CHANGELOG.md"],
   "sideEffects": false,
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -28,21 +28,18 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@agora/durable-core": "workspace:^"
-  },
-  "peerDependencies": {
-    "@adonisjs/core": "^6.12.0 || ^7.0.0",
-    "@adonisjs/queue": "^0.6.0"
-  },
-  "devDependencies": {
-    "@adonisjs/queue": "^0.6.1",
-    "@agora/durable-core": "workspace:*",
-    "@agora/durable-testing": "workspace:*",
-    "@types/node": "^20.0.0",
-    "typescript": "^5.4.0",
-    "vitest": "^3.0.0",
+    "@agora/durable-core": "workspace:^",
     "zod": "^3.23.0"
   },
+  "peerDependencies": {
+    "vitest": "^3.0.0"
+  },
+  "devDependencies": {
+    "@agora/durable-core": "workspace:*",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^3.0.0"
+  },
   "engines": { "node": ">=20.6.0" },
-  "keywords": ["adonisjs", "adonis", "durable", "workflow", "queue", "transport", "agora"]
+  "keywords": ["adonisjs", "adonis", "durable", "workflow", "testing", "conformance", "agora"]
 }

@@ -45,6 +45,7 @@
     "@adonisjs/core": "^6.17.0",
     "@adonisjs/lucid": "^21.6.0",
     "@agora/durable-core": "workspace:*",
+    "@agora/durable-testing": "workspace:*",
     "@types/node": "^20.0.0",
     "better-sqlite3": "^11.0.0",
     "typescript": "^5.4.0",
