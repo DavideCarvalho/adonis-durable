@@ -1,0 +1,20 @@
+export { type DurableDashboardOptions, durableDashboard } from './dashboard.js';
+export { durableTelescopeExtension } from './extension.js';
+export {
+  durableDurationProvider,
+  durableRecentFailuresProvider,
+  durableRunsOverTimeProvider,
+  durableStateBreakdownProvider,
+  durableStateProvider,
+  durableSuccessRateProvider,
+  durableThroughputProvider,
+  durableTimeseriesProvider,
+  durableWorkerHealthProvider,
+} from './data-providers.js';
+export type {
+  ContainerLike,
+  DataProvider,
+  ExtensionContext,
+  TelescopeExtension,
+  TelescopeStoreLike,
+} from './telescope-sdk.js';
