@@ -1,0 +1,78 @@
+---
+title: Lucid
+description: The Lucid StateStore driver — persist runs and checkpoints to Postgres, MySQL, or SQLite through @adonisjs/lucid. The migration ships with @agora/durable; select the store with stores.lucid().
+---
+
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+import { Callout } from 'fumadocs-ui/components/callout';
+
+The `lucid` driver persists runs and step checkpoints through [`@adonisjs/lucid`](https://lucid.adonisjs.com) — on **Postgres, MySQL, or SQLite**. Timestamps and `wakeAt` are stored as epoch-ms big integers, so the schema is dialect-portable. It ships **inside `@agora/durable`**; `@adonisjs/lucid` is an optional peer, imported lazily only when you select the `lucid` store.
+
+<Steps>
+<Step>
+
+## Publish the migration
+
+```bash
+node ace configure @agora/durable
+```
+
+`configure` registers the provider, publishes `config/durable.ts`, and publishes the migration that creates the five durable tables (alongside the optional `db`-transport migration — delete that one if you don't use the `db` transport).
+
+</Step>
+<Step>
+
+## Run the migration
+
+```bash
+node ace migration:run
+```
+
+</Step>
+<Step>
+
+## Select the store
+
+`store` names a key of the `stores` map. `stores.lucid()` rides your app's default Lucid connection — the driver resolves the `db` service for you when it starts:
+
+```ts title="config/durable.ts"
+import { defineConfig, stores } from '@agora/durable'
+
+export default defineConfig({
+  store: 'lucid',
+  stores: {
+    lucid: stores.lucid(),
+  },
+})
+```
+
+Pass `{ connection }` to target a non-default Lucid connection:
+
+```ts
+stores.lucid({ connection: 'durable' })
+```
+
+</Step>
+</Steps>
+
+## What the migration creates
+
+The migration creates five tables (default names, from the `DURABLE_TABLES` constant):
+
+| Table | Purpose |
+| --- | --- |
+| `durable_workflow_runs` | one row per run: status, input/output/error, `wake_at`, lock columns, `recovery_attempts`, tags, search attributes |
+| `durable_step_checkpoints` | one row per step `(run_id, seq)`: name, kind, status, input/output/error, attempts, events, timing |
+| `durable_run_attributes` | normalized side-table of searchable attributes (`key` + `str_value`/`num_value`) for fast filtering |
+| `durable_signal_waiters` | runs parked on a [signal](/docs/durable/concepts/sleep-and-signals) token |
+| `durable_buffered_signals` | signals delivered before the run waited (FIFO per token) |
+
+The runs table is indexed on `status` and on `(status, wake_at)` so the worker's `listPendingRuns` and `listDueTimers` scans stay fast; checkpoints are keyed `(run_id, seq)` with a `(run_id, name)` index for targeted reads; and the attributes table is indexed per `(key, value)` so [search-attribute](/docs/durable/concepts/workflows-and-steps#tags) filters push down to SQL.
+
+<Callout type="info">
+Prefer to own the schema yourself? `@agora/durable` exports `createDurableTables(db)` and `dropDurableTables(db)` (plus `DURABLE_TABLES`), so you can build the tables from your own migration or a setup hook instead of the published stub. The store's `ensureSchema()` is also idempotent — calling it twice is safe.
+</Callout>
+
+## Read API for dashboards & tooling
+
+Beyond the durability primitives, the Lucid store implements the read side the [dashboard](/docs/durable/observability/dashboard) and [CLI](/docs/durable/cli) lean on — `listRuns(query)` with workflow/status/tag/attribute filters, ordering, and pagination; `listCheckpoints(runId)` for a run's timeline; and the targeted-read fast paths `getLatestCheckpointByName` / `listCheckpointsByNamePrefix` used by [queries](/docs/durable/authoring/queries-and-updates) and child-run lookups.

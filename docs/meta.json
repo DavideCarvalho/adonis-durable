@@ -1,0 +1,22 @@
+{
+  "title": "Durable",
+  "pages": [
+    "index",
+    "getting-started",
+    "---Concepts---",
+    "concepts",
+    "authoring",
+    "reliability",
+    "---Infrastructure---",
+    "transports",
+    "stores",
+    "observability",
+    "---Tooling---",
+    "tooling",
+    "testing",
+    "cli"
+  ],
+  "root": true,
+  "description": "Durable, resumable workflows for AdonisJS.",
+  "icon": "Workflow"
+}

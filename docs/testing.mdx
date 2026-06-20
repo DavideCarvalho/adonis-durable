@@ -1,0 +1,82 @@
+---
+title: Testing
+description: Unit-test workflows with an in-memory engine harness, a clock you control for durable sleep, crash/flaky-step injection, and assertions that read the recorded state — no Postgres, no Redis, no real time.
+---
+
+`@agora/durable-testing` runs a whole workflow in a unit test — in-memory store and transport, a clock you control, and assertions that read back the recorded state.
+
+```bash
+npm i -D @agora/durable-testing
+```
+
+## A test engine
+
+`createTestEngine()` returns `{ engine, store, transport, clock, tick, run }` — a self-contained engine wired to an `InMemoryStateStore`, an `InMemoryTransport`, and a controllable clock:
+
+```ts
+import { test } from '@japa/runner'
+import { createTestEngine, assertRunStatus, assertOutput } from '@agora/durable-testing'
+
+test('checkout completes', async () => {
+  const t = createTestEngine()
+  t.engine.register('checkout', '1', async (ctx) => {
+    await ctx.step('reserve', () => reserve())
+    return ctx.step('ship', () => ship())
+  })
+
+  await t.run('checkout', order, 'run1') // enqueue + wait for the run to settle
+  await assertRunStatus(t.store, 'run1', 'completed')
+})
+```
+
+`t.run(workflow, input, runId, opts?)` enqueues and waits for the run to settle (terminal or suspended) — use it when a test needs the outcome synchronously, since `engine.start` only enqueues.
+
+## Control time (durable sleep)
+
+`t.tick(ms)` advances the clock and resumes any durable sleep that is now due — no real waiting:
+
+```ts
+t.engine.register('digest', '1', async (ctx) => {
+  await ctx.step('draft', () => draft())
+  await ctx.sleep('7 days')
+  await ctx.step('send', () => send())
+})
+
+await t.run('digest', {}, 'run1')   // settles on the durable sleep → suspended
+await t.tick(7 * 24 * 60 * 60 * 1000) // the sleep is due → completes
+await assertRunStatus(t.store, 'run1', 'completed')
+```
+
+The clock itself (`t.clock`, a `MutableClock`) has `set(ms)` and `advance(ms)` if you need finer control.
+
+## Inject crashes & retries
+
+`failOnce` / `failTimes` make a step throw before succeeding — to drive retries and resume:
+
+```ts
+import { failOnce, assertStepAttempts } from '@agora/durable-testing'
+
+t.engine.register('wf', '1', async (ctx) =>
+  ctx.step('charge', failOnce({ ok: true }), { retries: 3 }),
+)
+await t.run('wf', {}, 'run1')
+await assertStepAttempts(t.store, 'run1', 'charge', 2) // failed once, then succeeded
+```
+
+`failTimes(n, value)` fails the first `n` attempts before returning `value`.
+
+## Assertions
+
+All assertions read the store, so they work against any run the engine produced:
+
+| Helper | Checks |
+| --- | --- |
+| `assertRunStatus(store, runId, status)` | the run reached `status` |
+| `assertOutput(store, runId, expected)` | the run's output equals `expected` |
+| `assertStepsRan(store, runId, names)` | exactly these steps were recorded |
+| `assertStepAttempts(store, runId, name, n)` | the step took `n` attempts |
+| `recordedSteps(store, runId)` | returns the recorded step names |
+
+## Conformance suites
+
+The package also ships conformance test suites — `state-store-conformance`, `transport-conformance`, and `admission-backend-conformance` — so if you write a **custom** [store](/docs/durable/stores), [transport](/docs/durable/transports), or admission backend, you can run the same battery of behavioral tests the built-in adapters pass against it. There's a `replay` helper too, for asserting a workflow body replays deterministically.

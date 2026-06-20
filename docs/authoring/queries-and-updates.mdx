@@ -1,0 +1,142 @@
+---
+title: Queries & updates
+description: Read a live run's state with ctx.setEvent + engine.getEvent (side-effect-free queries), and steer it with ctx.onUpdate + engine.registerUpdateValidator + engine.update (validated, Temporal-style updates that can be rejected before they touch the run).
+---
+
+A run is durable but it is not opaque. While it is in flight — suspended on a sleep, waiting on a remote step, parked on a signal — you often need to **read** what it has done so far, and sometimes to **steer** it from the outside. The engine gives you two distinct primitives, mirroring Temporal's split between *queries* (read-only) and *updates* (mutating, validated):
+
+- **Queries** publish a named value from inside the run (`ctx.setEvent`) and read the latest one from outside (`engine.getEvent`) with no side effect on the run.
+- **Updates** expose a named update point inside the run (`ctx.onUpdate`) that suspends until an external `engine.update` delivers an argument — gated by an optional validator that can reject the update *before* it touches the run.
+
+## Queries
+
+A query is a side-effect-free read of a run's state. The run publishes values; readers observe them. Neither side resumes, suspends, or otherwise perturbs the run.
+
+### Publishing a value — `ctx.setEvent(key, value)`
+
+Inside the workflow body, call `ctx.setEvent(key, value)` to publish a named, queryable value. The latest value for a given `key` is what a reader sees; calling `setEvent` again with the same key overwrites it. It is checkpointed and replay-safe — on replay the publish is idempotent, so it never double-fires.
+
+```ts
+engine.register('video-encode', '1', async (ctx, job: EncodeJob) => {
+  await ctx.setEvent('progress', { phase: 'probing', pct: 0 })
+
+  const segments = await ctx.step('probe', () => encoder.probe(job.src))
+
+  for (let i = 0; i < segments.length; i++) {
+    await ctx.call(encodeSegment, { jobId: job.id, segment: segments[i] })
+    // Publish progress after each segment — readers see the latest snapshot.
+    await ctx.setEvent('progress', {
+      phase: 'encoding',
+      pct: Math.round(((i + 1) / segments.length) * 100),
+      done: i + 1,
+      total: segments.length,
+    })
+  }
+
+  await ctx.setEvent('progress', { phase: 'done', pct: 100 })
+  return { jobId: job.id, segments: segments.length }
+})
+```
+
+Use `setEvent` for anything an outside observer might want before the run completes: progress, a partial result, a status string, an intermediate id. Because each call overwrites the previous value for that key, you can publish a key as often as you like without growing unbounded state — only the latest survives.
+
+### Reading a value — `engine.getEvent(runId, key)`
+
+From outside the run — a controller, a polling endpoint, another service — read the latest published value with `engine.getEvent(runId, key)`. It returns the most recent value for that key, or `undefined` if the run never published it. Crucially, **the read has no effect on the run**: it does not resume a suspended run, does not consume a logical position, and does not appear in the run's history.
+
+```ts
+import { WorkflowEngine } from '@agora/durable'
+import { inject } from '@adonisjs/core'
+
+@inject()
+export default class JobsController {
+  constructor(private engine: WorkflowEngine) {}
+
+  async progress({ params }: HttpContext) {
+    const progress = await this.engine.getEvent<{ phase: string; pct: number }>(params.runId, 'progress')
+    return progress ?? { phase: 'pending', pct: 0 }
+  }
+}
+```
+
+`getEvent` works against a live run *and* a finished one — the published values live in the run's checkpoints, so they remain queryable after the run completes. The read is typed: pass the value type as the generic (`getEvent<TValue>`), and the engine returns `TValue | undefined`.
+
+## Updates
+
+A query reads; an **update** steers. An update point inside the run suspends until an external caller delivers an argument — and, unlike a raw signal, an update can be **validated and rejected before it ever touches the run**. That validator runs in the caller's request, so a rejected update returns a reason synchronously and leaves the run exactly as it was.
+
+### The update point — `ctx.onUpdate(name, { timeoutMs? })`
+
+Inside the workflow, `await ctx.onUpdate(name)` suspends the run with zero compute until an `engine.update(runId, name, arg)` delivers `arg`, then resumes with it. The `name` is **run-scoped** — unique within this run, not globally. Pass `{ timeoutMs }` to bound the wait; if the deadline passes, the call throws `SignalTimeoutError`.
+
+```ts
+engine.register('expense-approval', '1', async (ctx, expense: Expense) => {
+  await ctx.setEvent('status', { state: 'awaiting-approval', amountCents: expense.amountCents })
+
+  let decision: { approved: boolean; approver: string; note?: string }
+  try {
+    // Suspends here — no compute — until engine.update delivers a decision, or 7 days pass.
+    decision = await ctx.onUpdate('decision', { timeoutMs: 7 * 24 * 60 * 60 * 1000 })
+  } catch (err) {
+    if (err instanceof SignalTimeoutError) {
+      await ctx.setEvent('status', { state: 'expired' })
+      throw new FatalError('approval timed out', 'expired')
+    }
+    throw err
+  }
+
+  if (!decision.approved) {
+    await ctx.setEvent('status', { state: 'rejected', by: decision.approver })
+    return { reimbursed: false }
+  }
+
+  await ctx.step('reimburse', () => ledger.reimburse(expense, decision.approver))
+  await ctx.setEvent('status', { state: 'reimbursed', by: decision.approver })
+  return { reimbursed: true }
+})
+```
+
+### The validator — `engine.registerUpdateValidator(workflow, name, validate)`
+
+Register a validator for a `(workflow, update name)` pair. It runs **before** the update is delivered, in the calling request — so it can enforce a business rule and **reject** the update without ever disturbing the run. To reject, throw an error whose message is the reason; to accept, return nothing. The validator may be async.
+
+```ts
+engine.registerUpdateValidator('expense-approval', 'decision', async (arg: { by?: string }) => {
+  if (!arg?.by) throw new Error('approver is required')
+  const approver = await people.find(arg.by)
+  if (!approver?.canApproveExpenses) throw new Error(`${arg.by} is not allowed to approve expenses`)
+  // returning nothing accepts the update
+})
+```
+
+Only one validator lives per `(workflow, name)`; registering again replaces it. If no validator is registered, every update is accepted and delivered as-is.
+
+### Delivering an update — `engine.update(runId, name, arg)`
+
+From outside, call `engine.update(runId, name, arg)`. It runs the validator first, then (if accepted) delivers `arg` to the suspended `ctx.onUpdate` and resumes the run. The return type makes the outcome explicit:
+
+```ts
+type UpdateResult =
+  | { accepted: false; reason: string }
+  | { accepted: true; run: RunResult | null }
+```
+
+- `{ accepted: false, reason }` — the validator rejected it. The run is untouched; `reason` is the validator's thrown message.
+- `{ accepted: true, run }` — accepted and delivered. `run` is the resumed run's result, or `null` when nothing was waiting at that update point yet.
+
+```ts
+@inject()
+export default class ExpensesController {
+  constructor(private engine: WorkflowEngine) {}
+
+  async decide({ params, request, response }: HttpContext) {
+    const result = await this.engine.update(params.runId, 'decision', request.body())
+    if (!result.accepted) return response.badRequest({ error: result.reason })
+    return { ok: true, status: result.run?.status ?? 'pending' }
+  }
+}
+```
+
+### Why a validator beats a raw signal
+
+You can already steer a run with `ctx.waitForSignal` + `engine.signal`. The difference is *where the rejection happens*. A signal always lands; if the argument is bad, the workflow body has to detect it after resuming. An update with a validator rejects in the caller's request, synchronously, with a reason — the run never wakes for a bad update, and the caller gets immediate, actionable feedback.

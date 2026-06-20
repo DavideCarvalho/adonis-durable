@@ -2,6 +2,10 @@ import type { ApplicationService } from '@adonisjs/core/types';
 import {
   InMemoryStateStore,
   InMemoryTransport,
+  type StateStore,
+  type StoreContext,
+  type Transport,
+  type TransportContext,
   WorkflowEngine,
   type WorkflowEngineDeps,
   attachDurableDiagnostics,
@@ -30,12 +34,14 @@ const DIAGNOSTICS_EMIT = Symbol.for('@agora/diagnostics:emit');
  * Wires `@agora/durable` into the AdonisJS application: binds a singleton
  * {@link WorkflowEngine} built from `config/durable.ts`.
  *
- * Defaults to an in-process store + transport (single-process, zero infra). When
- * `@agora/context` is installed, the originating tenant/user/correlation carrier
- * is attached to each dispatched task (best-effort, read structurally from the
- * global accessor slot — no hard dependency). When `@agora/diagnostics-otel` (and
- * an OTel SDK such as `@adonisjs/otel`) is installed, each dispatched task is
- * stamped with the active OTel `traceparent` so a worker continues the trace.
+ * Defaults to an in-process store + transport (single-process, zero infra). Pick a `transport` /
+ * `store` by name from the config's `transports` / `stores` maps to run cross-process or persist
+ * durably; each selected driver's peer dependency is imported lazily inside its factory thunk, only
+ * when that driver is chosen. When `@agora/context` is installed, the originating
+ * tenant/user/correlation carrier is attached to each dispatched task (best-effort, read structurally
+ * from the global accessor slot — no hard dependency). When `@agora/diagnostics-otel` (and an OTel SDK
+ * such as `@adonisjs/otel`) is installed, each dispatched task is stamped with the active OTel
+ * `traceparent` so a worker continues the trace.
  *
  * ```ts
  * const engine = await app.container.make(WorkflowEngine)
@@ -45,11 +51,12 @@ const DIAGNOSTICS_EMIT = Symbol.for('@agora/diagnostics:emit');
  */
 export default class DurableProvider {
   #detachDiagnostics: (() => void) | null = null;
+  #transport: (Transport & { close?: () => Promise<void> }) | null = null;
 
   constructor(protected app: ApplicationService) {}
 
   register() {
-    this.app.container.singleton(WorkflowEngine, () => {
+    this.app.container.singleton(WorkflowEngine, async () => {
       const config = this.app.config.get<DurableConfig>('durable', {});
       const accessor = (globalThis as Record<symbol, unknown>)[CONTEXT_ACCESSOR] as
         | ContextAccessorLike
@@ -58,10 +65,15 @@ export default class DurableProvider {
         | (() => string | undefined)
         | undefined;
 
+      const ctx: TransportContext & StoreContext = { app: this.app };
+      const store = await this.#resolveStore(config, ctx);
+      const transport = await this.#resolveTransport(config, ctx);
+      // Hold the transport so `shutdown()` can release broker workers/connections cleanly.
+      this.#transport = transport;
+
       const deps: WorkflowEngineDeps = {
-        store: config.store ?? new InMemoryStateStore(),
-        transport: config.transport ?? new InMemoryTransport(),
-        ...(config.transports ? { transports: config.transports } : {}),
+        store,
+        transport,
         ...(config.controlPlane ? { controlPlane: config.controlPlane } : {}),
         ...(config.leaseMs !== undefined ? { leaseMs: config.leaseMs } : {}),
         ...(config.instanceId ? { instanceId: config.instanceId } : {}),
@@ -82,6 +94,32 @@ export default class DurableProvider {
     });
   }
 
+  /** Resolve the configured state store (a key of `config.stores`), or the in-memory default. */
+  async #resolveStore(config: DurableConfig, ctx: StoreContext): Promise<StateStore> {
+    const name = config.store;
+    if (!name) return new InMemoryStateStore();
+    const factory = config.stores?.[name];
+    if (!factory) {
+      throw new Error(
+        `@agora/durable: config.store is "${name}", but config.stores.${name} is not defined`,
+      );
+    }
+    return factory(ctx);
+  }
+
+  /** Resolve the configured transport (a key of `config.transports`), or the in-memory default. */
+  async #resolveTransport(config: DurableConfig, ctx: TransportContext): Promise<Transport> {
+    const name = config.transport;
+    if (!name) return new InMemoryTransport();
+    const factory = config.transports?.[name];
+    if (!factory) {
+      throw new Error(
+        `@agora/durable: config.transport is "${name}", but config.transports.${name} is not defined`,
+      );
+    }
+    return factory(ctx);
+  }
+
   /**
    * Once everything is booted, bridge engine lifecycle events onto the `@agora/diagnostics` bus —
    * but only when diagnostics is actually installed (its emit slot is populated at module load).
@@ -99,5 +137,8 @@ export default class DurableProvider {
   async shutdown() {
     this.#detachDiagnostics?.();
     this.#detachDiagnostics = null;
+    // Release the transport's broker workers / queues / connections so a deploy hands off cleanly.
+    await this.#transport?.close?.();
+    this.#transport = null;
   }
 }

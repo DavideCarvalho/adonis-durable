@@ -1,0 +1,66 @@
+---
+title: CLI
+description: Ace commands for durable — durable:work runs the worker loop, durable:runs lists runs, and durable:retry re-enqueues a run, all resolving the engine bound by @agora/durable.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+`@agora/durable-cli` adds three ace commands: a long-running **worker loop**, a run **lister**, and a **retry**. All three resolve the [`WorkflowEngine`](/docs/durable/concepts/workflows-and-steps) bound by `@agora/durable`'s provider, so they operate on the same engine (and store) your app is configured with.
+
+```bash
+node ace add @agora/durable-cli
+```
+
+`add` runs the package's `configure`, which registers the commands barrel (`@agora/durable-cli/commands`) in `adonisrc.ts` so the three commands become available to ace.
+
+## `durable:work` — the worker loop
+
+The long-running worker. On an interval it picks up pending runs, recovers crashed runs, resumes due timers, and sweeps execution timeouts. It stays alive until `SIGINT`/`SIGTERM`, then **drains** in-flight executions so a deploy hands off cleanly.
+
+```bash
+node ace durable:work
+node ace durable:work --interval=500 --drainTimeout=15000
+```
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--interval` | `1000` | poll interval in ms between ticks |
+| `--drainTimeout` | `10000` | drain timeout in ms on shutdown |
+
+Each tick runs `engine.runPending()` → `engine.recoverIncomplete()` → `engine.resumeDueTimers()` → `engine.sweepTimeouts()`. Run this as a dedicated process (or several) when you split web from worker; in a single-process app the in-process dispatcher already runs workflows, so this is optional but recommended for [recovery and timers](/docs/durable/concepts/durability#self-healing-recovery).
+
+<Callout type="info">
+This is also where you'd call [`runSchedules`](/docs/durable/authoring/scheduling) each tick if you use scheduled workflows, and where a [queue](/docs/durable/transports/queue) or [DB](/docs/durable/transports/db) transport worker registers its handlers for a group.
+</Callout>
+
+## `durable:runs` — list runs
+
+Lists recent runs, optionally filtered by status and workflow, reading through `engine.listRuns`.
+
+```bash
+node ace durable:runs
+node ace durable:runs --status=failed
+node ace durable:runs --workflow=checkout --limit=100
+```
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--status` | — | filter: `pending` / `running` / `suspended` / `completed` / `failed` / `cancelled` / `dead` |
+| `--workflow` | — | filter by workflow name |
+| `--limit` | `50` | max runs to list |
+
+For the listing to show runs across processes, the engine must be backed by a [persistent store](/docs/durable/stores/lucid) (`config/durable.ts`) — the default in-memory store only sees this process's runs.
+
+## `durable:retry` — re-enqueue a run
+
+Re-enqueues a run for a worker to (re-)execute. It calls `engine.requeue(runId)`: the run goes back to `pending`, any stale lease is cleared, and a worker resumes it (replaying its checkpoints, re-attempting the failed step).
+
+```bash
+node ace durable:retry checkout:1234
+```
+
+Run `durable:work` (or any worker) to pick it up afterward. This is the terminal equivalent of the dashboard's retry button — handy for replaying a [dead](/docs/durable/reliability/dead-letter) run once you've shipped a fix.
+
+## Building your own
+
+The package also exports the building blocks — `runWorkerLoop`, `runTick`, `listRuns`, `renderRunsTable`, `retryRun` — so you can compose a custom worker process or admin script around the engine instead of (or alongside) the bundled commands.

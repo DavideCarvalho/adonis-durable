@@ -1,0 +1,96 @@
+---
+title: Durability & replay
+description: How checkpoint-and-replay makes a workflow survive crashes — and the one rule it imposes. The workflow body must be deterministic; all side effects live in steps.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Durability comes from **checkpoint + deterministic replay** — the same model Temporal and DBOS use. Understanding it is the one thing worth reading before you build.
+
+## The mechanism
+
+Each step records its result in the [store](/docs/durable/stores) at a deterministic position (`seq`). Recovery works by **re-running the workflow function from the top** — but a step that already has a **`completed`** checkpoint returns its saved result instead of executing again:
+
+```text
+run abc
+  step[0] reserveStock  → execute → checkpoint {seq:0, completed, output}
+  step[1] chargeCard     → execute → checkpoint {seq:1, completed, output}
+  💥 crash
+  --- engine restarts, resumes run abc ---
+  step[0] reserveStock  → completed checkpoint → return saved output (NOT re-run)
+  step[1] chargeCard     → completed checkpoint → return saved output (NOT re-run)
+  step[2] ship           → no checkpoint → execute for real
+```
+
+Only a **`completed`** checkpoint short-circuits replay. A non-terminal checkpoint — a remote step's `pending` (dispatched, awaiting its worker) or a local step's in-flight `running` (see [`trackStepStart`](/docs/durable/concepts/workflows-and-steps#in-flight-visibility)) — does **not**: the step is re-awaited (remote) or re-run (local). So a crash mid-step is safe — there's no half-finished result to honour.
+
+You write ordinary linear code; the engine guarantees each step runs **exactly once**, logically, even across crashes and deploys.
+
+## The execution model: start enqueues, a worker runs the body
+
+`start` does **not** run the workflow inline. `engine.start(workflow, input, runId, opts?)` **creates the run as `'pending'` and returns immediately**. The caller — an HTTP handler, say — never blocks on workflow logic; the body is dispatched to a worker.
+
+```text
+start('checkout', order, runId)  → run created, status: 'pending', returns now
+  (a worker picks the run up)    → status: 'running', body executes
+  ctx.waitForSignal('approve')   → status: 'suspended'
+  signal('approve')              → resumes → completes
+```
+
+- **`'pending'`** is a run status: created and enqueued, not yet picked up by a worker.
+- **Where a run executes is a `runDispatcher`.** The default is **in-process** — the run executes on the same instance, asynchronously on a microtask — so a single-process app still runs workflows with zero setup; it just doesn't block the caller.
+- **Await the outcome with `waitForRun`** when you need it inline: `engine.waitForRun(runId)` resolves once the run **settles** — a terminal state (completed/failed/cancelled/dead) **or** `suspended`.
+
+  ```ts
+  await engine.start('checkout', order, runId)
+  const result = await engine.waitForRun(runId) // resolves when the run settles
+  ```
+
+### Workers: a process that drains pending runs
+
+For scale you can split an app into **web** processes (handle HTTP, the dashboard) and **worker** processes (execute workflows) sharing only the database. A worker is the [`durable:work`](/docs/durable/cli) ace command, which on an interval calls the engine's worker-side primitives:
+
+- `engine.runPending()` — lease and run all `pending` runs.
+- `engine.recoverIncomplete()` — reclaim runs a crashed worker left `running`.
+- `engine.resumeDueTimers()` — wake runs whose [sleep](/docs/durable/concepts/sleep-and-signals) or retry timer has come due.
+- `engine.sweepTimeouts()` — fail runs that blew their execution timeout.
+
+The default (no explicit worker) is the in-process dispatcher — so single-process apps need none of this. Runs simply execute on the same instance, just asynchronously. Run a dedicated `durable:work` process once you outgrow that.
+
+## The one rule: workflows are deterministic
+
+Because the body re-runs on recovery, it must be deterministic. **All non-determinism — network calls, queries, `Date.now()`, randomness, IO — must live inside a step.** The workflow body is just orchestration: call a step, use its result, decide the next.
+
+```ts
+// ✗ wrong — non-determinism in the workflow body
+engine.register('checkout', '1', async (ctx, order) => {
+  if (Math.random() < 0.1) { /* re-runs differently on replay */ }
+  const now = Date.now() // different on every replay
+})
+
+// ✓ right — side effects inside steps, deterministic sources from ctx
+engine.register('checkout', '1', async (ctx, order) => {
+  const quote = await ctx.step('quote', () => pricing.fetch(order)) // checkpointed
+  const issuedAt = await ctx.now() // recorded once, replayed verbatim
+  await ctx.step('charge', () => billing.charge(quote, issuedAt))
+})
+```
+
+<Callout type="warn">
+The [`@agora/durable-eslint-plugin`](/docs/durable/tooling/linting) catches `Date.now()`, `Math.random()`, `new Date()`, and `crypto.randomUUID()` inside a workflow body at author time. The engine also throws a `NonDeterminismError` at replay time if the recorded path diverges. See [Versioning & determinism](/docs/durable/authoring/versioning).
+</Callout>
+
+## Consequences
+
+- **Idempotency.** The engine guarantees logical exactly-once, but if the process dies *after* a remote worker ran and *before* its result was recorded, the step may physically run twice. Steps receive a stable `stepId` (`runId:seq`) — make handlers idempotent or dedupe on it.
+- **Retries.** Configure per step: `ctx.step(name, fn, { retries: 3, backoff: 'exp' })`. Throw a [`FatalError`](/docs/durable/reliability/retries#fatalerror-never-retried) to stop retrying a business failure outright. See [Retries & backoff](/docs/durable/reliability/retries).
+- **Self-healing recovery.** The engine resumes every run a previous process left `running` (`engine.recoverIncomplete()`, called every tick by the `durable:work` loop). This runs both on boot **and periodically** — so a run orphaned by a crashed worker is reclaimed within ~`leaseMs`, not only on the next deploy. While a run executes, its worker **renews the recovery lease**, so a live worker keeps a long-running run while a crashed worker's lease still expires and another instance takes over.
+
+## Deploys, versioning & multiple instances
+
+Because the engine is embedded in your app, deploys and replicas need a word.
+
+- **The state survives the deploy.** Checkpoints live in the database, so killing the old instance loses nothing. The new instance recovers `running` runs — and any other instance reclaims orphaned runs within ~`leaseMs` via periodic recovery — while the timer poller resumes due sleeps. Suspended and `pending` runs don't even notice a deploy; a worker picks them up afterward.
+- **Version-pinned replay (skew protection).** Replay is *positional* — changing a workflow's body (reordering/inserting steps) while runs are in flight would corrupt them. So a workflow is registered with a `version`, and a run **resumes on the version it started on** (`workflowVersion` on the run). Register the old and new versions side by side during a breaking change: in-flight runs drain on the old version, new runs start on the newest. A run whose version is no longer registered fails loudly rather than corrupting. See [Versioning & determinism](/docs/durable/authoring/versioning).
+- **One instance per run (recovery lease).** With several replicas, each would try to recover the same `running` runs. The engine takes an atomic, self-expiring **lease** on a run before resuming it (`StateStore.tryLockRun`), so a run is picked up by exactly one instance, and **renews** the lease while it runs (`StateStore.renewRunLock`) so a long-running run isn't reclaimed out from under a live worker. A crashed worker stops renewing, so its lease expires and another instance recovers the run. Set `leaseMs` (config `leaseMs`, default 30s) above how long a single resume step runs.
+- **Graceful shutdown.** On `SIGINT`/`SIGTERM` the `durable:work` loop **drains**: it stops picking up new runs and waits for in-flight ones to settle (bounded by `--drainTimeout`), so the next instance takes over cleanly.

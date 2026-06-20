@@ -15,7 +15,7 @@ function fakeApp(config: DurableConfig = {}) {
       },
     },
   } as unknown as ApplicationService;
-  return { app, resolve: () => factory?.() as WorkflowEngine };
+  return { app, resolve: async () => (await factory?.()) as WorkflowEngine };
 }
 
 describe('DurableProvider', () => {
@@ -23,7 +23,7 @@ describe('DurableProvider', () => {
     const { app, resolve } = fakeApp();
     new DurableProvider(app).register();
 
-    const engine = resolve();
+    const engine = await resolve();
     expect(engine).toBeInstanceOf(WorkflowEngine);
 
     // The engine works end-to-end through the binding: register + run a workflow.
@@ -41,7 +41,7 @@ describe('DurableProvider', () => {
   it('uses the configured store', async () => {
     const { app, resolve } = fakeApp({ instanceId: 'engine-a' });
     new DurableProvider(app).register();
-    expect(resolve()).toBeInstanceOf(WorkflowEngine);
+    expect(await resolve()).toBeInstanceOf(WorkflowEngine);
   });
 
   it('consumes the @agora/otel:traceparent global slot when present (no break)', async () => {
@@ -51,7 +51,7 @@ describe('DurableProvider', () => {
     try {
       const { app, resolve } = fakeApp();
       new DurableProvider(app).register();
-      const engine = resolve();
+      const engine = await resolve();
       engine.register('wf', '1', async (ctx) => ctx.step('s', async () => 'ok'));
       await engine.start('wf', {}, 'otel-run');
       const result = await engine.waitForRun('otel-run');

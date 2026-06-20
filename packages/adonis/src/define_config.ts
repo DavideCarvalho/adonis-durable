@@ -1,24 +1,51 @@
 import type {
   ControlPlane,
-  NamedTransport,
   RunDispatcher,
-  StateStore,
-  Transport,
+  StoreFactory,
+  TransportFactory,
 } from '@agora/durable-core';
+import { stores, transports } from '@agora/durable-core';
 
 /**
- * Shape of `config/durable.ts`. Everything is optional — by default the engine
- * uses an in-process state store + transport (single-process, no extra infra).
- * Supply a persistent {@link StateStore} and a broker-backed {@link Transport}
- * for production / multi-process.
+ * Shape of `config/durable.ts`. Everything is optional — by default the engine uses an in-process
+ * state store + transport (single-process, no extra infra). Pick a `transport`/`store` by name from
+ * the `transports`/`stores` maps to run cross-process or persist durably; build the entries with the
+ * {@link transports} / {@link stores} factories so each peer dependency (`@adonisjs/queue`,
+ * `@adonisjs/lucid`) is imported lazily, only when that driver is actually selected.
+ *
+ * ```ts
+ * import { defineConfig, transports, stores } from '@agora/durable'
+ * import { redis } from '@adonisjs/queue'
+ *
+ * export default defineConfig({
+ *   transport: 'queue',
+ *   transports: {
+ *     memory: transports.memory(),
+ *     queue: transports.queue({ adapter: redis({ host: '127.0.0.1' }), group: 'durable' }),
+ *     db: transports.db({ connection: 'pg' }),
+ *   },
+ *   store: 'lucid',
+ *   stores: {
+ *     lucid: stores.lucid({ connection: 'pg' }),
+ *   },
+ * })
+ * ```
  */
 export interface DurableConfig {
-  /** Persistence for runs/checkpoints/timers. Defaults to in-memory (single-process). */
-  store?: StateStore;
-  /** Single task transport. Defaults to in-memory (single-process). */
-  transport?: Transport;
-  /** Ordered transport pool with failover (use instead of `transport`). */
-  transports?: NamedTransport[];
+  /**
+   * Name of the transport (a key of {@link transports}) the engine dispatches over. Omit for the
+   * in-process transport (single-process, no extra infra).
+   */
+  transport?: string;
+  /** Named transports, built with the {@link transports} factory. */
+  transports?: Record<string, TransportFactory>;
+  /**
+   * Name of the state store (a key of {@link stores}) for runs/checkpoints/timers. Omit for the
+   * in-memory store (single-process).
+   */
+  store?: string;
+  /** Named state stores, built with the {@link stores} factory. */
+  stores?: Record<string, StoreFactory>;
   /** Cross-instance broadcast for lifecycle events + cancellation. Omit for single-instance. */
   controlPlane?: ControlPlane;
   /** Recovery lease duration in ms. Default 30s. */
@@ -37,3 +64,15 @@ export interface DurableConfig {
 export function defineConfig(config: DurableConfig = {}): DurableConfig {
   return config;
 }
+
+export { transports, stores };
+export type {
+  TransportContext,
+  TransportFactory,
+  MemoryTransportConfig,
+  QueueTransportConfig,
+  DbTransportConfig,
+  StoreContext,
+  StoreFactory,
+  LucidStoreConfig,
+} from '@agora/durable-core';

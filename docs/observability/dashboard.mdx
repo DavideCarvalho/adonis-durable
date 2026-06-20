@@ -1,0 +1,86 @@
+---
+title: Control plane
+description: The embedded dashboard — a self-contained HTML page plus a JSON API, mounted into your AdonisJS routes. Lists runs, renders each run's step timeline, and exposes retry and cancel actions, all behind a configurable authorize guard.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+`@agora/durable-dashboard` mounts a control plane into your AdonisJS app: a self-contained HTML page plus its JSON API. It reads straight from the [state store](/docs/durable/stores) through the engine's read API, so it works without an OpenTelemetry collector.
+
+```bash
+node ace add @agora/durable-dashboard
+```
+
+`add` registers `@agora/durable-dashboard/dashboard_provider` in `adonisrc.ts` and publishes `config/durable_dashboard.ts`. The provider registers the routes on boot — nothing else to wire.
+
+## Configuration
+
+`config/durable_dashboard.ts` controls where it mounts and who may reach it:
+
+```ts title="config/durable_dashboard.ts"
+import { defineConfig } from '@agora/durable-dashboard'
+
+export default defineConfig({
+  // enabled: true,
+  // path: '/durable',
+  // authorize: (ctx) => ctx.auth.user?.isAdmin === true,
+})
+```
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `enabled` | `true` | When `false`, no routes are registered. |
+| `path` | `'/durable'` | Route prefix the dashboard mounts under. |
+| `authorize` | see below | Per-request guard: `(ctx: HttpContext) => boolean \| Promise<boolean>`. |
+
+### Authorization
+
+The default `authorize` is **open outside production**, and in production requires a bearer token equal to the `DURABLE_DASHBOARD_TOKEN` env var (it fails closed if the var is unset). The token is accepted from an `Authorization: Bearer <token>` header, an `x-durable-token` header, or a `?token=` query param. Override `authorize` with your own session/role/IP guard — a denied request gets a `403`:
+
+```ts
+export default defineConfig({
+  authorize: async (ctx) => {
+    await ctx.auth.check()
+    return ctx.auth.user?.isAdmin === true
+  },
+})
+```
+
+<Callout type="warn">
+The dashboard exposes retry and cancel actions that mutate runs. Always front it with a real guard in production — the default token gate is a floor, not a substitute for your app's auth.
+</Callout>
+
+## Where it mounts
+
+All routes are relative to `path` (default `/durable`), each behind the `authorize` guard:
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `GET` | `/durable` | the self-contained HTML dashboard |
+| `GET` | `/durable/api/runs` | list runs (`?status=`, `?workflow=`, `?tag=`, paged) |
+| `GET` | `/durable/api/runs/:id` | run detail — run + step timeline + children |
+| `POST` | `/durable/api/runs/:id/retry` | re-enqueue the run (→ `pending`, a worker resumes it) |
+| `POST` | `/durable/api/runs/:id/cancel` | cancel the run (body `{ compensate?: boolean }` to undo the saga first) |
+| `GET` | `/durable/api/health` | worker-group health |
+
+The routes are named (`durable_dashboard.index`, `durable_dashboard.runs.show`, …), so you can reference them from your own code or wrap them in middleware.
+
+## What it shows
+
+- **Runs** — every run with its status (**pending** / running / suspended / completed / failed / cancelled / **dead**), filterable. `pending` is a run that's been created and enqueued but not yet picked up by a worker. A `dead` run carries a distinct badge so a [poison pill](/docs/durable/reliability/dead-letter) is easy to spot.
+- **Step timeline** — the selected run's steps rendered in order: start through each step to the terminal state, tagged by kind (local / remote / sleep / signal), with worker group and duration. In-flight steps show up here while they run, not only on completion — a remote step in flight reads as `pending` and a local step's executing body as `running` (the engine's [`trackStepStart`](/docs/durable/concepts/workflows-and-steps#in-flight-visibility) option).
+- **Children** — a run's [child workflows](/docs/durable/authoring/child-workflows) are linked from its detail.
+- **Actions** — retry a failed/suspended/dead run, cancel a running one, and **cancel + undo** (cancel with [saga compensation](/docs/durable/reliability/sagas)). These are **non-blocking**: retry re-enqueues the run and cancel + undo runs the saga in the background — neither replays the workflow inline in the HTTP request, so the action returns immediately and a worker does the work.
+
+## Calling the API directly
+
+The JSON API is a small, framework-light surface (`listRuns`, `getRun`, `retryRun`, `cancelRun`, `health` in the package's `handlers`), so you can also build your own UI or scripts on top of the same routes:
+
+```ts
+// list failed runs, then retry the first
+const res = await fetch('/durable/api/runs?status=failed', { headers })
+const { runs } = await res.json()
+await fetch(`/durable/api/runs/${runs[0].id}/retry`, { method: 'POST', headers })
+```
+
+For deep operational health views (success rate, throughput, top failures) inside your existing observability UI, see the [Telescope](/docs/durable/observability/telescope) integration.

@@ -1,0 +1,101 @@
+---
+title: Scheduling
+description: Recurring workflows with ScheduledWorkflow — fixed intervals via everyMs or DST-aware cron via cron + timezone — fired with runSchedules, started exactly once per window by an idempotent time-bucket run id.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+A scheduled workflow is just a normal workflow that you **start on a recurring cadence** — a nightly report, an hourly sync, a cleanup every five minutes. You describe the cadence with a `ScheduledWorkflow`, and call `runSchedules` from a worker tick to fire any windows that are due. The interesting part is the exactly-once guarantee: even with several worker instances racing on the same tick, each schedule window starts **exactly once**.
+
+## Describing a schedule — `ScheduledWorkflow`
+
+```ts
+interface ScheduledWorkflow {
+  /** Stable key identifying this schedule — part of the deterministic run id. */
+  key: string
+  workflow: string
+  input?: unknown
+  /** Start one run every `everyMs`. Mutually exclusive with `cron`. */
+  everyMs?: number
+  /** A cron expression evaluated in `timezone`. Mutually exclusive with `everyMs`. */
+  cron?: string
+  /** IANA timezone the `cron` fires in (e.g. `America/Sao_Paulo`). Defaults to UTC. */
+  timezone?: string
+  /** Skip windows while paused. */
+  paused?: boolean
+  /** `'skip'` won't start a window while the previous run is still in-flight; `'allow'` (default) does. */
+  overlap?: 'allow' | 'skip'
+}
+```
+
+Every schedule has a stable `key`, the `workflow` name to start, and an optional `input`. The cadence is either `everyMs` (a fixed interval) **or** `cron` + `timezone` (a calendar expression) — they are mutually exclusive.
+
+## Firing schedules — `runSchedules`
+
+`runSchedules(engine, schedules, nowMs)` evaluates each schedule against `nowMs` and starts any window that is due, returning the run ids it started. Call it from your worker loop on each tick:
+
+```ts title="start/durable.ts"
+import app from '@adonisjs/core/services/app'
+import { WorkflowEngine, runSchedules, type ScheduledWorkflow } from '@agora/durable'
+
+const engine = await app.container.make(WorkflowEngine)
+
+export const schedules: ScheduledWorkflow[] = [
+  // Nightly report at 02:00 in São Paulo — DST-aware.
+  { key: 'nightly-report', workflow: 'daily-report', cron: '0 2 * * *', timezone: 'America/Sao_Paulo' },
+  // Sync the cache every five minutes.
+  { key: 'cache-sync', workflow: 'cache-sync', everyMs: 5 * 60 * 1000 },
+]
+
+// In a worker tick (e.g. alongside the durable:work loop):
+await runSchedules(engine, schedules, Date.now())
+```
+
+The referenced workflows are ordinary registered workflows:
+
+```ts
+engine.register('daily-report', '1', async (ctx) => {
+  const rows = await ctx.step('gather', () => reports.gatherYesterday())
+  await ctx.step('email', () => reports.email(rows))
+  return { rows: rows.length }
+})
+```
+
+## Fixed intervals — `everyMs`
+
+`everyMs` starts one run every interval. The current window is identified by the time bucket `floor(now / everyMs)`, which becomes part of the run id (`sched:<key>:<bucket>`). Every tick inside the same window resolves to the same run id, so re-firing the schedule within a window is a no-op.
+
+```ts
+{ key: 'cache-sync', workflow: 'cache-sync', everyMs: 5 * 60 * 1000 } // every 5 minutes
+```
+
+Use a fixed interval when "roughly every N" is what you want and you don't care about wall-clock alignment to the calendar.
+
+## Cron — `cron` + `timezone`
+
+For calendar-aligned schedules, use a cron expression evaluated in an IANA `timezone`. The expression is the standard 5 fields (`m h dom mon dow`), or 6 with a leading seconds field. Because it is evaluated in the named timezone, it is **DST-aware** — `0 2 * * *` in `America/Sao_Paulo` fires at 02:00 local regardless of daylight-saving shifts, not at a fixed UTC offset.
+
+```ts
+{ key: 'nightly-report', workflow: 'daily-report', cron: '0 2 * * *', timezone: 'America/Sao_Paulo' }
+```
+
+The window for a cron schedule is its most recent fire time at or before now — the deterministic "bucket" the run is keyed on (`sched:<key>:<prevFireMs>`). Polling repeatedly between two fires resolves to the same bucket, and thus the same run id, so the run for a given fire starts once.
+
+<Callout type="info">
+Cron parsing uses `cron-parser`. Install it where you run the engine: `npm i cron-parser`.
+</Callout>
+
+## Pausing and overlap
+
+- `paused: true` skips a schedule entirely while it's set — handy for disabling a job without removing it.
+- `overlap: 'skip'` won't start a new window while the previous run for that schedule is still in-flight (`pending`/`running`/`suspended`). The default, `'allow'`, starts each window regardless.
+
+```ts
+{ key: 'slow-sync', workflow: 'slow-sync', everyMs: 60_000, overlap: 'skip' }
+```
+
+## Exactly-once across instances
+
+The guarantee that makes scheduling safe in a multi-instance deployment is the **idempotent time-bucket run id**. Each window — a fixed-interval index, or a cron fire time — maps to a deterministic run id, and `engine.start` is idempotent by run id: starting the same id twice is a no-op. So when several worker instances tick at the same moment and all try to start the current window, they all compute the same run id and only the first actually creates the run.
+
+The result for scheduling: **each window starts exactly once**, no matter how many instances are racing the tick or how often you call `runSchedules`.

@@ -1,0 +1,90 @@
+---
+title: Linting for non-determinism
+description: Catch Date.now(), Math.random(), new Date() and crypto.randomUUID() inside a workflow body at author time with @agora/durable-eslint-plugin — an AST-scoped ESLint rule that knows both the engine.register() function form and a @Workflow-decorated class.
+---
+
+A durable workflow body is executed *and replayed*: the engine re-runs it from the top on every resume, replaying recorded step results to reach the suspension point. That only stays correct if the body is **deterministic** — the same input has to produce the same sequence of step calls every time. A bare `Date.now()`, `Math.random()`, `new Date()`, `crypto.randomUUID()`, or `performance.now()` returns a *different value on every replay*, so the replayed path diverges from the recorded one and silently corrupts the run.
+
+The engine already detects this drift at runtime and throws a `NonDeterminismError` — but that's a *replay-time* failure, often far from where the offending call lives. `@agora/durable-eslint-plugin` moves the check to **author time**: it flags those calls in your editor and CI, before they ever reach a replay. See [Versioning & determinism](/docs/durable/authoring/versioning) for why determinism matters and how the runtime guard works.
+
+```bash
+npm i -D @agora/durable-eslint-plugin
+```
+
+## What it flags
+
+Inside a workflow body, these are banned, and the fix is the engine's checkpointed equivalent — each is recorded once on the first execution and replayed verbatim afterwards:
+
+| Banned source | Why it drifts | Use instead |
+| --- | --- | --- |
+| `Date.now()` | wall clock, different every replay | `await ctx.now()` |
+| `performance.now()` | monotonic clock, different every replay | `await ctx.now()` |
+| `new Date()` (no args) | wraps `Date.now()` | `new Date(await ctx.now())` |
+| `Math.random()` | fresh entropy every replay | `await ctx.random()` |
+| `crypto.randomUUID()` | fresh entropy every replay | `await ctx.uuid()` |
+
+```ts
+// ✗ corrupts the run on replay
+engine.register('checkout', '1', async (ctx, order) => {
+  const startedAt = Date.now()                // ✗ useNow
+  const idempotencyKey = crypto.randomUUID()  // ✗ useUuid
+  const jitter = Math.random()                // ✗ useRandom
+  const at = new Date()                       // ✗ useNowDate
+})
+
+// ✓ deterministic — recorded once, then replayed
+engine.register('checkout', '1', async (ctx, order) => {
+  const startedAt = await ctx.now()
+  const idempotencyKey = await ctx.uuid()
+  const jitter = await ctx.random()
+  const at = new Date(await ctx.now())
+})
+```
+
+## What it knows about a workflow body
+
+The `no-nondeterminism` rule is **AST-scoped** — it only fires *inside a workflow body*, recognizing both forms Agora supports:
+
+- **The function form** — the function passed to `engine.register(name, version, fn)` (and `registerRemote` / `registerEntity`), where the receiver reads as a workflow engine (`engine`, `workflowEngine`, `this.engine`, …). An unrelated `someRegistry.register(...)` is left alone.
+- **The class form** — the `run` method of a class decorated with `@Workflow` (whether written `@Workflow` or `@Workflow({ ... })`).
+
+Crucially, the rule **stops at a `ctx.step(...)` or `ctx.task(...)` callback boundary**: code inside a checkpointed step runs once and its whole result is recorded, so a `Date.now()` there is fine. Only the deterministic orchestration prefix is checked, so you can enable the rule across your whole `**/*.ts` glob without false positives.
+
+## ESLint (flat config)
+
+Wire it into your flat config under the plugin namespace:
+
+```js title="eslint.config.js"
+import durable from '@agora/durable-eslint-plugin'
+
+export default [
+  {
+    files: ['**/*.ts'],
+    plugins: { '@agora/durable': durable },
+    rules: {
+      '@agora/durable/no-nondeterminism': 'error',
+    },
+  },
+]
+```
+
+Or spread the shipped preset, which enables the rule at `error` for you:
+
+```js title="eslint.config.js"
+import durable from '@agora/durable-eslint-plugin'
+
+export default [
+  durable.configs.recommended,
+]
+```
+
+Each report points at the exact call and names its deterministic replacement, e.g. *"Non-deterministic `Date.now()` inside a durable workflow body — use `ctx.now()` (recorded once, then replayed)."*
+
+## How it complements `NonDeterminismError`
+
+The lint rule and the runtime guard are two layers of the same defense:
+
+- **Author time (this plugin).** The drift is caught as a red squiggle / a failing CI step, pointing at the exact source line. You fix it before it ships.
+- **Replay time (`NonDeterminismError`).** If a non-deterministic call slips through — say it came from a transitive helper the linter couldn't see — the engine still refuses to corrupt the run and throws `NonDeterminismError` when the replayed path diverges from the recorded one.
+
+The lint rule is the cheaper, earlier signal; the runtime error is the backstop. Together they keep a durable run deterministic. For how recorded-vs-replayed history is compared, and how to evolve a workflow's body safely once it's in production, see [Versioning & determinism](/docs/durable/authoring/versioning).

@@ -1,0 +1,95 @@
+---
+title: Child workflows
+description: Compose workflows by calling other workflows — await a child's result with ctx.child, or kick one off fire-and-forget with ctx.startChild. Pass a registered name (or a typed workflow class) and an optional stable child id.
+---
+
+A workflow can run **another workflow** as a child — to break a big process into reusable pieces, to fan out work, or to hand part of the job to a workflow that runs elsewhere. Children are durable runs in their own right: their own history, retries, and dashboard entry.
+
+There are two ways to call one, depending on whether the parent needs the result.
+
+## `ctx.child` — run a child and await its result
+
+`ctx.child(workflow, input, childId?)` starts the child **once** and suspends the parent — zero compute — until the child reaches a terminal state, then resumes the parent with the child's output. If the child fails, the call throws in the parent (so a child failure fails the parent unless you catch it).
+
+```ts
+engine.register('checkout', '1', async (ctx, order: Order) => {
+  const payment = await ctx.step('charge', () => payments.charge(order))
+  // Hand shipping to its own workflow and wait for the tracking number.
+  const shipment = await ctx.child<{ tracking: string }>('shipping', { orderId: order.id })
+  return { paymentId: payment.id, tracking: shipment.tracking }
+})
+```
+
+Because the parent suspends rather than blocking, a child that takes hours (or itself sleeps, waits on a signal, or spawns its own children) costs the parent nothing while it runs.
+
+### Name or class ref
+
+Pass the child's registered **name** string (the portable form). When you have a typed workflow **class** to import, pass the class and the call is fully typed — the `input` is checked against the child's `run` and the result is its return type:
+
+```ts
+const shipment = await ctx.child(ShippingWorkflow, { orderId: order.id })
+//    ^? the return type of ShippingWorkflow.run, inferred — and { orderId } is type-checked
+```
+
+Both forms take an optional third `childId` argument; it defaults to a deterministic id derived from the parent run and the call position, so it's stable across replay.
+
+## `ctx.startChild` — fire-and-forget
+
+`ctx.startChild(workflow, input, childId?)` dispatches a child and returns its **run id immediately** — the parent keeps running instead of suspending. Use it for side work the parent doesn't need to wait on:
+
+```ts
+engine.register('publish-post', '1', async (ctx, post: Post) => {
+  await ctx.step('publish', () => posts.publish(post))
+  // Kick off indexing + notifications; don't make publishing wait on them.
+  await ctx.startChild('reindex-search', { postId: post.id })
+  await ctx.startChild('notify-followers', { postId: post.id })
+  return { published: true }
+})
+```
+
+The dispatch is checkpointed (replay-safe — it won't re-fire on resume) and idempotent by child id.
+
+### Scatter-gather: start many, then join
+
+Because `startChild` returns the child id and the start is idempotent by that id, you can fan out with `startChild` and later join with `ctx.child` using the **same id** — the child runs exactly once, and the second call just attaches to it:
+
+```ts
+engine.register('batch', '1', async (ctx, batch: Batch) => {
+  // 1. Start every item's workflow without waiting — they run concurrently.
+  const ids = await Promise.all(
+    batch.items.map((item) => ctx.startChild('process-item', item, `item:${item.id}`)),
+  )
+
+  // 2. ...do other work while they run...
+
+  // 3. Join: await each by the same id (no re-dispatch — they're already running).
+  const results = await Promise.all(
+    batch.items.map((item, i) => ctx.child('process-item', item, ids[i])),
+  )
+  return results
+})
+```
+
+## When to use which
+
+| | `ctx.child` | `ctx.startChild` |
+| --- | --- | --- |
+| Parent waits for the result | ✅ suspends until the child finishes | ❌ returns the id immediately |
+| Child failure affects the parent | ✅ throws in the parent | ❌ independent (inspect/retry the child run) |
+| Typical use | a sub-task whose output you need | side work; scatter-gather (then join with `child`) |
+
+Both establish the same durable parent→child relationship, so a child started either way is a normal run you can inspect, retry, or cancel from the [dashboard](/docs/durable/observability/dashboard). Read the children of a run programmatically with `engine.getRunChildren(parentRunId)`.
+
+## Continue-as-new
+
+A workflow that would otherwise loop forever (a long-lived entity, a poll loop) should **not** accumulate unbounded history. `ctx.continueAsNew(input?)` completes the current run and starts a fresh one — same workflow, new input, a clean history — keyed `runId~N`:
+
+```ts
+engine.register('counter', '1', async (ctx, input: { n: number }) => {
+  await ctx.step(`work-${input.n}`, async () => input.n)
+  if (input.n < 3) await ctx.continueAsNew({ n: input.n + 1 }) // → runId~1, runId~2, …
+  return `done at ${input.n}`
+})
+```
+
+Each generation completes cleanly, so the run never grows without bound — the durable equivalent of tail recursion.

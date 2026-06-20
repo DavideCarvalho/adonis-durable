@@ -1,0 +1,154 @@
+---
+title: Workflows & steps
+description: Registering workflows with engine.register, local steps with ctx.step, typed remote steps with remoteStep + ctx.call and transport.handle handlers, retries, fan-out, fatal errors, sub-process events, and tags.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## Workflows
+
+A workflow is registered on the engine by **name** and **version**; its body is the deterministic async function `(ctx, input) => …` the engine executes and replays.
+
+```ts
+import app from '@adonisjs/core/services/app'
+import { WorkflowEngine, type WorkflowCtx } from '@agora/durable'
+
+const engine = await app.container.make(WorkflowEngine)
+
+engine.register('checkout', '1', async (ctx: WorkflowCtx, order: Order) => {
+  /* ... deterministic orchestration ... */
+})
+```
+
+`register(name, version, fn, opts?)` takes an options object for `tags`, an `executionTimeout` (`'30s'` or ms), a `singleton` config, input validation, and event triggers. Start runs with `engine.start('checkout', input, runId)` — pass the registered **name** and a stable `runId`. (Starting the same `runId` twice is a no-op, which is what makes [scheduling](/docs/durable/authoring/scheduling) and webhooks idempotent.)
+
+<Callout type="info">
+Need dependency injection in a step? Resolve services from the container, or close over them at registration time. The workflow body must stay deterministic — do the I/O inside `ctx.step`, not in the orchestration prefix.
+</Callout>
+
+## Local steps
+
+`ctx.step(name, fn, opts?)` runs a unit of work locally and checkpoints its result.
+
+```ts
+const quote = await ctx.step('quote', () => pricing.fetch(order), { retries: 3 })
+```
+
+The step function receives a [step logger](#steps-vs-sub-process-events) as its argument, so you can emit annotations from inside it. See [Retries & backoff](/docs/durable/reliability/retries) for the full `StepOptions` (retries, backoff, timeout, compensate).
+
+### In-flight visibility
+
+When a local step's body begins, the engine emits a `step.started` lifecycle event and (by default) writes a `running` checkpoint, so a long step shows up in the [dashboard](/docs/durable/observability/dashboard) the moment it starts — not only once it finishes. The `running` checkpoint is a placeholder overwritten by the step's `completed`/`failed` result; it never short-circuits [replay](/docs/durable/concepts/durability) (only a `completed` checkpoint does), so a crash mid-body simply re-runs the step.
+
+Toggle this with the engine's `trackStepStart` option (default `true`). The `step.started` event fires either way; the flag only gates the extra checkpoint write. Set it to `false` on hot paths with many short local steps to halve their checkpoint writes, at the cost of reload-survivable in-flight visibility.
+
+## Remote steps
+
+Declare a typed remote step with `remoteStep`, then call it with `ctx.call` — the engine dispatches it over the [transport](/docs/durable/transports) and checkpoints the result. The handler can live in another process.
+
+```ts
+import { remoteStep } from '@agora/durable'
+import { z } from 'zod'
+
+export const chargeCard = remoteStep({
+  name: 'payments.charge-card',
+  group: 'payments',
+  input: z.object({ orderId: z.string(), amountCents: z.number().int() }),
+  output: z.object({ chargeId: z.string() }),
+  retries: 3,
+})
+
+// in the workflow:
+const charge = await ctx.call(chargeCard, { orderId: order.id, amountCents: order.total })
+```
+
+A `remoteStep` carries a `name` (the handler key), a `group` (which workers poll it), zod `input`/`output` schemas, and the same retry options as a local step. The handler is registered on the worker-side transport:
+
+```ts
+// worker side — the transport for this group
+transport.handle('payments.charge-card', async (input: { orderId: string; amountCents: number }) => {
+  return { chargeId: await stripe.charge(input) }
+})
+```
+
+`ctx.call` also accepts a third options argument to pin a [transport](/docs/durable/transports#multiple-transports--failover), set a [queue](/docs/durable/reliability/flow-control), a `priority`, or a `fairnessKey`:
+
+```ts
+await ctx.call(chargeCard, input, { queue: 'payments', priority: 10 })
+```
+
+## Fan-out (parallel steps)
+
+Run steps concurrently with `Promise.all` — checkpoints stay deterministic because each step's position is taken in the synchronous prefix before any `await`:
+
+```ts
+const [a, b] = await Promise.all([
+  ctx.step('a', () => doA()),
+  ctx.step('b', () => doB()),
+])
+```
+
+## Fatal errors
+
+Any thrown error is retried up to the step's limit. To stop retrying a business failure that a retry can't fix, throw `FatalError` — it fails the run immediately:
+
+```ts
+import { FatalError } from '@agora/durable'
+
+await ctx.step('charge', async () => {
+  const res = await stripe.charge(order)
+  if (res.declined) throw new FatalError('card declined', 'declined')
+  return res
+})
+```
+
+The optional second argument is a machine-readable `code` that ends up on the run's structured error.
+
+## Steps vs. sub-process events
+
+These look similar in the dashboard but are fundamentally different — the distinction is **durability**:
+
+- A **step** (`ctx.step` / `ctx.call`) is a **durable checkpoint**. The engine records its result, so on a crash, retry, or replay it is **not re-executed** — the saved result is replayed. It's a first-class node in the run graph and the **unit of recovery**.
+
+- A **sub-process event** is a **log annotation emitted _inside_ a step** via the step logger's `log.sub(name, status)` — e.g. one entry per item in a fan-out the step performs internally. It is **not durable on its own**: it's metadata attached to the parent step's checkpoint. If the parent step retries, all of its sub-process events are produced again. Use it for **visibility**, not recovery.
+
+```ts
+// One durable step that internally processes N items and records each outcome for visibility.
+await ctx.step('process-batch', async (log) => {
+  for (const item of batch) {
+    try {
+      await handle(item)
+      log.sub(item.id, 'ok') // a sub-process event — shown under the step, not a checkpoint
+    } catch (e) {
+      log.sub(item.id, 'failed', String(e))
+    }
+  }
+})
+```
+
+The step logger also offers `log.debug/info/warn/error(message, data?)` for leveled logs and `log.subProcess(name, body)` for nested, phased sub-work. Rule of thumb: if you want each unit to **retry or replay independently**, make it a **step** (or a [child workflow](/docs/durable/authoring/child-workflows)). If you only want to **see** what happened inside one durable unit, emit **sub-process events**.
+
+## Deterministic sources
+
+Because the body replays, never read a value that changes on each run. The context exposes deterministic, checkpointed sources — each records its value the first time and replays it afterwards:
+
+```ts
+const issuedAt = await ctx.now()   // epoch ms — captured once, replayed verbatim
+const nonce = await ctx.uuid()     // deterministic UUID
+const sampled = (await ctx.random()) < 0.1 // deterministic [0, 1)
+```
+
+See [Versioning & determinism](/docs/durable/authoring/versioning) for why and how the runtime guard works.
+
+## Tags
+
+Label runs with `tags` to find them later. Static tags on `register` apply to every run; per-run tags are added at `start`. Both are merged onto the run and are searchable in the dashboard.
+
+```ts
+engine.register('pipeline', '1', async (ctx) => { /* ... */ }, { tags: ['etl', 'critical'] })
+
+// per-run tags merge with the static ones → run.tags = ['etl', 'critical', 'nightly']
+await engine.start('pipeline', input, runId, { tags: ['nightly'] })
+```
+
+The dashboard shows a run's tags and a tag filter. Programmatically, query by tag with `RunQuery.tag` (`engine.listRuns({ tag: 'etl' })`) or the dashboard API's `?tag=` param.

@@ -1,0 +1,75 @@
+---
+title: Queue (@adonisjs/queue)
+description: The queue-backed transport driver for cross-process steps, built on @adonisjs/queue. Steps go to a per-group tasks queue; results return on a shared results queue. Run one instance engine-side, one per worker group.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+The `queue` driver carries steps over [`@adonisjs/queue`](https://github.com/adonisjs/queue) — the path for steps that run in another process. It rides any `@adonisjs/queue` adapter (Redis, a database adapter, or the fake adapter in tests), so it reuses the queue infrastructure you already run.
+
+It ships **inside `@agora/durable`** — there's nothing extra to install. `@adonisjs/queue` is an optional peer, imported lazily only when you select the `queue` transport, so install it where you use the driver:
+
+```bash
+npm i @adonisjs/queue
+```
+
+## How it works
+
+- `ctx.call` dispatches a task to a **per-group** queue: `<prefix>:tasks:<group>`.
+- A worker for that group consumes it, runs the handler, and adds the result to the shared `<prefix>:results` queue.
+- The engine-side instance consumes results and checkpoints them.
+- Liveness flows on `<prefix>:heartbeats`; cross-instance control on `<prefix>:control`.
+
+The default `prefix` is `durable` and the default `pollIntervalMs` is `200`.
+
+Run **one instance engine-side** (consumes results) and **one per worker process** (registers handlers for its group):
+
+```ts title="config/durable.ts (engine side)"
+import { defineConfig, transports } from '@agora/durable'
+import { redis } from '@adonisjs/queue'
+
+export default defineConfig({
+  transport: 'queue',
+  transports: {
+    queue: transports.queue({ adapter: redis({ host: '127.0.0.1', port: 6379 }) }),
+  },
+})
+```
+
+```ts title="start/worker.ts (a separate worker process)"
+import { QueueTransport } from '@agora/durable'
+import { redis } from '@adonisjs/queue'
+
+// A worker constructs its own transport pinned to the group it serves and registers handlers.
+const transport = new QueueTransport({ adapter: redis({ host: '127.0.0.1', port: 6379 }), group: 'payments' })
+transport.handle('payments.charge-card', async (input: { orderId: string; amountCents: number }) => {
+  return { chargeId: await charge(input) }
+})
+```
+
+<Callout type="info">
+On the worker, `transport.handle(name, fn)` auto-starts the task poll loop for its group. The engine-side instance's `onResult`/`onHeartbeat` handlers are wired by the provider when this transport is the configured one.
+</Callout>
+
+## Options — `transports.queue(config)`
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `adapter` | — | An `@adonisjs/queue` adapter factory (`redis(...)`, a database adapter, the fake adapter). Required. |
+| `group` | — | The worker group this instance serves — required to register `handle()`s. |
+| `prefix` | `'durable'` | Namespaces the queues (`<prefix>:tasks:<group>`, `<prefix>:results`, …). |
+| `pollIntervalMs` | `200` | Poll interval in ms between queue reads. |
+| `instanceId` | random uuid | Stable process id stamped on heartbeats and control messages. |
+
+`transports.queue(config)` returns the lazy driver thunk used in `config/durable.ts`; the underlying class is `QueueTransport`, also exported from `@agora/durable` for constructing a worker-side instance directly.
+
+## Queue naming
+
+| Queue | Direction | Purpose |
+| --- | --- | --- |
+| `<prefix>:tasks:<group>` | engine → workers | step dispatch, per group |
+| `<prefix>:results` | workers → engine | step results |
+| `<prefix>:heartbeats` | workers → engine | liveness for `timeoutMs` steps |
+| `<prefix>:control` | bidirectional | lifecycle events + cancellation (best-effort) |
+
+Because the payload is the documented `RemoteTask` / `StepResult` JSON, multiple worker processes can share the same queues — scale out by running more `durable:work` processes that register the same group's handlers.

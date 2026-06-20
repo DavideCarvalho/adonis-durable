@@ -1,0 +1,101 @@
+---
+title: Durable webhooks
+description: ctx.webhook() mints a durable callback handle with a deterministic token and a public url; hand the url to a third party inside a step, then await handle.wait() to suspend with zero compute until the callback arrives as engine.signal(token, body).
+---
+
+Plenty of third-party APIs are asynchronous: you ask them to do something, they hand you back a reference, and *later* they call **you** back at a URL you gave them. Done by hand, that means standing up a callback endpoint, persisting "which run is waiting for which callback", parking the run, and matching the inbound POST back to it. `ctx.webhook()` is the durable, replay-safe, first-class version of exactly that pattern — "expose a callback URL and wait for it" collapsed into two calls.
+
+## Minting a webhook — `ctx.webhook()`
+
+Calling `ctx.webhook<TPayload>()` reserves a logical position *now* and returns a [`DurableWebhook`](#the-handle) handle:
+
+```ts
+const hook = ctx.webhook<PaymentResult>()
+hook.token // "wh:<runId>:<seq>" — deterministic, stable across replay
+hook.url   // public callback URL, if a webhookUrl builder is configured
+```
+
+The `token` is `wh:<runId>:<seq>` — derived from the run and the call's logical position, so it is **deterministic and stable across replay**. The `url` is that token rendered into a public callback URL by the engine's `webhookUrl` builder. If no builder is configured, `url` is `undefined` and you build your own URL from `token`.
+
+Configure the builder once, on the engine deps (via `config/durable.ts` or the dependency object you pass `WorkflowEngine`):
+
+```ts
+const engine = new WorkflowEngine({
+  store,
+  transport,
+  // Renders ctx.webhook().url. Your route turns the callback POST into engine.signal(token, body).
+  webhookUrl: (token) => `https://api.example.com/durable/webhooks/${token}`,
+})
+```
+
+## The handle
+
+```ts
+interface DurableWebhook<TPayload = unknown> {
+  /** Deterministic signal token (`wh:<runId>:<seq>`) the callback delivers on. */
+  readonly token: string
+  /** Public callback URL for `token`, built by the engine's webhookUrl option. */
+  readonly url?: string
+  /** Suspend until the callback arrives, then resume with its payload. */
+  wait(): Promise<TPayload>
+}
+```
+
+The shape matters: minting the handle and **waiting** on it are separate steps. You mint it (which fixes the `token`/`url`), hand the url to the third party inside a `ctx.step` so that handoff is itself checkpointed, and only then `await hook.wait()`. `wait()` parks the run on the same logical position the mint reserved — so it suspends with **zero compute** until the callback lands, and is replay-safe.
+
+## Full example — a payment that calls back
+
+```ts
+import { remoteStep, FatalError } from '@agora/durable'
+
+interface PaymentResult {
+  status: 'paid' | 'failed'
+  providerRef: string
+}
+
+engine.register('checkout', '1', async (ctx, order: Order) => {
+  // 1. Mint the webhook: fixes a deterministic token and (with a builder) a public url.
+  const hook = ctx.webhook<PaymentResult>()
+
+  // 2. Hand the url to the third party INSIDE a step, so the handoff is checkpointed and
+  //    happens exactly once — even across replay/recovery.
+  await ctx.step('start-payment', async () => {
+    await psp.createPayment({
+      orderId: order.id,
+      amountCents: order.total,
+      callbackUrl: hook.url, // the provider POSTs here when the payment settles
+    })
+  })
+
+  // 3. Suspend with zero compute until the provider calls back. No polling, no held thread.
+  const result = await hook.wait()
+
+  if (result.status !== 'paid') {
+    throw new FatalError(`payment ${result.providerRef} failed`, 'payment_failed')
+  }
+
+  await ctx.step('fulfill', () => fulfil(order, result.providerRef))
+  return { orderId: order.id, providerRef: result.providerRef }
+})
+```
+
+## Delivering the callback
+
+When the payment provider POSTs to the callback URL, deliver the body as `engine.signal(token, body)` from your own controller — the token is in the URL, and it already encodes the run and position, so there's nothing else to look up:
+
+```ts
+// start/routes.ts
+router.post('/durable/webhooks/:token', async ({ params, request }) => {
+  const engine = await app.container.make(WorkflowEngine)
+  await engine.signal(params.token, request.body())
+  return { ok: true }
+})
+```
+
+That signal wakes the exact run suspended on that token, and `hook.wait()` resumes with `body` as its typed payload.
+
+> The token embeds `runId:seq`, so treat it as a secret — this endpoint is reachable by external systems. Front it with signature verification in your own middleware.
+
+## Why this is better than rolling it yourself
+
+Done by hand, the "callback URL + wait" pattern leaks durability concerns into your application: you have to persist the run↔callback mapping, re-establish the wait after a crash, and guard the handoff against double-dispatch on recovery. `ctx.webhook()` folds all of that into the engine's checkpoint machinery. The token is deterministic, so it survives replay; the handoff lives in a step, so it fires exactly once; and `wait()` suspends durably, so a process restart costs nothing — the run resumes the instant the callback arrives, whenever that is.

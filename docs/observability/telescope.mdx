@@ -1,0 +1,50 @@
+---
+title: Telescope
+description: Surface workflow runs and steps inside Telescope with durableTelescopeExtension() — a Workflows dashboard with golden-signal health, current-state gauges, and recent failures, alongside your app's requests, queries, and jobs.
+---
+
+Already running [Telescope](/docs/telescope)? `@agora/durable-telescope` adds a dedicated **Workflows** view so durable flows appear next to your requests, queries, and jobs — with a health dashboard built from the engine's lifecycle events and live store reads.
+
+```bash
+npm i @agora/durable-telescope
+```
+
+## Registering the extension
+
+Register `durableTelescopeExtension()` under Telescope's `extensions`:
+
+```ts title="config/telescope.ts"
+import { durableTelescopeExtension } from '@agora/durable-telescope'
+
+export default defineConfig({
+  extensions: [
+    durableTelescopeExtension({ runHref: '/durable/runs/{runId}' }),
+  ],
+})
+```
+
+The extension contributes a `durable` entry type (labeled **Workflows** in the nav), a `durable.workflows` dashboard, and a set of data providers. `runHref` is an optional URL template (default `'/durable/runs/{runId}'`) used to deep-link a run row out to the [durable dashboard](/docs/durable/observability/dashboard); `{runId}` is substituted per row.
+
+The durable runs become Telescope entries automatically — the `@agora/durable` provider bridges engine lifecycle events onto the [`@agora/diagnostics`](/docs/diagnostics) bus when diagnostics is installed, and Telescope captures from that bus. So you get one entry per lifecycle event (`run.started`, `step.completed`, `run.failed`, …) with zero extra wiring.
+
+## The Workflows dashboard
+
+The `durable.workflows` dashboard is assembled from these data providers:
+
+- **Golden signals** — success rate, throughput (completed runs/hour), duration percentiles (p50/p95/p99), and failure count over a window.
+- **Current-state gauges** — **dead** / **suspended** / **running** / **pending** *now*.
+- **Needs attention** — top failing workflows, recent failed runs (deep-linked via `runHref`), and starved worker groups.
+- **Trends** — runs over time, duration distribution, and a state breakdown.
+
+### Two data sources
+
+The panels read from two different places, by design:
+
+- **Rollups** (success rate, throughput, duration, top failures) are computed from the `durable` entries Telescope already captured — the **recent-history** view, bounded by Telescope's prune window.
+- **Current-state gauges** (dead / suspended / running / pending *now*) are read **live** from the durable store via `listRuns`, so they're exact and **not** limited by the prune window.
+
+Telescope is the health and visibility view, and deep-links out: **per-run actions** (retry, cancel) and the **step timeline** stay in the [durable dashboard](/docs/durable/observability/dashboard).
+
+## Mounting just the dashboard spec
+
+If you want the durable health dashboard's spec to compose into your own Telescope layout, the package also exports `durableDashboard(opts?)` (returning the dashboard spec) and the individual data providers (`durableStateProvider`, `durableSuccessRateProvider`, `durableThroughputProvider`, `durableDurationProvider`, `durableRecentFailuresProvider`, `durableWorkerHealthProvider`, and more) so you can pick and place panels yourself.

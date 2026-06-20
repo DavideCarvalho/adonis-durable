@@ -1,0 +1,83 @@
+---
+title: SQL (database)
+description: A broker-less, DBOS-style transport driver — remote steps are rows in the Lucid database you already run. Workers claim tasks with an atomic, portable lease so a row is never run twice. The migration ships with @agora/durable.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+The `db` driver needs **no broker**. A remote step is a **row** in the same database your durable store already uses: `ctx.call` inserts a task row, a worker claims it with an atomic lease, runs the handler, writes a result row, and the engine polls that row to resume the run. The database you already operate *is* the queue.
+
+It ships **inside `@agora/durable`** — `@adonisjs/lucid` is an optional peer, imported lazily only when you select the `db` transport. The transport tables come from a migration published when you configure the package:
+
+```bash
+node ace configure @agora/durable
+node ace migration:run
+```
+
+`configure` publishes the durable-store migration **and** the transport-tables migration (which creates the four `db`-transport tables). If you don't use the `db` transport, delete the `create_durable_transport_tables` migration before running it.
+
+## Wiring it up
+
+`transports.db()` rides your app's default Lucid connection — the driver resolves the `db` service for you when it starts:
+
+```ts title="config/durable.ts"
+import { defineConfig, transports } from '@agora/durable'
+
+export default defineConfig({
+  transport: 'db',
+  transports: {
+    db: transports.db(), // pass { connection: 'durable' } to target a non-default connection
+  },
+})
+```
+
+A worker process constructs the transport pinned to the group it serves and registers handlers:
+
+```ts title="start/worker.ts (a separate worker process)"
+import db from '@adonisjs/lucid/services/db'
+import { DbTransport } from '@agora/durable'
+
+const transport = new DbTransport({ db, group: 'pipeline' })
+transport.handle('pipeline.extract', async (input) => extract(input))
+```
+
+Trade-off vs a real broker: throughput is bounded by polling + row contention — great for workflow/pipeline scale (modest rate, long steps), not for high-fanout firehoses. But it adds **zero new infrastructure** — no Redis, no SQS — which is often the right trade.
+
+## Options — `transports.db(config)`
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `group` | — | The worker group this instance serves — required to register `handle()`s. |
+| `connection` | Lucid default | The Lucid connection to use. |
+| `pollIntervalMs` | `200` | Poll interval in ms. |
+| `leaseMs` | `30000` | Claim lease duration for crash recovery — a row whose worker died is reclaimed after this. |
+| `batchSize` | `20` | Max rows claimed per poll. |
+| `autoCreate` | `true` | Create the transport tables on first use (in addition to the published migration). |
+| `instanceId` | random uuid | Stable process id stamped on claims and control messages. |
+
+`transports.db(config)` returns the lazy driver thunk used in `config/durable.ts`; the underlying class is `DbTransport`, also exported from `@agora/durable` for constructing a worker-side instance directly. `@agora/durable` also exports `TRANSPORT_TABLES`, `createDurableTransportTables(db)`, and `dropDurableTransportTables(db)` for managing the schema yourself.
+
+## The tables
+
+The published migration creates four tables (default names):
+
+| Table | Direction | Purpose |
+| --- | --- | --- |
+| `durable_transport_tasks` | engine → worker | step dispatch (primary key `step_id`, idempotent on redelivery) |
+| `durable_transport_results` | worker → engine | step results |
+| `durable_transport_heartbeats` | worker → engine | liveness for `timeoutMs` steps |
+| `durable_transport_control` | bidirectional | lifecycle events + cancellation (best-effort, single-consumer) |
+
+`durable_transport_tasks` carries `step_id` (`<runId>:<seq>`, the primary key and step identity), `run_id`, `seq`, `name` (the handler key), `grp` (worker group), `input`, `attempt`, plus the claim columns `claimed_by`/`claimed_at` and `created_at`. The results table mirrors it with `status`, `output`, `error`, and `started_at` (when the worker picked the task up — what powers queue-wait timing in the dashboard).
+
+## The claim protocol
+
+A worker claims a batch atomically, runs each task outside the lock, then records the result — portable across SQLite, Postgres, and MySQL without `FOR UPDATE SKIP LOCKED`:
+
+1. **Claim** — select candidate rows for the group that are unclaimed *or* whose lease expired (`claimed_at IS NULL OR claimed_at < now − leaseMs`), oldest first, bounded by `batchSize`; then a conditional `UPDATE` stamps a unique per-round token into `claimed_by`/`claimed_at`; then select back the rows that match this round's token. Two instances can never claim the same row because the token is unique per claim round.
+2. **Run** — execute the handler for `name` with the parsed `input`.
+3. **Record** — insert the result row (idempotent on `step_id`) and delete the task row.
+
+<Callout type="info">
+The `claimed_at < now − leaseMs` clause is crash recovery in place of heartbeats: a row whose worker crashed mid-flight is reclaimed after `leaseMs`. Delivery is at-least-once (a crash between insert-result and delete-task can re-run a handler), so **handlers should be idempotent**, keyed on `step_id`.
+</Callout>

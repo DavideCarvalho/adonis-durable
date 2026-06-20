@@ -1,0 +1,82 @@
+---
+title: Dead-letter queue
+description: Cap crash-recovery with maxRecoveryAttempts so a poison-pill run moves to the terminal dead status instead of crash-looping forever, then route dead runs with engine.onDead to alert, compensate, or start a durable handler workflow.
+---
+
+Most failures are transient and recover cleanly. But occasionally a run is a **poison pill**: it crashes the process every time recovery picks it up — a deserialization bug, a non-deterministic change, an infinite loop in a step. Left alone, crash-recovery would resume it, crash, resume it again on the next boot, and loop forever, taking the whole instance down with it each time. The dead-letter queue breaks that loop.
+
+## Capping recovery: `maxRecoveryAttempts`
+
+Crash-recovery is **self-healing and periodic**: while a run executes its worker renews a recovery lease, so a crashed worker's lease expires and recovery (`engine.recoverIncomplete()`, called every tick by the [`durable:work`](/docs/durable/cli) loop) reclaims the orphaned run within ~`leaseMs` — on any instance, not just on the next boot. That's what makes a genuine poison pill visible: it gets picked up again and again. Every time crash-recovery picks up a still-`running` run, the engine increments that run's `recoveryAttempts` *before* resuming it (so a crash mid-resume still advances the counter).
+
+Set `maxRecoveryAttempts` in `config/durable.ts`, and once a run exceeds it, instead of resuming yet again the engine moves the run to the terminal **`dead`** status with a `max_recovery_attempts` error, releases its lease, and stops touching it:
+
+```ts title="config/durable.ts"
+export default defineConfig({
+  store,
+  transport,
+  maxRecoveryAttempts: 5, // after 5 crash-recoveries, dead-letter the run instead of looping
+})
+```
+
+Omit `maxRecoveryAttempts` for unlimited recovery (the default). A `dead` run is terminal but **not lost**: it stays fully inspectable in the [dashboard](/docs/durable/observability/dashboard) — its history, its checkpoints, its error — and it can be retried from there (or via [`durable:retry`](/docs/durable/cli)) once you've shipped a fix. The point is that one poison pill no longer keeps the process crashing for every other run.
+
+## Handling dead runs: `engine.onDead`
+
+Parking a dead run is the floor, not the ceiling. Subscribe with `engine.onDead` to be notified the moment a run is dead-lettered — the listener receives the dead `WorkflowRun` (status `dead`, with its error) — so you can do something active: page an on-call engineer, push to a real message queue, or kick off a workflow that handles it.
+
+```ts title="start/durable.ts"
+engine.onDead((run) => {
+  logger.error(`run ${run.id} (${run.workflow}) dead-lettered: ${run.error?.message}`)
+  void pager.alert('durable-poison-pill', { runId: run.id, workflow: run.workflow })
+})
+```
+
+`onDead` returns an unsubscribe function. It fires on the instance that dead-letters the run.
+
+## Routing to a DLQ workflow
+
+The most powerful option is to route dead runs into a *workflow of their own* — a durable handler that gets all the reliability machinery (retries, steps, its own observability) to triage the failure. Start it from your `onDead` listener with a deterministic `dlq:<runId>` id so a run is never double-handled (`start` is idempotent by run id):
+
+```ts title="start/durable.ts"
+// The handler workflow — typed to the original run's input + error.
+interface DeadLetter {
+  deadRunId: string
+  workflow: string
+  input: unknown
+  error?: { message: string; code?: string }
+}
+
+engine.register('dlq', '1', async (ctx, dl: DeadLetter) => {
+  await ctx.step('alert', () =>
+    alerts.page('durable-dead-letter', { runId: dl.deadRunId, workflow: dl.workflow, error: dl.error?.message }),
+  )
+  const ticket = await ctx.step('open-ticket', () =>
+    tickets.create({
+      title: `Dead-lettered run ${dl.deadRunId} (${dl.workflow})`,
+      body: dl.error?.message ?? 'unknown error',
+      payload: dl.input, // the original input, ready to replay after a fix
+    }),
+  )
+  return { ticketId: ticket.id }
+})
+
+// Route every dead run into it — idempotent by `dlq:<runId>`.
+engine.onDead((run) => {
+  void engine.start(
+    'dlq',
+    { deadRunId: run.id, workflow: run.workflow, input: run.input, error: run.error },
+    `dlq:${run.id}`,
+  )
+})
+```
+
+Because every start is idempotent by `dlq:<runId>`, a run that gets dead-lettered (and re-detected) more than once still triggers exactly one DLQ run. The DLQ run is a normal durable run — it shows up in the dashboard with its own history, so you can confirm it did its job (alerted, opened a ticket, compensated), then retry the original once it's fixed.
+
+## Retrying a dead run with corrected input
+
+When the cause was bad input, `engine.retryWithInput(runId, input, newRunId?)` starts a fresh run with the same workflow but corrected input — useful for replaying a dead run once you've fixed the data that poisoned it:
+
+```ts
+await engine.retryWithInput(deadRunId, { ...originalInput, fixed: true })
+```

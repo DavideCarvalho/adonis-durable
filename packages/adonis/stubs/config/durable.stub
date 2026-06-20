@@ -1,15 +1,38 @@
 {{{
   exports({ to: app.configPath('durable.ts') })
 }}}
-import { defineConfig } from '@agora/durable'
+import { defineConfig, transports } from '@agora/durable'
 
 /**
- * Configuration for @agora/durable. Defaults to an in-process store + transport
- * (single-process, no extra infrastructure). Supply a persistent store and a
- * broker-backed transport for production / multi-process deployments.
+ * Configuration for @agora/durable. Pick a `transport` (and optionally a `store`) by name from the
+ * maps below; each driver's peer dependency is imported lazily, only when selected. The default is
+ * the in-process `memory` transport + the in-memory store — single-process, no extra infrastructure.
+ *
+ * For cross-process / production, select the `queue` (@adonisjs/queue) or `db` (@adonisjs/lucid)
+ * transport, and the `lucid` store, then run `node ace migration:run`:
+ *
+ * ```ts
+ * import { defineConfig, transports, stores } from '@agora/durable'
+ * import { redis } from '@adonisjs/queue'
+ *
+ * export default defineConfig({
+ *   transport: 'queue',
+ *   transports: {
+ *     memory: transports.memory(),
+ *     queue: transports.queue({ adapter: redis({ host: '127.0.0.1' }), group: 'durable' }),
+ *     db: transports.db(),
+ *   },
+ *   store: 'lucid',
+ *   stores: {
+ *     lucid: stores.lucid(),
+ *   },
+ * })
+ * ```
  */
 export default defineConfig({
-  // store: new MyPersistentStore(),
-  // transport: new MyQueueTransport(),
+  transport: 'memory',
+  transports: {
+    memory: transports.memory(),
+  },
   // leaseMs: 30_000,
 })

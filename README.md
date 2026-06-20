@@ -7,14 +7,14 @@
 
 | Package | Status | What |
 |---|---|---|
-| [`@agora/durable-core`](./packages/core) | ✅ shipped | framework-agnostic engine — replay, steps, signals, sleeps, child workflows, sagas/compensation, leases, DLQ, continue-as-new, cron, cancellation, versioning (197 tests) |
-| [`@agora/durable`](./packages/adonis) | ✅ shipped | AdonisJS binding — `WorkflowEngine` as a container singleton from `config/durable.ts`, best-effort `@agora/context` propagation |
-| `@agora/durable-transport-queue` | 🚧 planned | `@adonisjs/queue` transport (needs result/heartbeat/control back-channels over auxiliary queues; `@adonisjs/queue` is v0.6 / early) |
+| [`@agora/durable-core`](./packages/core) | ✅ shipped | framework-agnostic engine — replay, steps, signals, sleeps, child workflows, sagas/compensation, leases, DLQ, continue-as-new, cron, cancellation, versioning, plus the config-driven transport (`memory` / `queue` / `db`) and state-store (`lucid`) drivers |
+| [`@agora/durable`](./packages/adonis) | ✅ shipped | AdonisJS binding — `WorkflowEngine` as a container singleton from `config/durable.ts`, transport/store drivers selected by name, best-effort `@agora/context` propagation |
 
-Defaults to an in-process store + transport (single-process). The core is a
-faithful port of `@dudousxd/nestjs-durable-core`. The default cross-process
-transport for Adonis will be `@adonisjs/queue` (replacing the NestJS BullMQ
-transport) once a back-channel design lands.
+Defaults to an in-process store + transport (single-process). For cross-process /
+production, select a driver by name in `config/durable.ts` — the `queue`
+(`@adonisjs/queue`) or `db` (`@adonisjs/lucid`) transport and the `lucid` store —
+each lazily importing its optional peer only when chosen. The core is a faithful
+port of `@dudousxd/nestjs-durable-core`.
 
 ## License
 

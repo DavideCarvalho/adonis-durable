@@ -1,0 +1,45 @@
+---
+title: Overview
+description: Where durable state lives. A config-driven StateStore with a Lucid driver that runs on Postgres, MySQL, or SQLite, an in-memory store for tests, and a migration shipped with @agora/durable.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+A **state store** persists workflow runs and step checkpoints — the source of truth for both durability and the [dashboard](/docs/durable/observability/dashboard). It's a pluggable `StateStore` driver, independent of the [transport](/docs/durable/transports), so you can mix any store with any transport.
+
+Stores are **config-driven drivers**: list the ones you use under `stores` in `config/durable.ts`, built with the `stores` factory, and pick the active one by name with `store`. The `lucid` driver lazily imports `@adonisjs/lucid` only when selected.
+
+## Drivers
+
+| Store | Database | Schema | |
+| --- | --- | --- | --- |
+| in-memory (the default) | — | — | For [tests](/docs/durable/testing) and local dev. Not durable. |
+| [`stores.lucid(...)`](/docs/durable/stores/lucid) | Postgres · MySQL · SQLite | shipped migration | The production driver, on `@adonisjs/lucid`. |
+
+The default — when `config/durable.ts` sets no `store` — is an in-memory store: zero setup, but state is lost on restart, so it's only for development and tests. For anything durable, select the [Lucid store](/docs/durable/stores/lucid).
+
+```ts title="config/durable.ts"
+import { defineConfig, stores, transports } from '@agora/durable'
+
+export default defineConfig({
+  store: 'lucid',
+  stores: {
+    lucid: stores.lucid(),
+  },
+  transport: 'memory',
+  transports: { memory: transports.memory() },
+})
+```
+
+## The interface
+
+A `StateStore` persists runs and checkpoints and exposes the primitives the engine needs for durability:
+
+- **Runs & checkpoints** — `createRun`, `updateRun`, `getRun`, `saveCheckpoint`, `getCheckpoint`, `listCheckpoints`.
+- **Recovery & leasing** — `listIncompleteRuns`, `listPendingRuns(limit)` (so workers poll for `pending` runs), `listDueTimers(nowMs)`, and the atomic `tryLockRun` / `renewRunLock` / `releaseRunLock` that make [one-instance-per-run](/docs/durable/concepts/durability#deploys-versioning--multiple-instances) leasing work.
+- **Signals** — `putSignalWaiter` / `takeSignalWaiter` and `bufferSignal` / `takeBufferedSignal` for the [signal](/docs/durable/concepts/sleep-and-signals) machinery.
+- **Querying** — `listRuns(query)` (status/workflow/tag/attribute filters) for the dashboard and CLI.
+
+<Callout type="info">
+Writing a **custom store?** Implement the interface above; the optional `getLatestCheckpointByName` / `listCheckpointsByNamePrefix` are nice-to-have fast paths — the engine transparently falls back to `listCheckpoints` + an in-JS filter when they're absent, so a minimal store still works.
+</Callout>

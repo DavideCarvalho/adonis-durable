@@ -1,0 +1,102 @@
+---
+title: Flow control
+description: "Durable queues for remote steps — cap concurrency and enforce fixed-window rate limits with engine.registerQueue and ctx.call(step, input, { queue }). A blocked call re-suspends and the timer poller retries admission. Scale the cap across processes with @agora/durable-admission-redis."
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Remote steps fan out work to workers, and sometimes you need to *throttle* that fan-out: a third-party API allows only N requests per minute, or a downstream service falls over above some concurrency. Flow-control queues cap how much work `ctx.call` admits at once — a concurrency limit, a fixed-window rate limit, or both — and, crucially, they do it **durably**: a call that can't be admitted doesn't busy-wait or hold the run in memory, it re-suspends and is retried by the timer poller, so the limit survives a crash.
+
+## Registering a queue
+
+Register a queue on the engine with `engine.registerQueue`. A `QueueConfig` has:
+
+- `name` — the queue's name, referenced from `ctx.call(step, input, { queue: name })`.
+- `concurrency` — the maximum number of steps in flight at once for this queue. Omit for unlimited.
+- `rateLimit` — a fixed-window rate limit of `{ limit, periodMs }`: at most `limit` admissions per `periodMs`. Omit for unlimited.
+- `retryMs` — how long (ms) a concurrency-blocked call waits before re-checking for a free slot. Defaults to 1000.
+- `fairness` — `'fifo'` (default) or `'key'` (round-robin by the call's `fairnessKey`).
+- `order` — `'fifo'` (default) or `'lifo'` arrival ordering among same-priority waiters.
+
+```ts title="start/durable.ts"
+// Rate-limit a third-party API to 100 calls/minute:
+engine.registerQueue({ name: 'shipping-api', rateLimit: { limit: 100, periodMs: 60_000 } })
+
+// Cap a heavy downstream to 5 concurrent steps, re-checking every 500ms when full:
+engine.registerQueue({ name: 'pdf-render', concurrency: 5, retryMs: 500 })
+
+// Both at once: at most 10 in flight AND no more than 1000/hour:
+engine.registerQueue({ name: 'emails', concurrency: 10, rateLimit: { limit: 1000, periodMs: 3_600_000 } })
+```
+
+## Using a queue from a workflow
+
+Subject a remote-step dispatch to a queue by naming it in the call options:
+
+```ts
+export const sendEmail = remoteStep({
+  name: 'notify.email',
+  group: 'notify',
+  input: z.object({ to: z.string().email(), template: z.string() }),
+  output: z.object({ messageId: z.string() }),
+})
+
+// in the workflow — admitted through the `emails` queue, with a priority and fairness key:
+const sent = await ctx.call(
+  sendEmail,
+  { to: order.email, template: 'receipt' },
+  { queue: 'emails', priority: 10, fairnessKey: order.tenantId },
+)
+```
+
+A higher `priority` is admitted first; `fairnessKey` round-robins between keys when the queue's `fairness` is `'key'`, so one noisy tenant can't starve the rest.
+
+## How admission works (and why it's durable)
+
+When a queued call is reached, the engine asks the queue's controller to admit one unit of work. If the queue is at its concurrency limit or has exhausted its rate-limit window, admission is **blocked** and the controller returns the epoch-ms time at which admission may next succeed (`retryAt`). The engine does **not** dispatch: it re-suspends the run with that retry time as its `wakeAt`. The durable-timer poller, which already wakes suspended runs whose timers come due, retries admission when the time arrives — and if it's still blocked, the run simply re-suspends again.
+
+Because the retry time is persisted on the run and the poller drives it, the limit is durable: a process that crashes while runs are parked waiting for a slot loses nothing — the parked runs come back when their timers are due. No run is ever held in memory waiting for a slot.
+
+A slot is held from the moment a call is admitted until the step's **result lands** (or the run is cancelled), at which point the slot is released and the next blocked run can be admitted.
+
+## Scope: per engine instance
+
+By default, flow-control accounting is **per engine instance**. For the common single-orchestrator deployment this is exactly what you want, and it's correct without any cross-process coordination. If you run several worker replicas, each enforces the limit independently (so a `concurrency: 5` queue admits up to 5 *per replica*). For a truly global cap, use the Redis backend below.
+
+## Distributed admission — Redis
+
+`@agora/durable-admission-redis` replaces the per-instance admission accounting with a Redis-backed one, so a `concurrency` or `rateLimit` cap holds **across every engine instance**. It's the tier you reach for when several worker pods must share one global limit.
+
+```bash
+node ace add @agora/durable-admission-redis
+```
+
+Construct a `RedisAdmissionBackend` with a Redis connection (an `ioredis` instance or an `@adonisjs/redis` connection both satisfy its `RedisLike` surface) and pass it to the engine as `admission` in `config/durable.ts`:
+
+```ts title="config/durable.ts"
+import redis from '@adonisjs/redis/services/main'
+import { defineConfig } from '@agora/durable'
+import { RedisAdmissionBackend } from '@agora/durable-admission-redis'
+
+const admission = new RedisAdmissionBackend({ connection: redis.connection() })
+admission.register({ name: 'emails', concurrency: 10, rateLimit: { limit: 1000, periodMs: 3_600_000 } })
+
+export default defineConfig({ store, transport, admission })
+```
+
+Options on `RedisAdmissionBackend`:
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `connection` | — | An `ioredis` instance or `@adonisjs/redis` connection (reused for every queue). |
+| `prefix` | `'durable'` | Key prefix namespacing the admission keys. |
+| `instanceId` | random uuid | Stable id for this engine instance ("pod"). |
+| `instanceTtlMs` | `30_000` | Liveness TTL for this pod's heartbeat key (refreshed at a third of the TTL). |
+| `waiterTtlMs` | `retryMs * 3` | How long a blocked waiter's place is kept after its last `tryAdmit`. |
+| `retryMs` | `1000` | Delay a blocked call is told to wait before re-trying admission. |
+
+<Callout type="info">
+**How it stays correct under contention.** Each admit is a single atomic Lua script that reclaims dead-instance slots, prunes abandoned waiters, enforces the rate window and the concurrency cap, then selects the rightful next waiter by **priority desc → fairness round-robin → arrival (FIFO/LIFO)** — all server-side, so concurrent pods can't race past the cap.
+</Callout>
+
+A held slot is reclaimed only once its owner's heartbeat lapses: a **live** pod keeps its slot for the full step duration no matter how long it runs, and a **crashed** pod's slots free within `instanceTtlMs`. A waiter re-registers on every retry, so a still-trying call never expires; one that gave up (its run was cancelled) is pruned after `waiterTtlMs` so it can't sit as a phantom best-waiter and deadlock the rest.

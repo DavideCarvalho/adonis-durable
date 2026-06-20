@@ -1,0 +1,80 @@
+---
+title: Overview
+description: How remote steps travel to workers. Transports are config-driven drivers selected by name in config/durable.ts — from the in-process memory driver for zero-infra single-process handlers, to the queue driver over @adonisjs/queue, and a broker-less SQL driver that rides the database you already run.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+A **transport** is how `ctx.call` reaches a step handler and how the result comes back. It's a pluggable driver (`dispatch`, `onResult`, `onHeartbeat`), independent of the [state store](/docs/durable/stores) — mix any transport with any store.
+
+Transports are **config-driven drivers**: list the ones you use under `transports` in `config/durable.ts`, built with the `transports` factory, and pick the active one by name with `transport`. Each driver lazily imports its optional peer (`@adonisjs/queue`, `@adonisjs/lucid`) **only when selected**, so nothing extra is loaded for the drivers you don't use.
+
+## The drivers
+
+| Driver | Crosses a process boundary? | Use it for |
+| --- | --- | --- |
+| `transports.memory()` | No (in-process) | The zero-infra default: handlers registered with `transport.handle(...)` run in the **same process**, decoupled from the workflow. No broker. |
+| [`transports.queue(...)`](/docs/durable/transports/queue) | Yes | True **cross-process** steps over [`@adonisjs/queue`](https://github.com/adonisjs/queue) — a separate worker, on Redis or a database adapter. |
+| [`transports.db(...)`](/docs/durable/transports/db) | Yes (shared DB) | Broker-less, DBOS-style: steps are **rows** in the database you already run, via `@adonisjs/lucid`. |
+
+## Selecting a transport in config
+
+`transport` names a key of the `transports` map; that driver is what the engine dispatches every remote step over. Omit `transport` (or pick `memory`) for the in-process default.
+
+```ts title="config/durable.ts"
+import { defineConfig, transports } from '@agora/durable'
+import { redis } from '@adonisjs/queue'
+
+export default defineConfig({
+  transport: 'queue',
+  transports: {
+    memory: transports.memory(),
+    queue: transports.queue({ adapter: redis({ host: '127.0.0.1' }), group: 'workers' }),
+    db: transports.db(),
+  },
+})
+```
+
+Switching transports is a one-line change to `transport` — the workflow code never changes.
+
+## In-process (default)
+
+`transports.memory()` routes tasks to handlers registered in the same process with `transport.handle(name, fn)`. It's the default when `config/durable.ts` sets no `transport`:
+
+```ts title="start/durable.ts"
+import { InMemoryTransport } from '@agora/durable'
+
+const transport = new InMemoryTransport()
+transport.handle('payments.charge-card', async (input) => ({ chargeId: await charge(input) }))
+```
+
+Great for splitting a workflow across modules in one app, and for [tests](/docs/durable/testing). When you need the step to run elsewhere, select the `queue` or `db` driver in `config/durable.ts`.
+
+## Pinning a transport per step (failover pools)
+
+At the **engine** level a single instance can dispatch over an ordered pool of named transports and fail over between them; a step pins one with `ctx.call(step, input, { transport: id })`:
+
+```ts
+// force this dispatch onto the 'db' transport:
+const result = await ctx.call(heavyStep, input, { transport: 'db' })
+```
+
+The id of the transport that accepted the dispatch is stamped on the task as `task.transport`, so a worker consuming several transports replies on the **matching** one — failover is symmetric.
+
+## Control plane (separate from the transport)
+
+The transport is **point-to-point**: it carries a task to one worker and a result back. But some things every engine instance needs regardless of who runs a given run — a dashboard-only process must live-tail a run executing on a worker, and the process actually running a run must learn it was cancelled elsewhere. That cross-instance fan-out is a **second channel**, the `controlPlane`, modelled separately from the task `transport`:
+
+```ts
+export default defineConfig({ transport: 'queue', transports, controlPlane })
+```
+
+Omit it and the engine is **local-only**: events and cancellation reach subscribers on this instance but don't fan out to other processes (fine for a single-instance app). Supply one and lifecycle events broadcast to every process and a `cancel` reaches the process running the run.
+
+## Wire protocol
+
+Every transport carries the same JSON `RemoteTask` (dispatch) and `StepResult` (reply). The task also carries an optional `transport` (the pool id it was dispatched on) and an optional `traceparent` (see [distributed tracing](/docs/durable/observability/otel#distributed-tracing-across-workers)).
+
+<Callout type="info">
+A worker process is the [`durable:work`](/docs/durable/cli) command plus your handler registrations for its `group`. Run one engine-side process (consumes results) and one per worker group (registers handlers).
+</Callout>

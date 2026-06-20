@@ -1,0 +1,133 @@
+---
+title: Durable
+description: Durable workflows for AdonisJS — write a workflow as plain code; every step is checkpointed, so it survives crashes and deploys. Steps can run across processes, with a built-in control plane.
+icon: Workflow
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+import { Cards, Card } from 'fumadocs-ui/components/card';
+
+**`@agora/durable`** brings durable execution to AdonisJS. You write a workflow as ordinary async code — call a step, use its result, call the next — and the engine records every step's output. If the process crashes or you deploy mid-run, the workflow resumes from the last checkpoint instead of starting over. Steps can run in-process or on a remote worker, but it stays **one workflow**, with **one source of truth**, and **one end-to-end timeline**.
+
+<Callout type="info" title="The one rule">
+The engine recovers a run by **replaying** the workflow function from the top. Completed steps return their saved result instead of executing again, so your workflow body must be deterministic — no `Date.now()`, `Math.random()`, or direct I/O outside a step. See [Durability & replay](/docs/durable/concepts/durability).
+</Callout>
+
+## The problem it solves
+
+Multi-step processes are usually scattered: a queued job here, a cron there, a manual retry script somewhere else, and no single place to read or watch the whole thing. When a process dies halfway through, you are left reconstructing which steps already ran. `@agora/durable` collapses that into three guarantees:
+
+- **The flow becomes code, in one place.** Read the workflow function and you understand the whole sequence — even when steps execute in different processes.
+- **Durability by replay.** A crash or deploy never re-runs completed work. Each step is checkpointed; on recovery, finished steps replay their saved result and only unfinished work executes.
+- **End-to-end visibility.** Because one engine owns the state, it knows about *every* step — including the remote ones — so a full-flow trace, [dashboard](/docs/durable/observability/dashboard), and [Telescope](/docs/telescope) view come almost for free.
+
+## Quickstart
+
+The minimal loop — install, configure, register a workflow, start a run — with zero infrastructure: the in-memory store and an in-process transport. Swap those for a [Lucid store](/docs/durable/stores/lucid) and a [queue transport](/docs/durable/transports/queue) when you go to production. For the full walkthrough, see [Getting Started](/docs/durable/getting-started).
+
+<Steps>
+<Step>
+
+Install and configure the umbrella package:
+
+```bash
+node ace add @agora/durable
+```
+
+This registers the provider in `adonisrc.ts` and publishes `config/durable.ts`.
+
+</Step>
+<Step>
+
+Register a workflow on the engine. Every `ctx.step` is checkpointed; `ctx.waitForSignal` suspends the run until a signal arrives:
+
+```ts title="start/durable.ts"
+import app from '@adonisjs/core/services/app'
+import { WorkflowEngine } from '@agora/durable'
+
+const engine = await app.container.make(WorkflowEngine)
+
+engine.register('checkout', '1', async (ctx, order: { id: string; total: number }) => {
+  await ctx.step('reserveStock', async () => ({ reserved: true }))
+  const approval = await ctx.waitForSignal<{ approved: boolean }>(`approve:${order.id}`)
+  if (!approval.approved) return { status: 'rejected' }
+  await ctx.step('ship', async () => ({ shipped: true }))
+  return { status: 'shipped' }
+})
+```
+
+</Step>
+<Step>
+
+Start a run from a controller. `start` **enqueues** the run and returns immediately — the HTTP handler never blocks on workflow logic:
+
+```ts
+import { WorkflowEngine } from '@agora/durable'
+import { inject } from '@adonisjs/core'
+
+@inject()
+export default class CheckoutController {
+  constructor(private engine: WorkflowEngine) {}
+
+  async store({ request }: HttpContext) {
+    const order = request.body() as { id: string; total: number }
+    await this.engine.start('checkout', order, `checkout:${order.id}`)
+    return { runId: `checkout:${order.id}` }
+  }
+}
+```
+
+</Step>
+<Step>
+
+Resume it later, from your approval webhook — this completes and ships the run:
+
+```ts
+// engine.signal wakes the exact run suspended on this token
+await engine.signal(`approve:${order.id}`, { approved: true })
+```
+
+Need the outcome inline instead? `await engine.waitForRun(runId)` resolves once the run settles.
+
+</Step>
+</Steps>
+
+## Steps across processes
+
+A step does not have to run in the same process. Declare a **remote step** with a typed, validated contract and call it with `ctx.call` — the engine dispatches it over a pluggable [transport](/docs/durable/transports) to wherever its handler lives:
+
+```ts title="app/durable/steps.ts"
+import { remoteStep } from '@agora/durable'
+import { z } from 'zod'
+
+export const chargeCard = remoteStep({
+  name: 'payments.charge-card',
+  group: 'payments',
+  input: z.object({ orderId: z.string(), amountCents: z.number().int() }),
+  output: z.object({ chargeId: z.string() }),
+  retries: 3,
+})
+```
+
+The handler is registered on a worker-side transport with `transport.handle(name, fn)`, decoupled from the workflow. With the in-process transport it runs in the same process; swap the transport for the [queue transport](/docs/durable/transports/queue) to move it to a separate worker — without changing the workflow code.
+
+## What you get
+
+- **Crash-proof by replay.** Each step is checkpointed and runs exactly once, logically; only unfinished work executes after a restart.
+- **Durable sleep and signals.** Pause for minutes or months with `ctx.sleep` (no compute while waiting), or wait on a human approval or webhook with `ctx.waitForSignal`. Both survive restarts.
+- **Bring Lucid, any SQL database.** State lives in Postgres, MySQL, or SQLite through a `StateStore` interface, with a [Lucid adapter](/docs/durable/stores/lucid) and a published migration.
+- **See the whole flow.** A built-in [control plane](/docs/durable/observability/dashboard) renders each run; [OpenTelemetry](/docs/durable/observability/otel) and a [Telescope](/docs/durable/observability/telescope) view give you two more views of the same event log.
+
+## Where to go next
+
+<Cards>
+  <Card title="Getting Started" href="/docs/durable/getting-started" description="Install, configure, register a workflow, and start your first run — step by step." />
+  <Card title="Concepts" href="/docs/durable/concepts/durability" description="Durability, deterministic replay, and the mental model behind the engine." />
+  <Card title="Authoring" href="/docs/durable/authoring/child-workflows" description="Child workflows, queries and updates, webhooks, versioning, and scheduling." />
+  <Card title="Reliability" href="/docs/durable/reliability" description="Retries, sagas, dead-letter, and flow control." />
+  <Card title="Transports" href="/docs/durable/transports" description="The in-process default, the @adonisjs/queue transport, and the broker-less DB transport." />
+  <Card title="State stores" href="/docs/durable/stores" description="Persist runs to Postgres, MySQL, or SQLite with Lucid." />
+  <Card title="Observability" href="/docs/durable/observability/dashboard" description="The control-plane dashboard, OpenTelemetry traces, and the Telescope view." />
+  <Card title="Tooling" href="/docs/durable/tooling/linting" description="The CLI, the test harness, and the determinism linter." />
+</Cards>

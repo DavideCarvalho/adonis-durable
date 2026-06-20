@@ -33,7 +33,7 @@
   "sideEffects": false,
   "scripts": {
     "build": "tsc -p tsconfig.json && pnpm run copy:stubs",
-    "copy:stubs": "mkdir -p dist/stubs/config && cp stubs/config/durable.stub dist/stubs/config/durable.stub",
+    "copy:stubs": "mkdir -p dist/stubs/config dist/stubs/database/migrations && cp stubs/config/durable.stub dist/stubs/config/durable.stub && cp -r stubs/database/migrations/. dist/stubs/database/migrations/",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit"
@@ -42,11 +42,19 @@
     "@agora/durable-core": "workspace:^"
   },
   "peerDependencies": {
-    "@adonisjs/core": "^6.12.0"
+    "@adonisjs/core": "^6.12.0",
+    "@adonisjs/lucid": "^20.0.0 || ^21.0.0",
+    "@adonisjs/queue": "^0.6.0"
+  },
+  "peerDependenciesMeta": {
+    "@adonisjs/lucid": { "optional": true },
+    "@adonisjs/queue": { "optional": true }
   },
   "devDependencies": {
     "@adonisjs/assembler": "^7.8.0",
     "@adonisjs/core": "^6.17.0",
+    "@adonisjs/lucid": "^21.6.0",
+    "@adonisjs/queue": "^0.6.1",
     "@agora/durable-core": "workspace:*",
     "@types/node": "^20.0.0",
     "typescript": "^5.4.0",

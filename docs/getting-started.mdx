@@ -1,0 +1,166 @@
+---
+title: Getting Started
+description: Run your first durable workflow in an AdonisJS app — install, configure, register a workflow, and start a run. Zero infrastructure with the in-process transport and in-memory store.
+---
+
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+
+This guide gets a workflow running in an AdonisJS app in a few minutes — no broker, no database, using the in-process transport and an in-memory store. Swap those for the [queue transport](/docs/durable/transports/queue) and the [Lucid store](/docs/durable/stores/lucid) when you're ready for production.
+
+## 1. Install & configure
+
+<Tabs items={['node ace', 'manual']}>
+
+<Tab value="node ace">
+
+```bash
+node ace add @agora/durable
+```
+
+`add` installs the package, registers `@agora/durable/durable_provider` in `adonisrc.ts`, and publishes `config/durable.ts`.
+
+</Tab>
+
+<Tab value="manual">
+
+```bash
+npm i @agora/durable
+node ace configure @agora/durable
+```
+
+`configure` runs the same codemods as `add` (register the provider, publish the config).
+
+</Tab>
+
+</Tabs>
+
+The published `config/durable.ts` defaults to the in-process `memory` transport + the in-memory store, so the engine works with zero extra infrastructure. Drivers are selected by **name** from the `transports` / `stores` maps — each lazily imports its optional peer (`@adonisjs/queue`, `@adonisjs/lucid`) only when chosen:
+
+```ts title="config/durable.ts"
+import { defineConfig, transports } from '@agora/durable'
+
+export default defineConfig({
+  transport: 'memory',
+  transports: {
+    memory: transports.memory(),
+    // queue: transports.queue({ adapter: redis({ host: '127.0.0.1' }), group: 'workers' }),
+    // db: transports.db(),
+  },
+  // store: 'lucid',
+  // stores: { lucid: stores.lucid() },
+  // leaseMs: 30_000,
+})
+```
+
+<Callout type="info">
+The provider binds a singleton [`WorkflowEngine`](/docs/durable/concepts/workflows-and-steps) built from this config. Resolve it from the container anywhere — a controller, a service, a start file.
+</Callout>
+
+## 2. Define a remote step (optional)
+
+A step can run locally (`ctx.step`) or on a worker (`ctx.call`). Declare remote steps with a typed contract validated by [zod](https://zod.dev):
+
+```ts title="app/durable/steps.ts"
+import { remoteStep } from '@agora/durable'
+import { z } from 'zod'
+
+export const chargeCard = remoteStep({
+  name: 'payments.charge-card',
+  group: 'payments',
+  input: z.object({ orderId: z.string(), amountCents: z.number().int() }),
+  output: z.object({ chargeId: z.string() }),
+  retries: 3,
+})
+```
+
+## 3. Register the workflow
+
+Workflows are registered on the engine by **name** and **version** — the body is a deterministic async function. A good place to do this once at boot is a [preload file](https://docs.adonisjs.com/guides/concepts/adonisrc-file#preloads):
+
+```ts title="start/durable.ts"
+import app from '@adonisjs/core/services/app'
+import { WorkflowEngine } from '@agora/durable'
+import { chargeCard } from '#durable/steps'
+
+const engine = await app.container.make(WorkflowEngine)
+
+engine.register('checkout', '1', async (ctx, order: { id: string; total: number }) => {
+  await ctx.step('reserveStock', async () => ({ reserved: true }))
+  const charge = await ctx.call(chargeCard, { orderId: order.id, amountCents: order.total })
+  const approval = await ctx.waitForSignal<{ approved: boolean }>(`approve:${order.id}`)
+  if (!approval.approved) return { status: 'rejected', chargeId: charge.chargeId }
+  await ctx.step('ship', async () => ({ shipped: true }))
+  return { status: 'shipped', chargeId: charge.chargeId }
+})
+```
+
+Register the preload in `adonisrc.ts`:
+
+```ts title="adonisrc.ts"
+preloads: [
+  // ...
+  () => import('#start/durable'),
+],
+```
+
+## 4. Implement the step handler
+
+A remote step needs a handler registered on the transport. With the default in-process transport, register it on the same engine's transport at boot:
+
+```ts title="start/durable.ts"
+import { InMemoryTransport } from '@agora/durable'
+
+// The default in-process transport (when none is configured) is an InMemoryTransport.
+// In a single-process app you can register handlers on a transport you also pass to the engine:
+const transport = new InMemoryTransport()
+transport.handle('payments.charge-card', async (input: { orderId: string; amountCents: number }) => {
+  return { chargeId: `ch_${input.orderId}` }
+})
+```
+
+<Callout type="info">
+For real cross-process handlers, configure the [queue transport](/docs/durable/transports/queue) in `config/durable.ts` and run a worker process that registers handlers for its `group`. The workflow code never changes.
+</Callout>
+
+## 5. Start a run
+
+Inject the `WorkflowEngine` and start the workflow. `start` **enqueues** the run and returns immediately — the HTTP handler never blocks on workflow logic. A worker executes the body (by default, the same instance, asynchronously), runs the steps, then suspends on the approval signal; a webhook resumes it:
+
+```ts title="app/controllers/checkout_controller.ts"
+import type { HttpContext } from '@adonisjs/core/http'
+import { WorkflowEngine } from '@agora/durable'
+import { inject } from '@adonisjs/core'
+
+@inject()
+export default class CheckoutController {
+  constructor(private engine: WorkflowEngine) {}
+
+  async store({ request }: HttpContext) {
+    const order = request.body() as { id: string; total: number }
+    await this.engine.start('checkout', order, `checkout:${order.id}`)
+    return { runId: `checkout:${order.id}` } // respond now; a worker runs the body
+  }
+
+  // later, from your approval webhook:
+  async approve({ params }: HttpContext) {
+    await this.engine.signal(`approve:${params.id}`, { approved: true }) // completes & ships
+  }
+}
+```
+
+Need the outcome inline? `await this.engine.waitForRun(runId)` resolves once the run **settles** — a terminal state (completed/failed/cancelled/dead) or `suspended`:
+
+```ts
+await this.engine.start('checkout', order, runId)
+const result = await this.engine.waitForRun(runId) // resolves when the run settles
+```
+
+That's it — a durable workflow whose remote step runs in-process, that pauses for human approval and survives restarts. Next:
+
+- [Durability & replay](/docs/durable/concepts/durability) — the one rule the model imposes.
+- [Transports](/docs/durable/transports) — move steps to another process.
+- [State stores](/docs/durable/stores) — persist to Postgres with Lucid.
+- [The CLI](/docs/durable/cli) — run a worker, list runs, retry from the terminal.
+- [Observability](/docs/durable/observability/dashboard) — the control plane, OTel, and Telescope.

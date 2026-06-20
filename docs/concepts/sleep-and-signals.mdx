@@ -1,0 +1,72 @@
+---
+title: Sleep & signals
+description: Pause a workflow durably — ctx.sleep for time-based waits (minutes to months, no compute) and ctx.waitForSignal for human approvals and webhooks, both surviving restarts.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Real workflows wait — for a delay, or for the outside world. Both kinds of pause are **durable**: the run is suspended (no compute consumed) and resumes on its own, even across restarts.
+
+## Durable sleep
+
+`ctx.sleep(duration)` suspends the run until the timer is due. Accepts a duration string (`'30s'`, `'2h'`, `'7 days'`, `'7d'`, `'1w'`) or milliseconds:
+
+```ts
+await ctx.step('draft', () => generate(topic))
+await ctx.sleep('7 days') // gather signals for a week — nothing running
+await ctx.step('refine', () => refine(topic))
+```
+
+Under the hood the run becomes `suspended` with a `wakeAt`; a poller (the [`durable:work`](/docs/durable/cli) loop, via `engine.resumeDueTimers()`) resumes runs whose timer has come due. On resume, the steps before the sleep replay from their checkpoints.
+
+To wait until a specific moment instead of for a duration, use `ctx.sleepUntil(when)` — it takes a `Date` or an epoch-ms number:
+
+```ts
+await ctx.sleepUntil(new Date('2026-12-31T00:00:00Z'))
+```
+
+<Callout type="info">
+Capture the target time deterministically — derive it from a checkpointed value (a step result, `ctx.now()`), never from a raw `Date.now()` in the body. See [Versioning & determinism](/docs/durable/authoring/versioning).
+</Callout>
+
+## Signals (human-in-the-loop)
+
+`ctx.waitForSignal(token)` suspends the run — with no timer — until an external `engine.signal(token, payload)` arrives. Perfect for approvals, webhooks, or any third-party callback.
+
+```ts
+const decision = await ctx.waitForSignal<{ approved: boolean }>(`approve:${order.id}`)
+if (!decision.approved) return { status: 'rejected' }
+```
+
+Deliver the signal from anywhere — typically a controller — via `engine.signal`:
+
+```ts
+async approve({ params, request }: HttpContext) {
+  return this.engine.signal(`approve:${params.id}`, request.body()) // resumes the run with the payload
+}
+```
+
+The payload is checkpointed like any step result, so the resumed run sees the same decision even if it replays again later.
+
+Pass `{ timeoutMs }` to bound the wait — if the deadline passes before a signal arrives, `waitForSignal` throws `SignalTimeoutError`, which you can catch to take a default branch:
+
+```ts
+try {
+  await ctx.waitForSignal('approve', { timeoutMs: 24 * 60 * 60 * 1000 })
+} catch (err) {
+  if (err instanceof SignalTimeoutError) return { status: 'expired' }
+  throw err
+}
+```
+
+### Signal buffering & signal-with-start
+
+A signal sent **before** the run has reached its `waitForSignal` is **buffered**, not lost — the next `waitForSignal` for that token consumes it. And `engine.signalWithStart(workflow, input, runId, { token, payload })` starts a run *if it doesn't exist* and delivers a signal to it in one race-free call — ideal for an event-sourced entity that's driven entirely by incoming events:
+
+```ts
+// Each event starts the run if needed, then delivers; ordering and exactly-once are preserved.
+await engine.signalWithStart('counter', {}, 'k1', { token: 'add:k1', payload: 10 })
+await engine.signalWithStart('counter', {}, 'k1', { token: 'add:k1', payload: 20 })
+```
+
+For a validated, rejectable steering primitive (Temporal-style updates) and a side-effect-free way to read a live run's state, see [Queries & updates](/docs/durable/authoring/queries-and-updates). For the deterministic callback-URL pattern, see [Durable webhooks](/docs/durable/authoring/webhooks).

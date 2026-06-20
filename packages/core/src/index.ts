@@ -20,3 +20,26 @@ export * from './tokens.js';
 export * from './workflow-ref.js';
 export { InMemoryStateStore } from './testing/in-memory-state-store.js';
 export { InMemoryTransport } from './testing/in-memory-transport.js';
+
+// --- config-driven transport drivers ----------------------------------------
+export { transports } from './transports/factory.js';
+export type {
+  TransportContext,
+  TransportFactory,
+  MemoryTransportConfig,
+  QueueTransportConfig,
+  DbTransportConfig,
+} from './transports/factory.js';
+export { QueueTransport, type QueueTransportOptions } from './transports/queue.js';
+export { DbTransport, type DbTransportOptions } from './transports/db.js';
+export {
+  TRANSPORT_TABLES,
+  createDurableTransportTables,
+  dropDurableTransportTables,
+} from './transports/db-schema.js';
+
+// --- config-driven state-store drivers --------------------------------------
+export { stores } from './stores/factory.js';
+export type { StoreContext, StoreFactory, LucidStoreConfig } from './stores/factory.js';
+export { LucidStateStore, type LucidStateStoreOptions } from './stores/lucid.js';
+export { DURABLE_TABLES, createDurableTables, dropDurableTables } from './stores/lucid-schema.js';

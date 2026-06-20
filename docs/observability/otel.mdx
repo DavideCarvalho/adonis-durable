@@ -1,0 +1,65 @@
+---
+title: OpenTelemetry
+description: One trace per run, one span per step. Bridge the engine's lifecycle events to OpenTelemetry with attachDurableOtel and see workflows in Jaeger, Grafana, or Datadog — plus distributed tracing across worker processes.
+---
+
+`@agora/durable-otel` turns workflow runs into OpenTelemetry traces — a root span per run, a child span per step — so they show up in the tracing stack you already run.
+
+```bash
+npm i @agora/durable-otel @opentelemetry/api
+```
+
+## Attaching it
+
+`attachDurableOtel(engine, options?)` subscribes to the engine's lifecycle events and bridges them onto OpenTelemetry. Call it once at boot with the engine in hand; it returns a detach function:
+
+```ts title="start/durable.ts"
+import app from '@adonisjs/core/services/app'
+import { WorkflowEngine } from '@agora/durable'
+import { attachDurableOtel } from '@agora/durable-otel'
+
+const engine = await app.container.make(WorkflowEngine)
+const detach = attachDurableOtel(engine) // uses the global tracer provider
+```
+
+It creates one root span per run and one child span per step (local / remote / sleep / signal). Each step span carries `durable.run_id`, `durable.workflow`, `durable.step.seq`, and `durable.step.kind`; a failed run marks its span with an error status. Pass `{ tracer }` or `{ provider }` in the options to use a specific tracer instead of the global one. With no OTel SDK registered, it falls back to no-op spans — zero overhead.
+
+It subscribes to the same engine lifecycle events the [dashboard](/docs/durable/observability/dashboard) and the [Telescope](/docs/durable/observability/telescope) view use — three views of one event log. OTel is for **debugging in production** (latency, correlation, alerts); the dashboard is for **operating** the workflow.
+
+## Lightweight metrics
+
+If you want dependency-free counters and latency percentiles without a full OTel pipeline, `attachDurableMetrics(engine)` collects them from the same events:
+
+```ts
+import { attachDurableMetrics } from '@agora/durable-otel'
+
+const metrics = attachDurableMetrics(engine)
+// ...later, expose a snapshot on a /metrics route:
+const snap = metrics.snapshot()
+// { runs: { started, completed, failed, suspended },
+//   steps: { completed, failed },
+//   stepDurationMs: { count, p50, p95, max }, runDurationMs: { … } }
+```
+
+The handle has `snapshot()`, `reset()`, and `unsubscribe()`.
+
+## Distributed tracing across workers
+
+A remote step runs in **another process**. Left alone, that worker would start a fresh, **detached** trace, so the work it does wouldn't show up under the run's root span. To keep one trace across the boundary, the engine stamps a W3C `traceparent` on each dispatched task, taken from an optional `traceparent` provider. The worker reads it and **continues** the trace instead of starting a new one — the step's span lands as a child of the workflow's span, even across processes.
+
+Core stays OTel-free, so you wire the provider in. Use `otelTraceparent` from `@agora/durable-otel`, which reads the current active span via the globally-registered W3C propagator:
+
+```ts title="config/durable.ts"
+import { defineConfig } from '@agora/durable'
+import { otelTraceparent } from '@agora/durable-otel'
+
+export default defineConfig({
+  store,
+  transport,
+  traceparent: () => otelTraceparent(),
+})
+```
+
+The provider is just `() => string | undefined`, so you can supply your own context reader instead of the OTel one. Omit it and no `traceparent` is sent (the worker starts its own trace). The stamped value travels in the `RemoteTask.traceparent` field, so any worker that honours W3C trace context picks it up automatically.
+
+> When [`@agora/diagnostics-otel`](/docs/diagnostics) is installed, the `@agora/durable` provider auto-wires this `traceparent` provider for you (read structurally from a global slot, no hard dependency) — so distributed tracing works with zero config in that setup.
