@@ -2,29 +2,28 @@ import type {
   GroupHealth,
   RunQuery,
   RunStatus,
-  StateStore,
   StepCheckpoint,
   WorkflowEngine,
   WorkflowRun,
 } from '@agora/durable-core';
 
 /**
- * Framework-light JSON handlers over a {@link WorkflowEngine} and its
- * {@link StateStore}.
+ * Framework-light JSON handlers over a {@link WorkflowEngine}.
  *
- * Each handler takes a {@link Deps} bundle (the engine + the store — the engine
- * keeps its store private, so the dashboard reads runs/checkpoints from the same
- * store the engine was built with) plus a plain {@link ApiRequest} (a thin view
- * of the parts of an HTTP request it needs), and returns a plain
- * {@link ApiResponse} (status + JSON body). No AdonisJS types leak in, so the
- * handlers are unit-testable against a real in-memory engine with no HTTP
- * server. The provider adapts an AdonisJS `HttpContext` to these shapes.
+ * Each handler takes a {@link Deps} bundle (just the engine — runs and
+ * checkpoints are read through the engine's own read API, {@link
+ * WorkflowEngine.listRuns} / {@link WorkflowEngine.listCheckpoints}, so the
+ * dashboard never reaches for the engine's private store) plus a plain {@link
+ * ApiRequest} (a thin view of the parts of an HTTP request it needs), and
+ * returns a plain {@link ApiResponse} (status + JSON body). No AdonisJS types
+ * leak in, so the handlers are unit-testable against a real in-memory engine
+ * with no HTTP server. The provider adapts an AdonisJS `HttpContext` to these
+ * shapes.
  */
 
-/** The engine + store the handlers operate over. */
+/** The engine the handlers operate over. */
 export interface Deps {
   engine: WorkflowEngine;
-  store: StateStore;
 }
 
 /** The subset of an HTTP request the handlers read. */
@@ -82,7 +81,7 @@ function parseStatus(value: string | undefined): RunStatus | undefined {
 
 /** `GET /runs` — list runs filtered by status/workflow/tag, paginated. */
 export async function listRuns(deps: Deps, req: ApiRequest): Promise<ApiResponse> {
-  const { store } = deps;
+  const { engine } = deps;
   const limit = Math.min(intQuery(req.query.limit, 50), 200);
   const offset = intQuery(req.query.offset, 0);
   const status = parseStatus(firstQuery(req.query.status));
@@ -96,7 +95,7 @@ export async function listRuns(deps: Deps, req: ApiRequest): Promise<ApiResponse
   if (workflow) query.workflow = workflow;
   if (tag) query.tag = tag;
 
-  const runs = await store.listRuns(query);
+  const runs = await engine.listRuns(query);
   return ok({
     runs: runs.map(summarizeRun),
     page: { limit, offset, count: runs.length },
@@ -106,13 +105,13 @@ export async function listRuns(deps: Deps, req: ApiRequest): Promise<ApiResponse
 
 /** `GET /runs/:id` — a run's detail: the run, its step timeline, and child run ids. */
 export async function getRun(deps: Deps, req: ApiRequest): Promise<ApiResponse> {
-  const { engine, store } = deps;
+  const { engine } = deps;
   const id = req.params.id;
   if (!id) return notFound('run id is required');
   const run = await engine.getRun(id);
   if (!run) return notFound(`run ${id} not found`);
   const [timeline, children] = await Promise.all([
-    store.listCheckpoints(id),
+    engine.listCheckpoints(id),
     engine.getRunChildren(id),
   ]);
   return ok({

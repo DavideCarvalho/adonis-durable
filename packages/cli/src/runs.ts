@@ -1,7 +1,7 @@
 import type {
+  RunQuery,
   RunResult,
   RunStatus,
-  StateStore,
   WorkflowEngine,
   WorkflowRun,
 } from '@agora/durable-core';
@@ -15,9 +15,14 @@ export interface ListRunsOptions {
   limit?: number | undefined;
 }
 
-/** Query recent runs from the store, newest activity first (the store returns its own order). */
-export async function listRuns(store: StateStore, opts: ListRunsOptions): Promise<WorkflowRun[]> {
-  return store.listRuns({
+/** Anything that can list runs — both a {@link WorkflowEngine} and a raw `StateStore` satisfy it. */
+export interface RunLister {
+  listRuns(query: RunQuery): Promise<WorkflowRun[]>;
+}
+
+/** Query recent runs, newest activity first (the source returns its own order). */
+export async function listRuns(source: RunLister, opts: ListRunsOptions): Promise<WorkflowRun[]> {
+  return source.listRuns({
     ...(opts.status ? { status: opts.status } : {}),
     ...(opts.workflow ? { workflow: opts.workflow } : {}),
     limit: opts.limit ?? 50,

@@ -10,7 +10,7 @@ import {
   retryRun,
 } from '../src/handlers.js';
 
-/** Build a real in-memory engine + store, and register a couple of workflows. */
+/** Build a real in-memory engine and register a couple of workflows. */
 function makeEngine(): Deps {
   const store = new InMemoryStateStore();
   const engine = new WorkflowEngine({ store, transport: new InMemoryTransport() });
@@ -34,7 +34,7 @@ function makeEngine(): Deps {
     return 'done';
   });
 
-  return { engine, store };
+  return { engine };
 }
 
 const req = (over: Partial<ApiRequest> = {}): ApiRequest => ({

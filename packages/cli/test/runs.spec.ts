@@ -1,6 +1,5 @@
 import { InMemoryStateStore, InMemoryTransport, WorkflowEngine } from '@agora/durable-core';
 import { describe, expect, it } from 'vitest';
-import { resolveStore } from '../src/resolve_store.js';
 import { listRuns, renderRunsTable, retryRun } from '../src/runs.js';
 
 function makeEngine() {
@@ -65,15 +64,12 @@ describe('retryRun', () => {
   });
 });
 
-describe('resolveStore', () => {
-  it('returns the configured store', () => {
-    const store = new InMemoryStateStore();
-    const app = { config: { get: <T>(_k: string, _d?: T) => ({ store }) as unknown as T } };
-    expect(resolveStore(app)).toBe(store);
-  });
-
-  it('returns undefined when no store is configured', () => {
-    const app = { config: { get: <T>(_k: string, d?: T) => (d ?? {}) as T } };
-    expect(resolveStore(app)).toBeUndefined();
+describe('listRuns via the engine read API', () => {
+  it('lists runs through engine.listRuns (same surface the command uses)', async () => {
+    const { engine } = makeEngine();
+    await engine.start('checkout', {}, 'run1');
+    await engine.waitForRun('run1');
+    const runs = await listRuns(engine, { limit: 10 });
+    expect(runs.map((r) => r.id)).toContain('run1');
   });
 });

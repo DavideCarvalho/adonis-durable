@@ -698,6 +698,20 @@ export class WorkflowEngine {
     return this.store.getRun(runId);
   }
 
+  /**
+   * List persisted runs matching `query` (newest activity first, per the store's own ordering). The
+   * engine's read API for inspection surfaces (the dashboard, the `durable:runs` CLI) so they query
+   * through the engine rather than reaching for its private store.
+   */
+  listRuns(query: RunQuery): Promise<WorkflowRun[]> {
+    return this.store.listRuns(query);
+  }
+
+  /** List a run's step checkpoints (its timeline). Part of the engine's read API; see {@link listRuns}. */
+  listCheckpoints(runId: string): Promise<StepCheckpoint[]> {
+    return this.store.listCheckpoints(runId);
+  }
+
   async resume(runId: string): Promise<RunResult> {
     const run = await this.store.getRun(runId);
     if (!run) throw new Error(`run ${runId} not found`);

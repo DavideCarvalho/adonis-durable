@@ -7,8 +7,8 @@ export {
 } from './worker.js';
 export {
   type ListRunsOptions,
+  type RunLister,
   listRuns,
   renderRunsTable,
   retryRun,
 } from './runs.js';
-export { resolveStore } from './resolve_store.js';

@@ -1,7 +1,7 @@
 import type { HttpContext } from '@adonisjs/core/http';
 import router from '@adonisjs/core/services/router';
 import type { ApplicationService } from '@adonisjs/core/types';
-import { type StateStore, WorkflowEngine } from '@agora/durable-core';
+import { WorkflowEngine } from '@agora/durable-core';
 import {
   type DurableDashboardConfig,
   type ResolvedDurableDashboardConfig,
@@ -19,15 +19,10 @@ import {
 } from '../src/handlers.js';
 import { renderDashboard } from '../src/html.js';
 
-/** The shape of `config/durable.ts` this provider reads the store off of. */
-interface DurableConfigLike {
-  store?: StateStore;
-}
-
 /**
  * Mounts the durable dashboard into an AdonisJS app: a JSON API over the
- * {@link WorkflowEngine} + its store, and a single self-contained HTML page that
- * consumes it. All routes sit behind the configurable `authorize` guard from
+ * {@link WorkflowEngine}'s read surface, and a single self-contained HTML page
+ * that consumes it. All routes sit behind the configurable `authorize` guard from
  * `config/durable_dashboard.ts`.
  *
  * Routes (relative to the configured `path`, default `/durable`):
@@ -53,21 +48,12 @@ export default class DashboardProvider {
   private registerRoutes(config: ResolvedDurableDashboardConfig): void {
     const apiBase = `${config.path}/api`;
 
-    // Resolve the engine + store lazily per request: the engine singleton is
-    // built by @agora/durable's provider; the store is the same instance from
-    // config/durable.ts (the engine keeps its own store private).
+    // Resolve the engine lazily per request: the singleton is built by
+    // @agora/durable's provider, and runs/checkpoints are read through its own
+    // read API (listRuns / listCheckpoints), so the dashboard needs nothing else.
     const deps = async (): Promise<Deps> => {
       const engine = await this.app.container.make(WorkflowEngine);
-      const durable = this.app.config.get<DurableConfigLike>('durable', {});
-      // Without a configured store the engine defaults to its own in-memory one,
-      // which the dashboard can't reach — surface that clearly instead of lying
-      // with an empty list.
-      if (!durable.store) {
-        throw new Error(
-          '[durable-dashboard] config/durable.ts has no `store` — set a StateStore so the dashboard can read runs (the engine keeps its store private).',
-        );
-      }
-      return { engine, store: durable.store };
+      return { engine };
     };
 
     // The HTML page.
