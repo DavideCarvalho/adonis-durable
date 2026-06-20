@@ -15,14 +15,7 @@ import {
   runStepHandler,
 } from '@agora/durable-core';
 import { TRANSPORT_TABLES, createDurableTransportTables } from './schema.js';
-import {
-  type ControlPayload,
-  type HeartbeatPayload,
-  type ResultPayload,
-  type TaskPayload,
-  fromJson,
-  toJson,
-} from './serialization.js';
+import { type ControlPayload, fromJson, toJson } from './serialization.js';
 
 /** Default poll interval (ms) for the result/task/heartbeat/control loops. */
 const DEFAULT_POLL_INTERVAL_MS = 200;
