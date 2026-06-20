@@ -95,6 +95,28 @@ importers:
         specifier: ^3.25.0
         version: 3.25.76
 
+  packages/dashboard:
+    dependencies:
+      '@agora/durable-core':
+        specifier: workspace:^
+        version: link:../core
+    devDependencies:
+      '@adonisjs/assembler':
+        specifier: ^7.8.0
+        version: 7.8.2(typescript@5.9.3)
+      '@adonisjs/core':
+        specifier: ^6.17.0
+        version: 6.21.0(@adonisjs/assembler@7.8.2(typescript@5.9.3))
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.43
+      typescript:
+        specifier: ^5.4.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.6(@types/node@20.19.43)
+
   packages/eslint-plugin:
     dependencies:
       '@typescript-eslint/utils':
