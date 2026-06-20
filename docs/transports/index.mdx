@@ -23,13 +23,13 @@ Transports are **config-driven drivers**: list the ones you use under `transport
 
 ```ts title="config/durable.ts"
 import { defineConfig, transports } from '@agora/durable'
-import { redis } from '@adonisjs/queue'
 
 export default defineConfig({
   transport: 'queue',
   transports: {
     memory: transports.memory(),
-    queue: transports.queue({ adapter: redis({ host: '127.0.0.1' }), group: 'workers' }),
+    // `connection` names an adapter from config/queue.ts; `db` uses a Lucid connection.
+    queue: transports.queue({ connection: 'redis', group: 'workers' }),
     db: transports.db(),
   },
 })

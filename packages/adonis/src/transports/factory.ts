@@ -34,11 +34,18 @@ export interface MemoryTransportConfig {
 /** Options for the `@adonisjs/queue` transport. */
 export interface QueueTransportConfig {
   /**
-   * Factory for the `@adonisjs/queue` adapter this transport reads/writes — the same kind of factory
-   * you hand `@adonisjs/queue`'s `defineConfig` (e.g. `redis(...)`, `knex(...)`). Required: the
-   * transport drives the adapter directly for both directions of the work channel.
+   * Name of the `@adonisjs/queue` connection — a key of the `adapters` map in `config/queue.ts` —
+   * whose adapter this transport reads/writes. Omit to use that file's `default` connection. You
+   * configure the driver and its host/credentials once in `config/queue.ts`; durable just references
+   * it by name, exactly like `stores.lucid({ connection })` or `stores.redis({ connection })`.
    */
-  adapter: AdapterFactory;
+  connection?: string;
+  /**
+   * Escape hatch: pass a raw `@adonisjs/queue` adapter factory directly (e.g. `redis(...)`) instead of
+   * resolving one from `config/queue.ts`. For non-Adonis setups or a bespoke adapter. Takes
+   * precedence over `connection`.
+   */
+  adapter?: AdapterFactory;
   /** Worker group this instance serves (required on a worker process to register handlers). */
   group?: string;
   /** Queue-name prefix so several apps can share one backend without colliding. Default `durable`. */
@@ -72,13 +79,12 @@ export interface DbTransportConfig {
  *
  * ```ts
  * import { defineConfig, transports } from '@agora/durable'
- * import { redis } from '@adonisjs/queue'
  *
  * export default defineConfig({
  *   transport: 'queue',
  *   transports: {
  *     memory: transports.memory(),
- *     queue: transports.queue({ adapter: redis({ host: '127.0.0.1' }), group: 'durable' }),
+ *     queue: transports.queue({ connection: 'redis', group: 'durable' }),
  *     db: transports.db({ connection: 'pg' }),
  *   },
  * })
@@ -88,18 +94,54 @@ export interface DbTransportConfig {
  * nothing; the peer dependency is only imported when the provider builds the selected transport at
  * boot.
  */
+/** A `config/queue.ts` `adapters` entry: a raw adapter factory or an AdonisJS config provider. */
+type QueueAdapterEntry =
+  | AdapterFactory
+  | { resolver: (app: unknown) => AdapterFactory | Promise<AdapterFactory> };
+
+/**
+ * Resolve a raw `@adonisjs/queue` adapter factory from `config/queue.ts` by connection name —
+ * mirroring `@adonisjs/queue`'s own `resolveAdapters`: a function entry is the factory; a config
+ * provider is resolved via its `resolver(app)`. Reads only the app config, so it pulls in no
+ * `@adonisjs/queue` runtime code.
+ */
+async function resolveQueueAdapter(
+  ctx: TransportContext,
+  connection?: string,
+): Promise<AdapterFactory> {
+  const queueConfig = ctx.app.config.get<{
+    default?: string;
+    adapters?: Record<string, QueueAdapterEntry>;
+  }>('queue', { adapters: {} });
+
+  const name = connection ?? queueConfig.default;
+  if (!name) {
+    throw new Error(
+      '@agora/durable: transports.queue() needs a `connection`, or a `default` in config/queue.ts',
+    );
+  }
+  const entry = queueConfig.adapters?.[name];
+  if (!entry) {
+    throw new Error(
+      `@agora/durable: unknown @adonisjs/queue connection "${name}" — check the adapters in config/queue.ts`,
+    );
+  }
+  return typeof entry === 'function' ? entry : entry.resolver(ctx.app);
+}
+
 export const transports = {
   /** In-process transport + control plane (single-process, no extra infra). The default. */
   memory(_config: MemoryTransportConfig = {}): TransportFactory {
     return async () => new InMemoryTransport();
   },
 
-  /** Run remote steps cross-process over `@adonisjs/queue`. */
-  queue(config: QueueTransportConfig): TransportFactory {
-    return async () => {
+  /** Run remote steps cross-process over `@adonisjs/queue`, using a connection from `config/queue.ts`. */
+  queue(config: QueueTransportConfig = {}): TransportFactory {
+    return async (ctx) => {
       const { QueueTransport } = await import('./queue.js');
+      const adapter = config.adapter ?? (await resolveQueueAdapter(ctx, config.connection));
       return new QueueTransport({
-        adapter: config.adapter,
+        adapter,
         ...(config.group !== undefined ? { group: config.group } : {}),
         ...(config.prefix !== undefined ? { prefix: config.prefix } : {}),
         ...(config.pollIntervalMs !== undefined ? { pollIntervalMs: config.pollIntervalMs } : {}),

@@ -13,13 +13,13 @@ import { defineConfig, transports } from '@agora/durable'
  *
  * ```ts
  * import { defineConfig, transports, stores } from '@agora/durable'
- * import { redis } from '@adonisjs/queue'
  *
  * export default defineConfig({
  *   transport: 'queue',
  *   transports: {
  *     memory: transports.memory(),
- *     queue: transports.queue({ adapter: redis({ host: '127.0.0.1' }), group: 'durable' }),
+ *     // `connection` names an adapter from config/queue.ts (configure @adonisjs/queue first):
+ *     queue: transports.queue({ connection: 'redis', group: 'durable' }),
  *     db: transports.db(),
  *   },
  *   store: 'lucid',

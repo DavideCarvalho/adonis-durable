@@ -7,10 +7,24 @@ import { Callout } from 'fumadocs-ui/components/callout';
 
 The `queue` driver carries steps over [`@adonisjs/queue`](https://github.com/adonisjs/queue) — the path for steps that run in another process. It rides any `@adonisjs/queue` adapter (Redis, a database adapter, or the fake adapter in tests), so it reuses the queue infrastructure you already run.
 
-It ships **inside `@agora/durable`** — there's nothing extra to install. `@adonisjs/queue` is an optional peer, imported lazily only when you select the `queue` transport, so install it where you use the driver:
+It ships **inside `@agora/durable`** — there's nothing extra to install. `@adonisjs/queue` is an optional peer, imported lazily only when you select the `queue` transport, so install and configure it where you use the driver:
 
 ```bash
 npm i @adonisjs/queue
+node ace configure @adonisjs/queue
+```
+
+You define the adapter and its host/credentials **once**, in `config/queue.ts` (the standard `@adonisjs/queue` place), as a named connection. The durable `queue` transport then just references that connection **by name** — exactly like `stores.lucid({ connection })` or `stores.redis({ connection })`:
+
+```ts title="config/queue.ts"
+import { defineConfig, drivers } from '@adonisjs/queue'
+
+export default defineConfig({
+  default: 'redis',
+  adapters: {
+    redis: drivers.redis({ connectionName: 'main' }), // @adonisjs/redis connection
+  },
+})
 ```
 
 ## How it works
@@ -26,36 +40,33 @@ Run **one instance engine-side** (consumes results) and **one per worker process
 
 ```ts title="config/durable.ts (engine side)"
 import { defineConfig, transports } from '@agora/durable'
-import { redis } from '@adonisjs/queue'
 
 export default defineConfig({
   transport: 'queue',
   transports: {
-    queue: transports.queue({ adapter: redis({ host: '127.0.0.1', port: 6379 }) }),
+    // References the connection named in config/queue.ts. Omit `connection` to
+    // use that file's `default`.
+    queue: transports.queue({ connection: 'redis' }),
   },
 })
 ```
 
-```ts title="start/worker.ts (a separate worker process)"
-import { QueueTransport } from '@agora/durable'
-import { redis } from '@adonisjs/queue'
+Run **one instance engine-side** (consumes results) and **one per worker process** (registers handlers for its group). The idiomatic worker is the bundled ace command, which boots the app and reads the same `config/durable.ts` — no adapter wiring to repeat:
 
-// A worker constructs its own transport pinned to the group it serves and registers handlers.
-const transport = new QueueTransport({ adapter: redis({ host: '127.0.0.1', port: 6379 }), group: 'payments' })
-transport.handle('payments.charge-card', async (input: { orderId: string; amountCents: number }) => {
-  return { chargeId: await charge(input) }
-})
+```bash title="a separate worker process"
+node ace durable:work --group=payments
 ```
 
 <Callout type="info">
-On the worker, `transport.handle(name, fn)` auto-starts the task poll loop for its group. The engine-side instance's `onResult`/`onHeartbeat` handlers are wired by the provider when this transport is the configured one.
+Both the engine and the `durable:work` worker resolve the adapter from the `connection` you named in `config/queue.ts`, so the driver + host live in exactly one place. For a non-Adonis setup you can still construct the primitive `QueueTransport` (exported from `@agora/durable`) by hand and hand it a raw `@adonisjs/queue` adapter via its `adapter` option.
 </Callout>
 
 ## Options — `transports.queue(config)`
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `adapter` | — | An `@adonisjs/queue` adapter factory (`redis(...)`, a database adapter, the fake adapter). Required. |
+| `connection` | `config/queue.ts` `default` | Name of the `@adonisjs/queue` connection (a key of that file's `adapters`) whose adapter this transport uses. |
+| `adapter` | — | Escape hatch: a raw `@adonisjs/queue` adapter factory, used instead of resolving from `config/queue.ts`. Takes precedence over `connection`. |
 | `group` | — | The worker group this instance serves — required to register `handle()`s. |
 | `prefix` | `'durable'` | Namespaces the queues (`<prefix>:tasks:<group>`, `<prefix>:results`, …). |
 | `pollIntervalMs` | `200` | Poll interval in ms between queue reads. |

@@ -45,7 +45,7 @@ export default defineConfig({
   transport: 'memory',
   transports: {
     memory: transports.memory(),
-    // queue: transports.queue({ adapter: redis({ host: '127.0.0.1' }), group: 'workers' }),
+    // queue: transports.queue({ connection: 'redis', group: 'workers' }), // names a config/queue.ts adapter
     // db: transports.db(),
   },
   // store: 'lucid',
