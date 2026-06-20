@@ -11,6 +11,7 @@ export * from './remote-workflow-executor.js';
 export * from './codec-state-store.js';
 export * from './events.js';
 export * from './metrics.js';
+export * from './pollers.js';
 export * from './scheduler.js';
 export * from './search-attributes.js';
 export * from './tokens.js';

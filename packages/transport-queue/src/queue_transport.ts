@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import type { Adapter, AdapterFactory, JobData } from '@adonisjs/queue/types';
+import type { AcquiredJob, Adapter, AdapterFactory, JobData } from '@adonisjs/queue/types';
 import {
   type ControlMessage,
   type ControlPlane,
   type Heartbeat,
+  type PollLoop,
+  Pollers,
   type RemoteTask,
   type StepHandler,
   type StepResult,
@@ -43,8 +45,6 @@ export interface QueueTransportOptions {
   instanceId?: string;
 }
 
-type Loop = { stop: () => void };
-
 /**
  * A `@adonisjs/queue`-backed {@link Transport}. Remote steps are dispatched to a per-group task
  * queue; the worker side runs the registered handler via {@link runStepHandler} and pushes the
@@ -68,9 +68,8 @@ export class QueueTransport implements Transport, ControlPlane {
   readonly #pollIntervalMs: number;
   readonly #instanceId: string;
   readonly #handlers = new Map<string, StepHandler>();
-  readonly #loops = new Set<Loop>();
-  #taskLoop: Loop | undefined;
-  #closed = false;
+  readonly #pollers: Pollers;
+  #taskLoop: PollLoop | undefined;
 
   constructor(options: QueueTransportOptions) {
     this.#adapter = options.adapter();
@@ -80,6 +79,7 @@ export class QueueTransport implements Transport, ControlPlane {
     this.#instanceId = options.instanceId ?? randomUUID();
     // pop()/popFrom() require a worker id be set on the adapter before consuming.
     this.#adapter.setWorkerId(this.#instanceId);
+    this.#pollers = new Pollers(this.#pollIntervalMs);
   }
 
   /** Stable id stamped on heartbeats and control `from`. */
@@ -177,56 +177,36 @@ export class QueueTransport implements Transport, ControlPlane {
   // ---------------------------------------------------------------------------
 
   /**
-   * Poll `queue` on an interval, handing each popped job to `onJob`, then marking it complete. A
-   * throwing `onJob` fails the job (so it is not silently lost) and the loop keeps running. Returns
-   * a handle that stops the loop; also tracked so {@link close} stops them all.
+   * Poll `queue`, handing each popped job to `onJob` then marking it complete. A throwing `onJob`
+   * fails the job (so it is not silently lost) and polling continues. One job is popped per tick;
+   * core's {@link Pollers} drains a burst (re-ticking while a job was found) before sleeping, and
+   * owns the stop-all bookkeeping. Returns a handle that stops just this loop.
    */
-  #startLoop(queue: string, onJob: (job: JobData) => Promise<void>): Loop {
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-
-    const tick = async (): Promise<void> => {
-      if (stopped || this.#closed) return;
+  #startLoop(queue: string, onJob: (job: JobData) => Promise<void>): PollLoop {
+    return this.#pollers.start(async () => {
+      let job: AcquiredJob | null;
       try {
-        // Drain everything currently available before sleeping, so a burst is processed promptly.
-        let job = await this.#adapter.popFrom(queue);
-        while (job && !stopped && !this.#closed) {
-          try {
-            await onJob(job);
-            await this.#adapter.completeJob(job.id, queue);
-          } catch (err) {
-            await this.#adapter
-              .failJob(job.id, queue, err instanceof Error ? err : new Error(String(err)))
-              .catch(() => {});
-          }
-          job = await this.#adapter.popFrom(queue);
-        }
+        job = await this.#adapter.popFrom(queue);
       } catch {
-        // A transient adapter error: swallow and retry on the next tick.
+        // A transient adapter error: treat as "no work", retry on the next tick.
+        return false;
       }
-      if (!stopped && !this.#closed) {
-        timer = setTimeout(() => void tick(), this.#pollIntervalMs);
-        timer.unref?.();
+      if (!job) return false;
+      try {
+        await onJob(job);
+        await this.#adapter.completeJob(job.id, queue);
+      } catch (err) {
+        await this.#adapter
+          .failJob(job.id, queue, err instanceof Error ? err : new Error(String(err)))
+          .catch(() => {});
       }
-    };
-
-    const loop: Loop = {
-      stop: () => {
-        stopped = true;
-        if (timer) clearTimeout(timer);
-        this.#loops.delete(loop);
-      },
-    };
-    this.#loops.add(loop);
-    void tick();
-    return loop;
+      return true;
+    });
   }
 
   /** Stop every poll loop and destroy the adapter so the process can exit. */
   async close(): Promise<void> {
-    this.#closed = true;
-    for (const loop of this.#loops) loop.stop();
-    this.#loops.clear();
+    this.#pollers.stopAll();
     this.#taskLoop = undefined;
     await this.#adapter.destroy();
   }

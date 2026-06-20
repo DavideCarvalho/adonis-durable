@@ -8,6 +8,8 @@ import {
   type ControlMessage,
   type ControlPlane,
   type Heartbeat,
+  type PollLoop,
+  Pollers,
   type RemoteTask,
   type StepHandler,
   type StepResult,
@@ -61,6 +63,8 @@ interface ControlRow {
   payload: string;
 }
 
+const DEFAULT_LOG = (err: unknown): void => console.error('[DbTransport] poll failed', err);
+
 export interface DbTransportOptions {
   /**
    * The Lucid `Database` to read/write. Use the app's own `db` service (no broker, no extra
@@ -86,8 +90,6 @@ export interface DbTransportOptions {
   /** Stable id for this process (stamped on heartbeats / control `from` / `claimed_by`). Default random. */
   instanceId?: string;
 }
-
-type Loop = { stop: () => void };
 
 /**
  * A poll-based, DB-table-backed {@link Transport} (and best-effort {@link ControlPlane}) over
@@ -120,10 +122,9 @@ export class DbTransport implements Transport, ControlPlane {
   readonly #autoCreate: boolean;
   readonly #instanceId: string;
   readonly #handlers = new Map<string, StepHandler>();
-  readonly #loops = new Set<Loop>();
+  readonly #pollers: Pollers;
   #schemaReady: Promise<void> | undefined;
-  #taskLoop: Loop | undefined;
-  #closed = false;
+  #taskLoop: PollLoop | undefined;
 
   constructor(options: DbTransportOptions) {
     this.#db = options.db;
@@ -134,6 +135,7 @@ export class DbTransport implements Transport, ControlPlane {
     this.#batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
     this.#autoCreate = options.autoCreate ?? true;
     this.#instanceId = options.instanceId ?? randomUUID();
+    this.#pollers = new Pollers(this.#pollIntervalMs, DEFAULT_LOG);
   }
 
   /** Stable id stamped on heartbeats, control `from`, and `claimed_by`. */
@@ -201,7 +203,7 @@ export class DbTransport implements Transport, ControlPlane {
     this.#handlers.set(name, fn);
     if (!this.#taskLoop) {
       const group = this.#group;
-      this.#taskLoop = this.#startLoop(() => this.#drainTasks(group));
+      this.#taskLoop = this.#pollers.start(async () => (await this.#drainTasks(group)) > 0);
     }
   }
 
@@ -267,11 +269,11 @@ export class DbTransport implements Transport, ControlPlane {
   // ───────────────────────────────────────────────────────────────────────────
 
   onResult(handler: (result: StepResult) => Promise<void>): void {
-    this.#startLoop(() => this.#drainResults(handler));
+    this.#pollers.start(async () => (await this.#drainResults(handler)) > 0);
   }
 
   onHeartbeat(handler: (beat: Heartbeat) => Promise<void>): void {
-    this.#startLoop(() => this.#drainHeartbeats(handler));
+    this.#pollers.start(async () => (await this.#drainHeartbeats(handler)) > 0);
   }
 
   async #drainResults(handler: (result: StepResult) => Promise<void>): Promise<number> {
@@ -325,7 +327,7 @@ export class DbTransport implements Transport, ControlPlane {
   }
 
   onControl(handler: (msg: ControlMessage) => void): void {
-    this.#startLoop(() => this.#drainControl(handler));
+    this.#pollers.start(async () => (await this.#drainControl(handler)) > 0);
   }
 
   async #drainControl(handler: (msg: ControlMessage) => void): Promise<number> {
@@ -402,48 +404,9 @@ export class DbTransport implements Transport, ControlPlane {
   }
 
   // ───────────────────────────────────────────────────────────────────────────
-  // poll loop lifecycle
+  // poll loop lifecycle (the recursive-timer / drain-burst / stop-all bookkeeping
+  // lives in core's Pollers; here each loop is just a `drain* > 0` tick)
   // ───────────────────────────────────────────────────────────────────────────
-
-  /**
-   * Run `tick` repeatedly: drain everything available, then sleep `pollIntervalMs` once a tick
-   * reports 0 rows. A throwing tick is swallowed (logged) and the loop keeps running. Returns a
-   * handle that stops the loop; also tracked so {@link close} stops them all.
-   */
-  #startLoop(tick: () => Promise<number>): Loop {
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-
-    const run = async (): Promise<void> => {
-      if (stopped || this.#closed) return;
-      try {
-        // Drain bursts promptly: keep ticking while a tick produced work.
-        let processed = await tick();
-        while (processed > 0 && !stopped && !this.#closed) {
-          processed = await tick();
-        }
-      } catch (err) {
-        if (!stopped && !this.#closed) {
-          console.error('[DbTransport] poll failed', err);
-        }
-      }
-      if (!stopped && !this.#closed) {
-        timer = setTimeout(() => void run(), this.#pollIntervalMs);
-        timer.unref?.();
-      }
-    };
-
-    const loop: Loop = {
-      stop: () => {
-        stopped = true;
-        if (timer) clearTimeout(timer);
-        this.#loops.delete(loop);
-      },
-    };
-    this.#loops.add(loop);
-    void run();
-    return loop;
-  }
 
   /**
    * No-op convenience: the loops auto-start when `onResult`/`onHeartbeat`/`onControl`/`handle` are
@@ -451,15 +414,13 @@ export class DbTransport implements Transport, ControlPlane {
    * if you prefer an explicit start. Returns once the schema is ready.
    */
   async start(): Promise<void> {
-    this.#closed = false;
+    this.#pollers.reopen();
     await this.#ensureSchema();
   }
 
   /** Stop every poll loop. Does not close the shared `Database`. */
   async stop(): Promise<void> {
-    this.#closed = true;
-    for (const loop of this.#loops) loop.stop();
-    this.#loops.clear();
+    this.#pollers.stopAll();
     this.#taskLoop = undefined;
   }
 
