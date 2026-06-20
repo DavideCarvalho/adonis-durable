@@ -4,6 +4,7 @@ import {
   InMemoryTransport,
   WorkflowEngine,
   type WorkflowEngineDeps,
+  attachDurableDiagnostics,
 } from '@agora/durable-core';
 import type { DurableConfig } from '../src/define_config.js';
 
@@ -21,6 +22,9 @@ const CONTEXT_ACCESSOR = Symbol.for('@agora/context:accessor');
  * with zero config when OTel is installed — and no hard dependency when it is not.
  */
 const OTEL_TRACEPARENT = Symbol.for('@agora/otel:traceparent');
+
+/** `@agora/diagnostics`'s emit capability slot (set at that package's module load when installed). */
+const DIAGNOSTICS_EMIT = Symbol.for('@agora/diagnostics:emit');
 
 /**
  * Wires `@agora/durable` into the AdonisJS application: binds a singleton
@@ -40,6 +44,8 @@ const OTEL_TRACEPARENT = Symbol.for('@agora/otel:traceparent');
  * ```
  */
 export default class DurableProvider {
+  #detachDiagnostics: (() => void) | null = null;
+
   constructor(protected app: ApplicationService) {}
 
   register() {
@@ -74,5 +80,24 @@ export default class DurableProvider {
 
       return new WorkflowEngine(deps);
     });
+  }
+
+  /**
+   * Once everything is booted, bridge engine lifecycle events onto the `@agora/diagnostics` bus —
+   * but only when diagnostics is actually installed (its emit slot is populated at module load).
+   * Gating on the slot avoids eagerly constructing the engine when diagnostics is absent; when it is
+   * present, this makes durable runs visible to `onDiagnostic`, Telescope, the relays and OTel with
+   * zero config. No hard dependency on `@agora/diagnostics`.
+   */
+  async ready() {
+    const emit = (globalThis as Record<symbol, unknown>)[DIAGNOSTICS_EMIT];
+    if (typeof emit !== 'function') return;
+    const engine = await this.app.container.make(WorkflowEngine);
+    this.#detachDiagnostics = attachDurableDiagnostics(engine);
+  }
+
+  async shutdown() {
+    this.#detachDiagnostics?.();
+    this.#detachDiagnostics = null;
   }
 }

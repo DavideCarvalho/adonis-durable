@@ -9,6 +9,7 @@ export * from './queue.js';
 export * from './remote-step-factory.js';
 export * from './remote-workflow-executor.js';
 export * from './codec-state-store.js';
+export * from './diagnostics-bridge.js';
 export * from './events.js';
 export * from './metrics.js';
 export * from './pollers.js';
