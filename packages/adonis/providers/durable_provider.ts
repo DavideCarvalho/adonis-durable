@@ -1,4 +1,5 @@
 import type { ApplicationService } from '@adonisjs/core/types';
+import type { DurableConfig } from '../src/define_config.js';
 import {
   InMemoryStateStore,
   InMemoryTransport,
@@ -9,8 +10,7 @@ import {
   WorkflowEngine,
   type WorkflowEngineDeps,
   attachDurableDiagnostics,
-} from '@agora/durable-core';
-import type { DurableConfig } from '../src/define_config.js';
+} from '../src/index.js';
 
 /** The read view of `@agora/context`'s accessor, read structurally from its global slot. */
 interface ContextAccessorLike {

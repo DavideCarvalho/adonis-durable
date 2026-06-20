@@ -1,7 +1,7 @@
 {
   "name": "@agora/durable",
   "version": "0.1.0",
-  "description": "AdonisJS binding for @agora/durable-core — a container-resolved durable workflow engine. Part of the Agora ecosystem.",
+  "description": "Durable cross-app workflows for AdonisJS — deterministic replay engine, AdonisJS binding, ace commands, dashboard, OpenTelemetry, Telescope, testing harness and Redis admission, all in one package. Part of the Agora ecosystem.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -23,43 +23,112 @@
       "import": "./dist/providers/durable_provider.js",
       "default": "./dist/providers/durable_provider.js"
     },
+    "./dashboard_provider": {
+      "types": "./dist/providers/dashboard_provider.d.ts",
+      "import": "./dist/providers/dashboard_provider.js",
+      "default": "./dist/providers/dashboard_provider.js"
+    },
     "./configure": {
       "types": "./dist/configure.d.ts",
       "import": "./dist/configure.js",
       "default": "./dist/configure.js"
+    },
+    "./otel": {
+      "types": "./dist/src/otel/index.d.ts",
+      "import": "./dist/src/otel/index.js",
+      "default": "./dist/src/otel/index.js"
+    },
+    "./telescope": {
+      "types": "./dist/src/telescope/index.d.ts",
+      "import": "./dist/src/telescope/index.js",
+      "default": "./dist/src/telescope/index.js"
+    },
+    "./dashboard": {
+      "types": "./dist/src/dashboard/index.d.ts",
+      "import": "./dist/src/dashboard/index.js",
+      "default": "./dist/src/dashboard/index.js"
+    },
+    "./testing": {
+      "types": "./dist/src/testing-kit/index.d.ts",
+      "import": "./dist/src/testing-kit/index.js",
+      "default": "./dist/src/testing-kit/index.js"
+    },
+    "./admission-redis": {
+      "types": "./dist/src/admission-redis/index.d.ts",
+      "import": "./dist/src/admission-redis/index.js",
+      "default": "./dist/src/admission-redis/index.js"
+    },
+    "./commands": {
+      "types": "./dist/commands/main.d.ts",
+      "import": "./dist/commands/main.js",
+      "default": "./dist/commands/main.js"
+    },
+    "./commands/*": {
+      "types": "./dist/commands/*.d.ts",
+      "import": "./dist/commands/*.js",
+      "default": "./dist/commands/*.js"
     }
   },
   "files": ["dist/", "README.md", "CHANGELOG.md"],
   "sideEffects": false,
   "scripts": {
     "build": "tsc -p tsconfig.json && pnpm run copy:stubs",
-    "copy:stubs": "mkdir -p dist/stubs/config dist/stubs/database/migrations && cp stubs/config/durable.stub dist/stubs/config/durable.stub && cp -r stubs/database/migrations/. dist/stubs/database/migrations/",
+    "copy:stubs": "mkdir -p dist/stubs/config dist/stubs/database/migrations dist/assets && cp stubs/config/durable.stub dist/stubs/config/durable.stub && cp stubs/config/durable_dashboard.stub dist/stubs/config/durable_dashboard.stub && cp -r stubs/database/migrations/. dist/stubs/database/migrations/ && cp assets/dashboard.html dist/assets/dashboard.html",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@agora/durable-core": "workspace:^"
+    "zod": "^3.23.0"
   },
   "peerDependencies": {
     "@adonisjs/core": "^6.12.0",
     "@adonisjs/lucid": "^20.0.0 || ^21.0.0",
-    "@adonisjs/queue": "^0.6.0"
+    "@adonisjs/queue": "^0.6.0",
+    "@adonisjs/redis": "^9.0.0",
+    "@opentelemetry/api": "^1.0.0",
+    "cron-parser": "^4.0.0 || ^5.0.0",
+    "ioredis": "^5.0.0",
+    "vitest": "^3.0.0"
   },
   "peerDependenciesMeta": {
     "@adonisjs/lucid": { "optional": true },
-    "@adonisjs/queue": { "optional": true }
+    "@adonisjs/queue": { "optional": true },
+    "@adonisjs/redis": { "optional": true },
+    "@opentelemetry/api": { "optional": true },
+    "cron-parser": { "optional": true },
+    "ioredis": { "optional": true },
+    "vitest": { "optional": true }
   },
   "devDependencies": {
     "@adonisjs/assembler": "^7.8.0",
     "@adonisjs/core": "^6.17.0",
     "@adonisjs/lucid": "^21.6.0",
     "@adonisjs/queue": "^0.6.1",
-    "@agora/durable-core": "workspace:*",
+    "@adonisjs/redis": "^9.0.0",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/context-async-hooks": "^1.30.0",
+    "@opentelemetry/sdk-trace-base": "^1.30.0",
     "@types/node": "^20.0.0",
+    "better-sqlite3": "^11.0.0",
+    "cron-parser": "^4.9.0",
+    "ioredis": "^5.4.0",
     "typescript": "^5.4.0",
-    "vitest": "^3.0.0"
+    "vitest": "^3.0.0",
+    "zod": "^3.25.0"
   },
   "engines": { "node": ">=20.6.0" },
-  "keywords": ["adonisjs", "adonis", "durable", "workflow", "saga", "agora"]
+  "keywords": [
+    "adonisjs",
+    "adonis",
+    "durable",
+    "workflow",
+    "saga",
+    "replay",
+    "dashboard",
+    "opentelemetry",
+    "telescope",
+    "testing",
+    "agora"
+  ]
 }

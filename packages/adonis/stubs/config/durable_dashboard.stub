@@ -1,0 +1,17 @@
+{{{
+  exports({ to: app.configPath('durable_dashboard.ts') })
+}}}
+import { defineConfig } from '@agora/durable/dashboard'
+
+/**
+ * Configuration for the @agora/durable dashboard.
+ *
+ * By default the dashboard is open OUTSIDE production, and in production it
+ * requires a bearer token equal to `DURABLE_DASHBOARD_TOKEN` (deny if unset).
+ * Replace `authorize` with your own guard (session, role, IP allow-list, …).
+ */
+export default defineConfig({
+  // enabled: true,
+  // path: '/durable',
+  // authorize: (ctx) => ctx.auth.user?.isAdmin === true,
+})

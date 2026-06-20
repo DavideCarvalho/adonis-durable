@@ -4,8 +4,15 @@
     "rootDir": ".",
     "outDir": "dist",
     "tsBuildInfoFile": ".tsbuildinfo",
-    "types": ["node"]
+    "types": ["node"],
+    "experimentalDecorators": true
   },
-  "include": ["src/**/*.ts", "providers/**/*.ts", "configure.ts", "stubs/main.ts"],
+  "include": [
+    "src/**/*.ts",
+    "providers/**/*.ts",
+    "commands/**/*.ts",
+    "configure.ts",
+    "stubs/main.ts"
+  ],
   "exclude": ["**/*.spec.ts", "**/*.test.ts", "test/**", "dist/**"]
 }

@@ -1,0 +1,111 @@
+import type { RunResult, WorkflowEngine } from '../index.js';
+
+/** A minimal logger the worker loop writes progress to (the ace command's `this.logger` fits). */
+export interface WorkerLogger {
+  info(message: string): void;
+  error(message: string): void;
+}
+
+/**
+ * Run one tick of the worker poll loop against the engine: pick up enqueued runs, recover runs left
+ * incomplete by a crash, resume runs whose durable timers are due, and cancel runs past their
+ * execution timeout. Returns a per-phase count of the runs each phase touched — the unit the
+ * `durable:work` command logs and the tests assert on. Each phase is awaited independently so one
+ * phase throwing does not abort the rest of the tick (the error is collected and surfaced).
+ */
+export interface TickResult {
+  pending: number;
+  recovered: number;
+  timers: number;
+  /** Phase errors caught during the tick (e.g. a transient store hiccup), keyed by phase name. */
+  errors: { phase: string; error: Error }[];
+}
+
+const settledCount = (results: RunResult[]): number => results.length;
+
+/** Execute a single poll-loop tick. See {@link TickResult}. Never throws — phase errors are collected. */
+export async function runTick(engine: WorkflowEngine, now?: number): Promise<TickResult> {
+  const result: TickResult = { pending: 0, recovered: 0, timers: 0, errors: [] };
+  const phase = async (name: string, fn: () => Promise<number>): Promise<number> => {
+    try {
+      return await fn();
+    } catch (error) {
+      result.errors.push({ phase: name, error: toError(error) });
+      return 0;
+    }
+  };
+  result.pending = await phase('runPending', async () =>
+    settledCount(await engine.runPending(now)),
+  );
+  result.recovered = await phase('recoverIncomplete', async () =>
+    settledCount(await engine.recoverIncomplete(now)),
+  );
+  result.timers = await phase('resumeDueTimers', async () =>
+    settledCount(await engine.resumeDueTimers(now)),
+  );
+  await phase('sweepTimeouts', async () => {
+    await engine.sweepTimeouts(now);
+    return 0;
+  });
+  return result;
+}
+
+function toError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
+}
+
+/** Options for {@link runWorkerLoop}. */
+export interface WorkerLoopOptions {
+  /** Poll interval in ms between ticks. */
+  intervalMs: number;
+  /** Resolves/rejects to stop the loop gracefully (wired to SIGINT/SIGTERM by the command). */
+  stopSignal: Promise<void>;
+  logger: WorkerLogger;
+  /** Drain timeout passed to `engine.drain` on shutdown. Default 10s. */
+  drainTimeoutMs?: number;
+  /** Injectable sleep, for tests. Default a real timer that resolves after `ms`. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+const realSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    (t as { unref?: () => void }).unref?.();
+  });
+
+/**
+ * The long-running worker loop: tick, then wait `intervalMs` (or until `stopSignal` resolves),
+ * repeat. On stop it drains in-flight executions so a deploy hands off cleanly. Returns the number of
+ * ticks executed — testable by resolving `stopSignal` after N ticks with an injected `sleep`.
+ */
+export async function runWorkerLoop(
+  engine: WorkflowEngine,
+  options: WorkerLoopOptions,
+): Promise<number> {
+  const sleep = options.sleep ?? realSleep;
+  let stopped = false;
+  void options.stopSignal.then(() => {
+    stopped = true;
+  });
+  let ticks = 0;
+  while (!stopped) {
+    const result = await runTick(engine);
+    ticks += 1;
+    const touched = result.pending + result.recovered + result.timers;
+    if (touched > 0) {
+      options.logger.info(
+        `tick: ${result.pending} pending, ${result.recovered} recovered, ${result.timers} timers`,
+      );
+    }
+    for (const { phase, error } of result.errors) {
+      options.logger.error(`tick phase ${phase} failed: ${error.message}`);
+    }
+    if (stopped) break;
+    // Race the interval against the stop signal so shutdown is prompt, not interval-latent.
+    await Promise.race([sleep(options.intervalMs), options.stopSignal.catch(() => undefined)]);
+  }
+  options.logger.info(`draining (timeout ${options.drainTimeoutMs ?? 10_000}ms)…`);
+  await engine.drain(options.drainTimeoutMs);
+  options.logger.info(`worker stopped after ${ticks} ticks`);
+  return ticks;
+}

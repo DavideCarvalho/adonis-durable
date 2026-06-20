@@ -1,8 +1,8 @@
 import type { ApplicationService } from '@adonisjs/core/types';
-import { WorkflowEngine } from '@agora/durable-core';
 import { describe, expect, it } from 'vitest';
 import DurableProvider from '../providers/durable_provider.js';
 import type { DurableConfig } from '../src/define_config.js';
+import { WorkflowEngine } from '../src/index.js';
 
 /** Minimal Adonis container/app stand-in capturing the singleton factory. */
 function fakeApp(config: DurableConfig = {}) {

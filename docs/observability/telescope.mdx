@@ -3,18 +3,14 @@ title: Telescope
 description: Surface workflow runs and steps inside Telescope with durableTelescopeExtension() — a Workflows dashboard with golden-signal health, current-state gauges, and recent failures, alongside your app's requests, queries, and jobs.
 ---
 
-Already running [Telescope](/docs/telescope)? `@agora/durable-telescope` adds a dedicated **Workflows** view so durable flows appear next to your requests, queries, and jobs — with a health dashboard built from the engine's lifecycle events and live store reads.
-
-```bash
-npm i @agora/durable-telescope
-```
+Already running [Telescope](/docs/telescope)? The `@agora/durable/telescope` subpath adds a dedicated **Workflows** view so durable flows appear next to your requests, queries, and jobs — with a health dashboard built from the engine's lifecycle events and live store reads. It ships in the main `@agora/durable` package — no extra install.
 
 ## Registering the extension
 
 Register `durableTelescopeExtension()` under Telescope's `extensions`:
 
 ```ts title="config/telescope.ts"
-import { durableTelescopeExtension } from '@agora/durable-telescope'
+import { durableTelescopeExtension } from '@agora/durable/telescope'
 
 export default defineConfig({
   extensions: [

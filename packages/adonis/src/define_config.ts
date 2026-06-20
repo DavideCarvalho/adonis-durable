@@ -1,10 +1,14 @@
+import type { ControlPlane, RunDispatcher } from './interfaces.js';
+import { stores } from './stores/factory.js';
+import type { LucidStoreConfig, StoreContext, StoreFactory } from './stores/factory.js';
+import { transports } from './transports/factory.js';
 import type {
-  ControlPlane,
-  RunDispatcher,
-  StoreFactory,
+  DbTransportConfig,
+  MemoryTransportConfig,
+  QueueTransportConfig,
+  TransportContext,
   TransportFactory,
-} from '@agora/durable-core';
-import { stores, transports } from '@agora/durable-core';
+} from './transports/factory.js';
 
 /**
  * Shape of `config/durable.ts`. Everything is optional — by default the engine uses an in-process
@@ -75,4 +79,4 @@ export type {
   StoreContext,
   StoreFactory,
   LucidStoreConfig,
-} from '@agora/durable-core';
+};
