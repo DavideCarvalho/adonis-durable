@@ -1,3 +1,4 @@
+import { type AdmissionBackend, InMemoryAdmissionBackend } from './admission.js';
 import { backoffDelay } from './backoff.js';
 import { instantCheckpoint, stepCheckpoint } from './checkpoints.js';
 import { type Completion } from './completion.js';
@@ -46,7 +47,7 @@ import type {
 } from './interfaces.js';
 import type { HistoryEvent } from './interfaces.js';
 import { breakpointToken, stepId } from './protocol.js';
-import { type QueueConfig, QueueController } from './queue.js';
+import type { QueueConfig } from './queue.js';
 import { SingletonGate } from './singleton-gate.js';
 import { TransportPool } from './transport-pool.js';
 import {
@@ -182,6 +183,12 @@ export interface WorkflowEngineDeps {
   /** Recovery lease duration in ms — how long this instance owns a run it picked up. Default 30s. */
   leaseMs?: number | undefined;
   /**
+   * Flow-control admission backend for `ctx.call(step, input, { queue })`. Defaults to an in-process
+   * {@link InMemoryAdmissionBackend} (per-instance caps). Inject a store/Redis-backed backend to make
+   * the concurrency/rate/ordering caps GLOBAL across engine replicas.
+   */
+  admission?: AdmissionBackend | undefined;
+  /**
    * Cap how many times crash-recovery may pick up the same still-`running` run before giving up and
    * moving it to the `dead` dead-letter state (a poison pill that crashes the process every boot).
    * Omit for unlimited (the default — recovery always retries).
@@ -301,8 +308,10 @@ export class WorkflowEngine {
   private readonly updateValidators = new Map<string, UpdateValidator>();
   /** Runs being cancelled WITH saga compensation — see `cancel({ compensate: true })`. */
   private readonly cancelRequested = new Set<string>();
-  /** Flow-control queues for remote steps, keyed by name (see {@link registerQueue}). */
-  private readonly queues = new Map<string, QueueController>();
+  /** Flow-control admission backend for remote steps (see {@link registerQueue}). */
+  private readonly admission: AdmissionBackend;
+  /** Runs on THIS instance blocked on admission, by queue — woken early on a freed-slot signal. */
+  private readonly queueWaiters = new Map<string, Set<string>>();
   /** Which queue a dispatched step took a slot from, by stepId — so the result can release it. */
   private readonly stepQueue = new Map<string, string>();
   /** Executions currently in flight, so a graceful shutdown can wait for them to settle. */
@@ -316,6 +325,10 @@ export class WorkflowEngine {
     );
     this.controlPlane = deps.controlPlane;
     this.clock = deps.clock ?? Date.now;
+    this.admission = deps.admission ?? new InMemoryAdmissionBackend(this.clock);
+    // Wake this instance's admission-blocked runs the moment a slot frees anywhere in the fleet,
+    // instead of waiting for their retry tick. Best-effort (the retry tick remains the guarantee).
+    this.admission.onFreed?.((queue) => this.wakeQueueWaiters(queue));
     this.instanceId = deps.instanceId ?? globalThis.crypto.randomUUID();
     this.leaseMs = deps.leaseMs ?? 30_000;
     this.maxRecoveryAttempts = deps.maxRecoveryAttempts;
@@ -524,7 +537,7 @@ export class WorkflowEngine {
    * durable. Per engine instance (see {@link QueueConfig}). Registering the same name replaces it.
    */
   registerQueue(config: QueueConfig): void {
-    this.queues.set(config.name, new QueueController(config, this.clock));
+    this.admission.register(config);
   }
 
   /** Subscribe to lifecycle events. Returns an unsubscribe function. */
@@ -2042,19 +2055,25 @@ export class WorkflowEngine {
     // Flow control: a queued call that can't be admitted (concurrency/rate) does NOT dispatch — the
     // run re-suspends with the queue's retry time and the timer poller re-tries admission later, so
     // the limit is durable. The admitted slot is released when the result lands (completeRemoteResult).
-    const controller = queue ? this.queues.get(queue) : undefined;
-    if (controller) {
+    if (queue && this.admission.handles(queue)) {
       // Admission carries the per-call priority + fairness key (default the runId so each run is its
-      // own fairness bucket), and the stepId as a STABLE waiter id so the controller tracks one
-      // waiter across this call's durable retries. Ordering lives entirely in the controller — this
-      // is the dispatch/admission layer, not the positional replay path.
-      const decision = controller.tryAdmit({
+      // own fairness bucket), and the stepId as a STABLE waiter id so the backend tracks one waiter
+      // across this call's durable retries. Ordering lives in the backend (in-process by default, or
+      // global) — this is the dispatch/admission layer, not the positional replay path.
+      const decision = await this.admission.tryAdmit(queue, {
         priority: admission?.priority,
         key: admission?.fairnessKey ?? runId,
         waiterId: id,
       });
-      if (!decision.ok) throw new WorkflowSuspended(decision.retryAt);
-      this.stepQueue.set(id, queue as string);
+      if (!decision.ok) {
+        // Remember this run as blocked on `queue` so a freed-slot signal can wake it early.
+        const waiters = this.queueWaiters.get(queue) ?? new Set<string>();
+        waiters.add(runId);
+        this.queueWaiters.set(queue, waiters);
+        throw new WorkflowSuspended(decision.retryAt);
+      }
+      this.queueWaiters.get(queue)?.delete(runId);
+      this.stepQueue.set(id, queue);
     }
 
     const validInput = step.input.parse(input);
@@ -2102,7 +2121,7 @@ export class WorkflowEngine {
     if (!cp || cp.status !== 'pending') return;
     // A result settling this step frees its flow-control slot (no-op if it wasn't queued). Done
     // before the cancelled-run early-return below, so a cancellation can't leak the slot.
-    this.releaseQueueSlot(cp.stepId);
+    await this.releaseQueueSlot(cp.stepId);
     // Drop a late result for a run that was cancelled/finished meanwhile — don't complete the step
     // or resume (the run is already terminal). This is the engine side of cooperative cancellation.
     const run = await this.store.getRun(result.runId);
@@ -2132,12 +2151,25 @@ export class WorkflowEngine {
     await this.resume(result.runId);
   }
 
+  /**
+   * A slot freed on `queue` (a fleet-wide signal): resume this instance's runs blocked on it so they
+   * re-contend now instead of at their retry tick. Snapshot-and-clear — a run still blocked after the
+   * retry re-registers itself, and one that's gone (cancelled/admitted) is dropped. Best-effort.
+   */
+  private wakeQueueWaiters(queue: string): void {
+    const waiters = this.queueWaiters.get(queue);
+    if (!waiters || waiters.size === 0) return;
+    const runIds = [...waiters];
+    waiters.clear();
+    for (const runId of runIds) void this.resume(runId).catch(() => undefined);
+  }
+
   /** Release the flow-control slot a dispatched step held (if any), by its stepId. */
-  private releaseQueueSlot(id: string): void {
+  private async releaseQueueSlot(id: string): Promise<void> {
     const queue = this.stepQueue.get(id);
     if (queue === undefined) return;
     this.stepQueue.delete(id);
-    this.queues.get(queue)?.release();
+    await this.admission.release(queue, id);
   }
 
   /** In-memory await path for a remote step with a liveness `timeoutMs` (re-dispatch on timeout). */
