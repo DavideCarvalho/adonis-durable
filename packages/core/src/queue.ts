@@ -38,6 +38,12 @@ export interface QueueConfig {
    * only breaks ties within the same priority.
    */
   fairness?: 'fifo' | 'key';
+  /**
+   * Arrival-order tiebreak among otherwise-equal waiters (same priority, same fairness rank).
+   * `'fifo'` (default) admits the earliest arrival; `'lifo'` admits the most recent (a stack).
+   * Orthogonal to `priority` and `fairness` — those still win first; this only breaks their ties.
+   */
+  order?: 'fifo' | 'lifo';
 }
 
 /**
@@ -82,9 +88,9 @@ export class QueueController {
     private readonly clock: () => number,
   ) {}
 
-  /** Whether this controller does any priority/fairness ordering (else it's a plain FIFO gate). */
+  /** Whether this controller does any priority/fairness/arrival ordering (else a plain FIFO gate). */
   private get ordered(): boolean {
-    return this.config.fairness === 'key';
+    return this.config.fairness === 'key' || this.config.order === 'lifo';
   }
 
   /**
@@ -183,7 +189,7 @@ export class QueueController {
       const sb = this.servedOf(b.key);
       if (sa !== sb) return sa < sb; // least-recently-served key first
     }
-    return a.seq < b.seq; // FIFO tiebreak
+    return this.config.order === 'lifo' ? a.seq > b.seq : a.seq < b.seq; // arrival tiebreak
   }
 
   /** Last-served tick for a key (0 = never served, so an unseen key is admitted before a busy one). */

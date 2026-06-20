@@ -69,6 +69,18 @@ export class InMemoryStateStore implements StateStore {
     return run ? { ...run } : null;
   }
 
+  async deleteRun(runId: string): Promise<void> {
+    this.runs.delete(runId);
+    for (const [key, cp] of this.checkpoints) {
+      if (cp.runId === runId) this.checkpoints.delete(key);
+    }
+    for (const [token, waiter] of this.signalWaiters) {
+      if (waiter.runId === runId) this.signalWaiters.delete(token);
+    }
+    // Drop the run's normalized attribute rows (reindex with no attributes clears them).
+    this.reindexAttributes(runId, undefined);
+  }
+
   async getCheckpoint(runId: string, seq: number): Promise<StepCheckpoint | null> {
     const cp = this.checkpoints.get(this.key(runId, seq));
     return cp ? { ...cp } : null;

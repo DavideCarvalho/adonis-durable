@@ -212,6 +212,13 @@ export interface StateStore {
   updateRun(runId: string, patch: Partial<WorkflowRun>): Promise<void>;
   getRun(runId: string): Promise<WorkflowRun | null>;
 
+  /**
+   * Hard-delete a run and everything tied to it (its checkpoints, signal waiters, and search-attribute
+   * index rows). Idempotent: deleting an unknown run is a no-op. This removes exactly the one run — the
+   * engine's {@link WorkflowEngine.deleteRun} handles the child-subtree cascade.
+   */
+  deleteRun(runId: string): Promise<void>;
+
   getCheckpoint(runId: string, seq: number): Promise<StepCheckpoint | null>;
   /**
    * Persist a checkpoint and advance the run atomically. Durable semantics depend on this

@@ -68,6 +68,9 @@ export class CodecStateStore implements StateStore {
   async getRun(runId: string): Promise<WorkflowRun | null> {
     return this.decRun(await this.inner.getRun(runId));
   }
+  deleteRun(runId: string): Promise<void> {
+    return this.inner.deleteRun(runId);
+  }
   async getCheckpoint(runId: string, seq: number): Promise<StepCheckpoint | null> {
     return this.decCp(await this.inner.getCheckpoint(runId, seq));
   }

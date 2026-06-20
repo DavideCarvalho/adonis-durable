@@ -126,6 +126,20 @@ describe('QueueController — admission gate', () => {
     // Highest priority wins regardless of key.
     expect(q.tryAdmit({ key: 'noisy', priority: 9, waiterId: 'n2' }).ok).toBe(true);
   });
+
+  it('admits the most recent arrival first with order: lifo (a stack)', () => {
+    let now = 0;
+    const q = new QueueController({ name: 'q', concurrency: 1, order: 'lifo' }, () => now);
+    expect(q.tryAdmit({ waiterId: 'first' }).ok).toBe(true); // takes the slot
+    // Two equal-priority waiters register while the slot is busy: 'a' then 'b'.
+    q.tryAdmit({ waiterId: 'a' });
+    q.tryAdmit({ waiterId: 'b' });
+    q.release();
+    now += 1000;
+    // LIFO: the most recently-arrived waiter ('b') wins the freed slot; 'a' still waits.
+    expect(q.tryAdmit({ waiterId: 'a' }).ok).toBe(false);
+    expect(q.tryAdmit({ waiterId: 'b' }).ok).toBe(true);
+  });
 });
 
 describe('flow control — durable queues', () => {

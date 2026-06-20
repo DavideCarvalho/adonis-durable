@@ -712,6 +712,24 @@ export class WorkflowEngine {
     return this.store.listCheckpoints(runId);
   }
 
+  /**
+   * Hard-delete a run and its whole child subtree from the store, returning the number of runs
+   * removed (0 if `runId` is unknown). Children are collected BEFORE this run's checkpoints are
+   * deleted (the parent→children edge is read from them). Use for retention/cleanup; this is a
+   * destructive store operation, not a cancellation — a running run should be {@link cancel}led first.
+   */
+  async deleteRun(runId: string): Promise<number> {
+    const run = await this.store.getRun(runId);
+    if (!run) return 0;
+    // Collect children BEFORE deleting this run's checkpoints (getRunChildren reads them).
+    let deleted = 0;
+    for (const childId of await this.getRunChildren(runId)) {
+      deleted += await this.deleteRun(childId);
+    }
+    await this.store.deleteRun(runId);
+    return deleted + 1;
+  }
+
   async resume(runId: string): Promise<RunResult> {
     const run = await this.store.getRun(runId);
     if (!run) throw new Error(`run ${runId} not found`);

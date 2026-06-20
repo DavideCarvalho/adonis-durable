@@ -100,6 +100,18 @@ export class LucidStateStore implements StateStore {
     return row ? rowToRun(row as RunRow) : null;
   }
 
+  async deleteRun(runId: string): Promise<void> {
+    // Child rows first, then the run — checkpoints, signal waiters, attribute rows — all in one
+    // transaction so a crash can't leave a half-deleted run. (Buffered signals are token-keyed,
+    // not run-scoped, so they are not swept here.)
+    await this.client().transaction(async (trx) => {
+      await trx.from(DURABLE_TABLES.checkpoints).where('run_id', runId).delete();
+      await trx.from(DURABLE_TABLES.signalWaiters).where('run_id', runId).delete();
+      await trx.from(DURABLE_TABLES.attributes).where('run_id', runId).delete();
+      await trx.from(DURABLE_TABLES.runs).where('id', runId).delete();
+    });
+  }
+
   // --- checkpoints --------------------------------------------------------
 
   async getCheckpoint(runId: string, seq: number): Promise<StepCheckpoint | null> {
