@@ -3,7 +3,7 @@
   "pages": [
     "index",
     "getting-started",
-    "---Concepts---",
+    "---Guides---",
     "concepts",
     "authoring",
     "reliability",
@@ -11,7 +11,7 @@
     "transports",
     "stores",
     "observability",
-    "---Tooling---",
+    "---Operations---",
     "tooling",
     "testing",
     "cli"
