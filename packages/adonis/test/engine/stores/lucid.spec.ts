@@ -73,6 +73,17 @@ describe('LucidStateStore — runs & checkpoints', () => {
     expect(loaded?.lockedUntil).toBeUndefined();
   });
 
+  it('persists a run-level priority and reads it back; absent stays unprioritised', async () => {
+    await store.createRun(run({ id: 'p', priority: 7 }));
+    expect((await store.getRun('p'))?.priority).toBe(7);
+    // A run started without a priority reads back as absent (FIFO path untouched).
+    await store.createRun(run({ id: 'q' }));
+    expect((await store.getRun('q'))?.priority).toBeUndefined();
+    // A patch can update the priority in place.
+    await store.updateRun('p', { priority: 2 });
+    expect((await store.getRun('p'))?.priority).toBe(2);
+  });
+
   it('upserts checkpoints and reads them by (runId, seq)', async () => {
     await store.createRun(run());
     await store.saveCheckpoint(checkpoint());

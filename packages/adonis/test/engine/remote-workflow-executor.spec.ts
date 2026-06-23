@@ -52,4 +52,21 @@ describe('RemoteWorkflowExecutor', () => {
     expect(decision.status).toBe('completed');
     expect(decision.output).toEqual({ msg: 'hi' });
   });
+
+  it("carries the run's priority onto the dispatched workflow task", async () => {
+    let dispatched: WorkflowTask | undefined;
+    const transport: Transport = {
+      dispatch: async () => {},
+      onResult: () => {},
+      onHeartbeat: () => {},
+      dispatchWorkflowTask: async (t) => {
+        dispatched = t;
+      },
+      onDecision: () => {},
+    };
+    const exec = new RemoteWorkflowExecutor(transport, 'py-wf');
+    void exec.advance({ ...run(), priority: 9 }, []);
+    await new Promise((r) => setImmediate(r));
+    expect(dispatched?.priority).toBe(9);
+  });
 });

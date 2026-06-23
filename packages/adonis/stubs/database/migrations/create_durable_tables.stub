@@ -25,6 +25,7 @@ export default class extends BaseSchema {
       table.integer('recovery_attempts')
       table.text('tags')
       table.text('search_attributes')
+      table.integer('priority')
       table.bigInteger('created_at').notNullable()
       table.bigInteger('updated_at').notNullable()
       table.index(['status'], 'durable_runs_status_idx')

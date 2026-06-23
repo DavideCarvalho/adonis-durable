@@ -11,7 +11,7 @@
  * be resolved back to its name. A global-registry symbol (`Symbol.for`) so it survives duplicate
  * copies of this package in a dependency tree.
  */
-export const WORKFLOW_NAME_KEY: unique symbol = Symbol.for('nestjs-durable:workflow-name');
+export const WORKFLOW_NAME_KEY: unique symbol = Symbol.for('@agora/durable:workflow-name');
 
 /** Structural shape of a `@Workflow` class — its `run(ctx, input)` carries the input/output types. */
 export type WorkflowClass<TInput = unknown, TOutput = unknown> = abstract new (

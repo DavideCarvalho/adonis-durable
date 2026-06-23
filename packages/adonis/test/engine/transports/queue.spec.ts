@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Heartbeat, RemoteTask, StepResult } from '../../../src/interfaces.js';
 import { MockAdapter } from '../../../src/transports/queue-mock-adapter.js';
-import { QueueTransport } from '../../../src/transports/queue.js';
+import { QueueTransport, toBrokerPriority } from '../../../src/transports/queue.js';
 
 const POLL = 5;
 
@@ -144,6 +144,34 @@ describe('QueueTransport', () => {
     t.onResult(async () => {});
     await t.close();
     expect(adapter.destroyed).toBe(true);
+  });
+
+  it('toBrokerPriority inverts the engine convention (higher wins → lower broker number)', () => {
+    // Absent priority leaves the default FIFO path untouched.
+    expect(toBrokerPriority(undefined)).toBeUndefined();
+    // Higher engine priority maps to a lower (more urgent) broker number, around the default baseline.
+    expect(toBrokerPriority(0)).toBe(5);
+    expect(toBrokerPriority(4)).toBe(1);
+    expect(toBrokerPriority(-4)).toBe(9);
+    // Clamped into the adapter's valid 1..10 range.
+    expect(toBrokerPriority(100)).toBe(1);
+    expect(toBrokerPriority(-100)).toBe(10);
+  });
+
+  it('a higher-priority task is dispatched ahead of a lower-priority one through the queue', async () => {
+    const adapter = new MockAdapter();
+    const engine = make(adapter);
+
+    // Enqueue a low-priority task FIRST, then a high-priority one — FIFO would run them in arrival
+    // order; priority ordering must surface the urgent one first.
+    await engine.dispatch(task({ stepId: 'r1:low', priority: 1 }));
+    await engine.dispatch(task({ stepId: 'r1:high', priority: 9 }));
+
+    const queue = 'durable:tasks:ext';
+    const first = await adapter.popFrom(queue);
+    const second = await adapter.popFrom(queue);
+    expect((first?.payload as RemoteTask).stepId).toBe('r1:high');
+    expect((second?.payload as RemoteTask).stepId).toBe('r1:low');
   });
 
   it('serializes payloads as JSON (functions dropped on the wire)', async () => {

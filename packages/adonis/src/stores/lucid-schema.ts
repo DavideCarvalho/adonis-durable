@@ -44,10 +44,17 @@ export async function createDurableTables(db: Database): Promise<void> {
       table.integer('recovery_attempts');
       table.text('tags');
       table.text('search_attributes');
+      table.integer('priority');
       table.bigInteger('created_at').notNullable();
       table.bigInteger('updated_at').notNullable();
       table.index(['status'], 'durable_runs_status_idx');
       table.index(['status', 'wake_at'], 'durable_runs_due_idx');
+    });
+  } else if (!(await db.connection().schema.hasColumn(DURABLE_TABLES.runs, 'priority'))) {
+    // Auto-migrate an older runs table: add the nullable `priority` column in place. Nullable (no
+    // default) so existing rows read back as "unprioritised" and the FIFO path is unchanged.
+    await conn().alterTable(DURABLE_TABLES.runs, (table) => {
+      table.integer('priority');
     });
   }
 

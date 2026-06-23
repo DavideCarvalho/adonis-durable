@@ -59,6 +59,7 @@ export class RemoteWorkflowExecutor implements WorkflowExecutor {
       input: run.input,
       history,
       group: this.group,
+      priority: run.priority,
       attempt: 1,
     };
     const decision = new Promise<WorkflowDecision>((resolve, reject) => {

@@ -13,6 +13,6 @@
  * them to one. Mirrors the `CONTEXT_ACCESSOR` token in `@dudousxd/nestjs-durable`'s `tokens.ts`.
  */
 
-export const STATE_STORE = Symbol.for('nestjs-durable:STATE_STORE');
-export const TRANSPORT = Symbol.for('nestjs-durable:TRANSPORT');
-export const DURABLE_OPTIONS = Symbol.for('nestjs-durable:DURABLE_OPTIONS');
+export const STATE_STORE = Symbol.for('@agora/durable:STATE_STORE');
+export const TRANSPORT = Symbol.for('@agora/durable:TRANSPORT');
+export const DURABLE_OPTIONS = Symbol.for('@agora/durable:DURABLE_OPTIONS');

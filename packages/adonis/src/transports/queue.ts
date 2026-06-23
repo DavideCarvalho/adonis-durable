@@ -42,6 +42,26 @@ export type ControlPayload = ControlMessage;
 /** How often the engine-side / worker-side poll loops ask the adapter for the next job. */
 const DEFAULT_POLL_INTERVAL_MS = 200;
 
+// `@adonisjs/queue` job priority is the INVERSE of the durable engine's: a queue job runs the LOWEST
+// number first (1..10, default 5), while the engine's admission `priority` is "higher wins". We map
+// so one convention ("higher = more urgent") holds end-to-end. `BASELINE - p` keeps relative order (a
+// higher `p` yields a lower — more urgent — broker number), clamped into the adapter's valid range.
+// Centred on the default so callers have headroom both above and below it.
+const BROKER_PRIORITY_MIN = 1;
+const BROKER_PRIORITY_MAX = 10;
+const BROKER_PRIORITY_BASELINE = 5;
+
+/**
+ * Map the engine's per-call `priority` (higher = more urgent, default/absent = unprioritised) onto an
+ * `@adonisjs/queue` job `priority` (lower = more urgent). Returns `undefined` for an absent priority so
+ * the default FIFO path is untouched.
+ */
+export function toBrokerPriority(priority?: number): number | undefined {
+  if (priority == null) return undefined;
+  const mapped = Math.round(BROKER_PRIORITY_BASELINE - priority);
+  return Math.min(BROKER_PRIORITY_MAX, Math.max(BROKER_PRIORITY_MIN, mapped));
+}
+
 export interface QueueTransportOptions {
   /**
    * Factory for the `@adonisjs/queue` adapter this transport reads/writes. The same kind of factory
@@ -121,9 +141,20 @@ export class QueueTransport implements Transport, ControlPlane {
     return `${this.#prefix}:control`;
   }
 
-  /** Build the adapter `JobData` envelope for a JSON-safe payload. */
-  #job(name: string, payload: unknown): JobData {
-    return { id: randomUUID(), name, payload: toJson(payload), attempts: 0, createdAt: Date.now() };
+  /**
+   * Build the adapter `JobData` envelope for a JSON-safe payload. A translated `priority` is added
+   * only when set, so the default FIFO path is untouched for unprioritised dispatches.
+   */
+  #job(name: string, payload: unknown, priority?: number): JobData {
+    const brokerPriority = toBrokerPriority(priority);
+    return {
+      id: randomUUID(),
+      name,
+      payload: toJson(payload),
+      attempts: 0,
+      createdAt: Date.now(),
+      ...(brokerPriority != null ? { priority: brokerPriority } : {}),
+    };
   }
 
   // ---------------------------------------------------------------------------
@@ -131,7 +162,10 @@ export class QueueTransport implements Transport, ControlPlane {
   // ---------------------------------------------------------------------------
 
   async dispatch(task: RemoteTask): Promise<void> {
-    await this.#adapter.pushOn(this.#tasksQueue(task.group), this.#job('task', task));
+    await this.#adapter.pushOn(
+      this.#tasksQueue(task.group),
+      this.#job('task', task, task.priority),
+    );
   }
 
   // ---------------------------------------------------------------------------

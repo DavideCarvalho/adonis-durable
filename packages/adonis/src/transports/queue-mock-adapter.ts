@@ -28,7 +28,20 @@ export class MockAdapter implements Adapter {
 
   async popFrom(queue: string): Promise<AcquiredJob | null> {
     const list = this.pending.get(queue);
-    const job = list?.shift();
+    if (!list || list.length === 0) return null;
+    // Mirror the real adapters' priority ordering: lower `priority` number runs first (default 5 when
+    // absent), FIFO among equal priorities. A plain FIFO queue (no priorities set) is unchanged.
+    const DEFAULT_PRIORITY = 5;
+    let bestIndex = 0;
+    let bestPriority = list[0]?.priority ?? DEFAULT_PRIORITY;
+    for (let i = 1; i < list.length; i += 1) {
+      const candidate = list[i]?.priority ?? DEFAULT_PRIORITY;
+      if (candidate < bestPriority) {
+        bestIndex = i;
+        bestPriority = candidate;
+      }
+    }
+    const [job] = list.splice(bestIndex, 1);
     if (!job) return null;
     const acquired: AcquiredJob = { ...job, acquiredAt: Date.now() };
     this.active.set(job.id, acquired);

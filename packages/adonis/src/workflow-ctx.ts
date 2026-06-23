@@ -11,6 +11,7 @@ import {
 } from './errors.js';
 import { eventToken } from './events.js';
 import type {
+  ChildCallOptions,
   DurableWebhook,
   RemoteStepDef,
   StateStore,
@@ -26,6 +27,11 @@ import type {
 import { breakpointToken } from './protocol.js';
 import { createStepLogger } from './step-logger.js';
 import { type WorkflowRef, workflowName } from './workflow-ref.js';
+
+/** Normalize the `ctx.child`/`ctx.startChild` 3rd arg: a bare string is shorthand for `{ childId }`. */
+function normalizeChildOptions(options?: string | ChildCallOptions): ChildCallOptions {
+  return typeof options === 'string' ? { childId: options } : (options ?? {});
+}
 
 /** A saga undo registered by a completed step, kept with its step name for visibility on failure. */
 export interface Compensation {
@@ -79,7 +85,7 @@ export interface CtxHost {
     admission?: { priority?: number | undefined; fairnessKey?: string | undefined },
   ): Promise<TOutput>;
   /** Start a child run once, deferred so it can't reentrantly resume a still-running parent. */
-  startChild(workflow: string, input: unknown, id: string): void;
+  startChild(workflow: string, input: unknown, id: string, priority?: number): void;
   /** Deliver an op to a durable entity (deferred), optionally with a `reply` token for the result. */
   signalEntity?(name: string, key: string, op: string, arg: unknown, reply?: string): void;
   /** Run a local step body through the registered step interceptors (identity if none). */
@@ -387,7 +393,12 @@ export function createWorkflowCtx(
 
   // Child workflow (await result): start it once, then suspend on a `child:<id>` waiter the child
   // signals on its terminal state (see engine.notifyParent).
-  const child = async <T>(workflow: WorkflowRef, input: unknown, childId?: string): Promise<T> => {
+  const child = async <T>(
+    workflow: WorkflowRef,
+    input: unknown,
+    options?: string | ChildCallOptions,
+  ): Promise<T> => {
+    const { childId, priority } = normalizeChildOptions(options);
     const current = pos.next();
     const id = childId ?? `${runId}.child.${current}`;
     const existing = await readCheckpoint(current);
@@ -395,7 +406,7 @@ export function createWorkflowCtx(
       return unwrapCompletion<T>(existing.output, `child "${id}"`);
     }
     await store.putSignalWaiter({ token: `child:${id}`, runId, seq: current });
-    if (!(await store.getRun(id))) host.startChild(workflowName(workflow), input, id);
+    if (!(await store.getRun(id))) host.startChild(workflowName(workflow), input, id, priority);
     // Make the awaited child visible in the parent's timeline WHILE it runs: a `running` placeholder
     // at this seq with the same `signal:child:<id>` name the signal resolution later overwrites as
     // `completed`. So the dashboard shows the child node (and can inline-expand it) live, instead of
@@ -422,13 +433,14 @@ export function createWorkflowCtx(
   const startChild = async (
     workflow: WorkflowRef,
     input: unknown,
-    childId?: string,
+    options?: string | ChildCallOptions,
   ): Promise<string> => {
+    const { childId, priority } = normalizeChildOptions(options);
     const current = pos.next();
     const id = childId ?? `${runId}.child.${current}`;
     const existing = await readCheckpoint(current);
     if (existing && existing.status === 'completed') return existing.output as string;
-    if (!(await store.getRun(id))) host.startChild(workflowName(workflow), input, id);
+    if (!(await store.getRun(id))) host.startChild(workflowName(workflow), input, id, priority);
     await writeCheckpoint(
       instantCheckpoint({ runId, seq: current, name: `spawn:${id}`, kind: 'local', output: id }),
     );

@@ -23,6 +23,7 @@ export interface RunRow {
   recovery_attempts: number | string | null;
   tags: string | null;
   search_attributes: string | null;
+  priority: number | string | null;
   created_at: number | string;
   updated_at: number | string;
 }
@@ -87,6 +88,7 @@ export function runToRow(run: WorkflowRun): RunRow {
     recovery_attempts: run.recoveryAttempts ?? null,
     tags: toJson(run.tags),
     search_attributes: toJson(run.searchAttributes),
+    priority: run.priority ?? null,
     created_at: run.createdAt.getTime(),
     updated_at: run.updatedAt.getTime(),
   };
@@ -112,6 +114,7 @@ export function runPatchToRow(patch: Partial<WorkflowRun>): Partial<RunRow> {
   if ('recoveryAttempts' in patch) row.recovery_attempts = patch.recoveryAttempts ?? null;
   if ('tags' in patch) row.tags = toJson(patch.tags);
   if ('searchAttributes' in patch) row.search_attributes = toJson(patch.searchAttributes);
+  if ('priority' in patch) row.priority = patch.priority ?? null;
   if (patch.createdAt != null) row.created_at = patch.createdAt.getTime();
   if (patch.updatedAt != null) row.updated_at = patch.updatedAt.getTime();
   return row;
@@ -142,6 +145,8 @@ export function rowToRun(row: RunRow): WorkflowRun {
   if (tags !== undefined) run.tags = tags;
   const searchAttributes = fromJson<WorkflowRun['searchAttributes']>(row.search_attributes);
   if (searchAttributes !== undefined) run.searchAttributes = searchAttributes;
+  const priority = toNum(row.priority);
+  if (priority !== undefined) run.priority = priority;
   return run;
 }
 

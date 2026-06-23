@@ -49,6 +49,13 @@ export interface WorkflowRun {
   tags?: string[] | undefined;
   /** Typed, queryable run data (e.g. `{ amount: 200, tier: 'pro' }`) — see {@link RunQuery.attributes}. */
   searchAttributes?: SearchAttributes | undefined;
+  /**
+   * Dispatch priority for a REMOTE run (one advanced by a {@link WorkflowExecutor} over a broker):
+   * carried onto each {@link WorkflowTask} so an urgent child workflow can jump ahead of enqueued
+   * lower-priority ones at the worker. Higher wins; absent = unprioritised. Best-effort ordering, not
+   * durable state required for correctness — a transport without priority support ignores it.
+   */
+  priority?: number | undefined;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -385,6 +392,13 @@ export interface RemoteTask {
    * so failover is symmetric without the worker choosing a transport. Absent for a single transport.
    */
   transport?: string | undefined;
+  /**
+   * Admission priority carried through to the broker (the queue job `priority`) so a transport that
+   * supports priority ordering lets an urgent task jump ahead of already-enqueued lower-priority
+   * ones at the worker. Mirrors the per-call `priority` from `ctx.call(..., { priority })`. Higher
+   * wins; absent means default/unprioritised. Transports without priority support ignore it.
+   */
+  priority?: number | undefined;
   attempt: number;
 }
 
@@ -436,6 +450,12 @@ export interface WorkflowTask {
   /** Id of the transport this task was dispatched on (pool failover) — see {@link NamedTransport}. */
   transport?: string;
   traceparent?: string;
+  /**
+   * Admission priority carried to the broker (the queue job `priority`) so an urgent child workflow
+   * can jump ahead of already-enqueued lower-priority ones at the worker. Higher wins; absent means
+   * default/unprioritised. Transports without priority support ignore it.
+   */
+  priority?: number | undefined;
   attempt: number;
 }
 
@@ -638,6 +658,22 @@ export type ControlMessage = { from?: string } & (
 
 export type BackoffStrategy = 'fixed' | 'exp';
 
+/**
+ * Options for `ctx.child` / `ctx.startChild`. A bare string passed instead is shorthand for
+ * `{ childId }`, so the existing `ctx.child(ref, input, 'my-id')` form keeps working.
+ */
+export interface ChildCallOptions {
+  /** Deterministic child run id; defaults to one derived from the parent run id + call position. */
+  childId?: string | undefined;
+  /**
+   * Dispatch priority for a REMOTE child workflow — stamped on the child run and carried onto every
+   * {@link WorkflowTask} dispatched to advance it, so an urgent child can jump ahead of enqueued
+   * lower-priority ones at the worker. Higher wins; absent = unprioritised. Ignored for an in-process
+   * (TS class) child, which runs in the engine and never hits a broker queue.
+   */
+  priority?: number | undefined;
+}
+
 export interface StepOptions {
   /** Max attempts before the step (and run) fails. */
   retries?: number;
@@ -811,9 +847,13 @@ export interface WorkflowCtx {
   child<C extends WorkflowClass>(
     workflow: C,
     input: WorkflowInputOf<C>,
-    childId?: string,
+    options?: string | ChildCallOptions,
   ): Promise<WorkflowOutputOf<C>>;
-  child<TOutput>(workflow: string, input: unknown, childId?: string): Promise<TOutput>;
+  child<TOutput>(
+    workflow: string,
+    input: unknown,
+    options?: string | ChildCallOptions,
+  ): Promise<TOutput>;
   /**
    * Start a child workflow **fire-and-forget**: dispatches it once (checkpointed, replay-safe) and
    * returns its run id immediately — the parent keeps running instead of suspending. Use it to kick
@@ -824,9 +864,13 @@ export interface WorkflowCtx {
   startChild<C extends WorkflowClass>(
     workflow: C,
     input: WorkflowInputOf<C>,
-    childId?: string,
+    options?: string | ChildCallOptions,
   ): Promise<string>;
-  startChild(workflow: string, input: unknown, childId?: string): Promise<string>;
+  startChild(
+    workflow: string,
+    input: unknown,
+    options?: string | ChildCallOptions,
+  ): Promise<string>;
   /**
    * Pause the run at this point until a human resumes it from the dashboard (or
    * `engine.continue(runId)`). Records a visible `pending` checkpoint so the breakpoint shows up
