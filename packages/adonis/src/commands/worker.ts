@@ -40,7 +40,10 @@ export interface TickOptions {
 const settledCount = (results: RunResult[]): number => results.length;
 
 /** Execute a single poll-loop tick. See {@link TickResult}. Never throws — phase errors are collected. */
-export async function runTick(engine: WorkflowEngine, options: TickOptions = {}): Promise<TickResult> {
+export async function runTick(
+  engine: WorkflowEngine,
+  options: TickOptions = {},
+): Promise<TickResult> {
   const now = options.now;
   const schedules = options.schedules;
   const result: TickResult = { pending: 0, recovered: 0, timers: 0, scheduled: 0, errors: [] };
@@ -117,10 +120,7 @@ export async function runWorkerLoop(
   });
   let ticks = 0;
   while (!stopped) {
-    const result = await runTick(
-      engine,
-      options.schedules ? { schedules: options.schedules } : {},
-    );
+    const result = await runTick(engine, options.schedules ? { schedules: options.schedules } : {});
     ticks += 1;
     const touched = result.pending + result.recovered + result.timers + result.scheduled;
     if (touched > 0) {
