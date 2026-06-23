@@ -1,5 +1,20 @@
 # @adonis-agora/durable
 
+## 0.4.0
+
+### Minor Changes
+
+- [`d2591d0`](https://github.com/DavideCarvalho/adonis-durable/commit/d2591d0040bafb2301b41250e91a5d2961d9ad13) - Automatic cross-process context propagation + `app/workflows` auto-discovery and `make:workflow`.
+
+  - The full Agora request context (userRef / tenant / traceId) now rides each remote task automatically and is restored on the worker before the step handler runs — `ctx.call(remoteStep, input)` sees the originating request's context with zero manual serialize/deserialize. Best-effort, no-op when `@adonis-agora/context` is not installed.
+  - New class-based authoring convention mirroring `@adonisjs/queue`'s `app/jobs`: a `@Workflow` class per file under `app/workflows/` is auto-registered on the engine at boot (configurable via `workflowsPath`, opt-out with `false`), plus a `node ace make:workflow <name>` scaffold. `engine.register(name, version, fn)` remains the low-level escape hatch.
+
+- [`6c31452`](https://github.com/DavideCarvalho/adonis-durable/commit/6c31452f14789fa98f20ea5f6164f421d76fc2df) - Scoped automatic cross-process context restore (was a no-op on db/queue workers); recursive workflow discovery; single-extension import.
+
+  - Workers now restore the originating request's context by running each step handler INSIDE an active context store seeded from the task snapshot, via the new `Symbol.for('@agora/context:scope')` slot. The previous `@agora/context:set` path only populated an already-active store, so restore was inert on the db/queue workers (no active scope) — automatic propagation now actually works, and each task runs in its own scope (no cross-task bleed on a long-lived worker). Clean no-op when `@adonis-agora/context` is not installed.
+  - The dispatch carrier is passed through opaquely (`context: () => accessor.get()`) instead of merging structured `userRef`/`tenantId`/`traceId` into it — the scope slot round-trips the whole snapshot, so the producer-owned carrier stays shape-opaque.
+  - `app/workflows` discovery is now recursive, so nested `app/workflows/billing/charge_workflow.ts` is found (matching `make:workflow`'s nested-path scaffolding). Only the environment-appropriate module extension is imported, so a built app (`.js`) and a dev app (`.ts`) never double-register the same workflow.
+
 ## 0.3.0
 
 ### Minor Changes
