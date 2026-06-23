@@ -1,0 +1,22 @@
+{{#var workflowName = string(entity.name).pascalCase().toString()}}
+{{#var workflowFileName = string(entity.name).snakeCase().removeSuffix('workflow').toString() + '_workflow'}}
+{{#var registeredName = string(entity.name).snakeCase().removeSuffix('workflow').toString()}}
+{{{
+  exports({
+    to: app.makePath('app/workflows', entity.path, workflowFileName + '.ts')
+  })
+}}}
+import { Workflow } from '@adonis-agora/durable'
+import type { WorkflowCtx } from '@adonis-agora/durable'
+
+interface {{ workflowName }}Input {
+  // Define your workflow input here
+}
+
+@Workflow({ name: '{{ registeredName }}', version: '1' })
+export default class {{ workflowName }}Workflow {
+  async run(ctx: WorkflowCtx, input: {{ workflowName }}Input) {
+    // Your workflow logic here — compose ctx.step / ctx.call / ctx.child / ctx.sleep …
+    return input
+  }
+}

@@ -82,6 +82,13 @@ export interface DurableConfig {
    * `cron-parser` peer dependency. Omit (or leave empty) to register no schedules.
    */
   schedules?: ScheduledWorkflow[];
+  /**
+   * Directory (relative to the app root) the provider scans at boot for `@Workflow`-decorated classes
+   * to auto-register on the engine — the `app/workflows` convention, mirroring `@adonisjs/queue`'s
+   * `app/jobs`. Default `'app/workflows'`. Set `false` to disable discovery entirely (register by
+   * hand with `engine.register(...)`). A missing directory is fine — nothing to register.
+   */
+  workflowsPath?: string | false;
 }
 
 /** Identity helper giving `config/durable.ts` full type-checking. */

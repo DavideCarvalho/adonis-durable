@@ -1,4 +1,11 @@
 {
   "title": "Authoring",
-  "pages": ["child-workflows", "queries-and-updates", "webhooks", "versioning", "scheduling"]
+  "pages": [
+    "app-workflows",
+    "child-workflows",
+    "queries-and-updates",
+    "webhooks",
+    "versioning",
+    "scheduling"
+  ]
 }

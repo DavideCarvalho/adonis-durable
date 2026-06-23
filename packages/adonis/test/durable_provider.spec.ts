@@ -1,21 +1,33 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { ApplicationService } from '@adonisjs/core/types';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import DurableProvider from '../providers/durable_provider.js';
 import type { DurableConfig } from '../src/define_config.js';
 import { WorkflowEngine } from '../src/index.js';
 
+const SRC = fileURLToPath(new URL('../src', import.meta.url));
+
 /** Minimal Adonis container/app stand-in capturing the singleton factory. */
-function fakeApp(config: DurableConfig = {}) {
+function fakeApp(config: DurableConfig = {}, appRoot = '/app') {
   let factory: (() => unknown) | undefined;
+  let singletonInstance: unknown;
   const app = {
     config: { get: (key: string, fallback?: unknown) => (key === 'durable' ? config : fallback) },
+    makePath: (...parts: string[]) => join(appRoot, ...parts),
     container: {
       singleton: (_key: unknown, f: () => unknown) => {
         factory = f;
       },
+      make: async () => {
+        if (!singletonInstance) singletonInstance = await factory?.();
+        return singletonInstance as WorkflowEngine;
+      },
     },
   } as unknown as ApplicationService;
-  return { app, resolve: async () => (await factory?.()) as WorkflowEngine };
+  return { app, resolve: async () => (await app.container.make(WorkflowEngine)) as WorkflowEngine };
 }
 
 describe('DurableProvider', () => {
@@ -60,5 +72,71 @@ describe('DurableProvider', () => {
     } finally {
       delete g[OTEL_TRACEPARENT];
     }
+  });
+
+  it('snapshots the full @agora/context (carrier + userRef/tenant/traceId) onto each dispatched task', async () => {
+    const CONTEXT_ACCESSOR = Symbol.for('@agora/context:accessor');
+    const g = globalThis as Record<symbol, unknown>;
+    g[CONTEXT_ACCESSOR] = {
+      userRef: () => 'user-7',
+      tenantId: () => 'acme',
+      traceId: () => 'trace-z',
+      get: () => ({ correlationId: 'corr-1' }),
+    };
+    try {
+      const { app, resolve } = fakeApp();
+      new DurableProvider(app).register();
+      const engine = await resolve();
+      // Reach the engine's context thunk via the same path dispatch uses.
+      const ctxThunk = (engine as unknown as { context?: () => Record<string, unknown> }).context;
+      expect(ctxThunk?.()).toEqual({
+        correlationId: 'corr-1',
+        userRef: 'user-7',
+        tenantId: 'acme',
+        traceId: 'trace-z',
+      });
+    } finally {
+      delete g[CONTEXT_ACCESSOR];
+    }
+  });
+});
+
+describe('DurableProvider — app/workflows auto-discovery (boot)', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'durable-prov-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('scans the configured dir and auto-registers @Workflow classes (no manual register)', async () => {
+    await writeFile(
+      join(dir, 'order_workflow.ts'),
+      `import { Workflow } from '${SRC}/workflow-ref.js'
+       class OrderWorkflow {
+         async run(_ctx, input) { return 'order:' + input.id }
+       }
+       export default Workflow({ name: 'order', version: '1' })(OrderWorkflow)`,
+    );
+
+    // workflowsPath is given as a path relative to the (faked) app root === dir.
+    const { app, resolve } = fakeApp({ workflowsPath: '.' }, dir);
+    const provider = new DurableProvider(app);
+    provider.register();
+    await provider.boot();
+
+    const engine = await resolve();
+    await engine.start('order', { id: 'abc' }, 'o1');
+    const result = await engine.waitForRun('o1');
+    expect(result.status).toBe('completed');
+    expect(result.output).toBe('order:abc');
+  });
+
+  it('skips discovery when workflowsPath is false', async () => {
+    const { app } = fakeApp({ workflowsPath: false }, dir);
+    const provider = new DurableProvider(app);
+    provider.register();
+    await expect(provider.boot()).resolves.toBeUndefined();
   });
 });

@@ -61,6 +61,14 @@ node ace durable:retry checkout:1234
 
 Run `durable:work` (or any worker) to pick it up afterward. This is the terminal equivalent of the dashboard's retry button — handy for replaying a [dead](/docs/durable/reliability/dead-letter) run once you've shipped a fix.
 
+## `make:workflow` — scaffold a workflow class
+
+Scaffolds a `@Workflow` class under `app/workflows/`, the parallel to `@adonisjs/queue`'s `make:job`. The generated class is auto-registered on the engine at boot — see [app/workflows & make:workflow](/docs/durable/authoring/app-workflows).
+
+```bash
+node ace make:workflow order
+```
+
 ## Building your own
 
 The package also exports the building blocks — `runWorkerLoop`, `runTick`, `listRuns`, `renderRunsTable`, `retryRun` — so you can compose a custom worker process or admin script around the engine instead of (or alongside) the bundled commands.

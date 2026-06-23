@@ -1,6 +1,33 @@
 import type { RemoteTask, StepEvent, StepLogger, StepResult } from './interfaces.js';
 import { createStepLogger } from './step-logger.js';
 
+/**
+ * The write slot `@adonis-agora/context` exposes to install a context snapshot for the current async
+ * scope: `(snapshot: Record<string, unknown> | undefined) => void`. Read structurally so a worker
+ * restores the originating request's userRef/tenant/traceId onto a step handler with zero config when
+ * context is installed — and no hard dependency (no-op) when it is not. The key is a global-registry
+ * symbol so it survives duplicate copies of either package in a dependency tree.
+ */
+const CONTEXT_SET = Symbol.for('@agora/context:set');
+
+/**
+ * Best-effort: before a worker runs a step handler, write the task's context snapshot (stamped at
+ * dispatch by the originating engine, see {@link RemoteTask.context}) into `@adonis-agora/context`'s
+ * write slot, so the handler sees the originating userRef/tenant/traceId with no manual code. No-op
+ * when context isn't installed (slot absent) or the task carries no snapshot. Never throws — a
+ * propagation hiccup must not fail the step.
+ */
+function restoreContext(snapshot: Record<string, unknown> | undefined): void {
+  if (!snapshot) return;
+  const set = (globalThis as Record<symbol, unknown>)[CONTEXT_SET];
+  if (typeof set !== 'function') return;
+  try {
+    (set as (s: Record<string, unknown>) => void)(snapshot);
+  } catch {
+    // Context propagation is correlation metadata, never an authorization boundary — swallow.
+  }
+}
+
 /** Canonical step id — the stable identity of a step within a run, used for dedupe and
  *  correlation. The format is part of the cross-language wire contract (Python builds the same). */
 export function stepId(runId: string, seq: number): string {
@@ -37,6 +64,10 @@ export async function runStepHandler(
   const events: StepEvent[] = [];
   const withEvents = (result: StepResult): StepResult =>
     events.length > 0 ? { ...result, events } : result;
+  // Restore the originating request's context (userRef/tenant/traceId) BEFORE the handler runs, so
+  // cross-process propagation is automatic — `ctx.call(remoteStep, input)` carries the caller's
+  // context with zero manual serialize/deserialize. Best-effort; no-op without `@adonis-agora/context`.
+  restoreContext(task.context);
   try {
     const output = await handler(task.input, createStepLogger(events, Date.now));
     return withEvents({ ...base, status: 'completed', output });

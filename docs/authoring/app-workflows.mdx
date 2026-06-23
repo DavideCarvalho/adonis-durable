@@ -1,0 +1,73 @@
+---
+title: app/workflows & make:workflow
+description: The class-based authoring convention — a @Workflow class per file under app/workflows, auto-registered at boot, scaffolded by make:workflow. The parallel to @adonisjs/queue's app/jobs and make:job.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+The **recommended** way to author a workflow is a `@Workflow` class under `app/workflows/`, mirroring how
+[`@adonisjs/queue`](https://docs.adonisjs.com/guides/digging-deeper/queues) authors a job per file under
+`app/jobs/`. The durable provider scans `app/workflows/` at boot and registers every exported `@Workflow`
+class on the engine automatically — you never call `engine.register(...)` by hand.
+
+## Scaffold a workflow
+
+```sh
+node ace make:workflow order
+```
+
+This emits `app/workflows/order_workflow.ts`:
+
+```ts
+import { Workflow } from '@adonis-agora/durable'
+import type { WorkflowCtx } from '@adonis-agora/durable'
+
+interface OrderInput {
+  // Define your workflow input here
+}
+
+@Workflow({ name: 'order', version: '1' })
+export default class OrderWorkflow {
+  async run(ctx: WorkflowCtx, input: OrderInput) {
+    // Compose ctx.step / ctx.call / ctx.child / ctx.sleep …
+    return input
+  }
+}
+```
+
+The class's `run(ctx, input)` **is** the workflow body — the same deterministic `(ctx, input) => …` that
+[`engine.register`](/docs/durable/concepts/workflows-and-steps) takes, just attached to a class so a class
+ref (`engine.start(OrderWorkflow)`, `ctx.child(OrderWorkflow)`) carries its input/output types.
+
+## Auto-registration
+
+At boot the provider scans the configured directory (default `app/workflows`), imports each module, and
+registers every exported `@Workflow` class — including the version, `tags`, `executionTimeout` and `onEvent`
+from the decorator options. Start a run by the registered **name** or the **class**:
+
+```ts
+const engine = await app.container.make(WorkflowEngine)
+await engine.start('order', input, runId)      // by name
+await engine.start(OrderWorkflow, input, runId) // by class (typed)
+```
+
+Configure or disable discovery in `config/durable.ts`:
+
+```ts
+export default defineConfig({
+  workflowsPath: 'app/workflows', // default; set false to disable and register by hand
+})
+```
+
+<Callout type="info">
+`engine.register(name, version, fn)` remains the low-level escape hatch (cross-runtime workflows, dynamic
+registration). The `@Workflow` class + `app/workflows` convention is the preferred authoring path for
+same-runtime TypeScript workflows.
+</Callout>
+
+## From a queue job to a durable workflow
+
+The convention is a deliberate parallel, so switching a `@adonisjs/queue` job to a durable workflow is a
+mechanical move — `app/jobs/<name>.ts` → `app/workflows/<name>_workflow.ts`, `make:job` → `make:workflow`,
+`Job.execute()` → `Workflow.run(ctx, input)` — and you gain durable checkpoints, replay, timers, signals and
+saga compensation on top.

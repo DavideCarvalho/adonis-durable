@@ -63,3 +63,9 @@ export default defineConfig({
 The provider is just `() => string | undefined`, so you can supply your own context reader instead of the OTel one. Omit it and no `traceparent` is sent (the worker starts its own trace). The stamped value travels in the `RemoteTask.traceparent` field, so any worker that honours W3C trace context picks it up automatically.
 
 > When [`@adonis-agora/diagnostics-otel`](/docs/diagnostics) is installed, the `@adonis-agora/durable` provider auto-wires this `traceparent` provider for you (read structurally from a global slot, no hard dependency) — so distributed tracing works with zero config in that setup.
+
+## Context propagation is automatic
+
+Alongside the trace, the **full Agora request context** (userRef / tenant / traceId) rides each remote task automatically. When [`@adonis-agora/context`](/docs/context) is installed, the `@adonis-agora/durable` provider snapshots the live context onto the dispatched `RemoteTask` (read structurally from the global accessor slot, no hard dependency); before a worker runs the step handler, durable restores that snapshot into the worker's context. So `ctx.call(remoteStep, input)` on a worker sees the originating request's userRef / tenant / traceId with **zero manual serialize/deserialize** — best-effort, and a no-op when `@adonis-agora/context` is not installed.
+
+> Treat the propagated context as correlation metadata, not an authorization boundary: on an engine-driven path that runs outside the originating request (a retry or a crash recovery), the snapshot may be empty or stale.

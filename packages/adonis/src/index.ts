@@ -22,6 +22,7 @@ export * from './scheduler.js';
 export * from './search-attributes.js';
 export * from './tokens.js';
 export * from './workflow-ref.js';
+export * from './workflow-discovery.js';
 export { InMemoryStateStore } from './testing/in-memory-state-store.js';
 export { InMemoryTransport } from './testing/in-memory-transport.js';
 
