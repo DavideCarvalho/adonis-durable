@@ -1,11 +1,11 @@
 ---
 title: Scheduling
-description: Recurring workflows with ScheduledWorkflow — fixed intervals via everyMs or DST-aware cron via cron + timezone — fired with runSchedules, started exactly once per window by an idempotent time-bucket run id.
+description: Recurring workflows with ScheduledWorkflow — fixed intervals via everyMs or DST-aware cron via cron + timezone — registered under schedules in config/durable.ts and fired by the durable:work worker tick, started exactly once per window by an idempotent time-bucket run id.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-A scheduled workflow is just a normal workflow that you **start on a recurring cadence** — a nightly report, an hourly sync, a cleanup every five minutes. You describe the cadence with a `ScheduledWorkflow`, and call `runSchedules` from a worker tick to fire any windows that are due. The interesting part is the exactly-once guarantee: even with several worker instances racing on the same tick, each schedule window starts **exactly once**.
+A scheduled workflow is just a normal workflow that you **start on a recurring cadence** — a nightly report, an hourly sync, a cleanup every five minutes. You describe the cadence with a `ScheduledWorkflow` and register it under `schedules` in `config/durable.ts`; the `durable:work` worker loop then fires any due windows on every tick. The interesting part is the exactly-once guarantee: even with several worker instances racing on the same tick, each schedule window starts **exactly once**.
 
 ## Describing a schedule — `ScheduledWorkflow`
 
@@ -30,26 +30,30 @@ interface ScheduledWorkflow {
 
 Every schedule has a stable `key`, the `workflow` name to start, and an optional `input`. The cadence is either `everyMs` (a fixed interval) **or** `cron` + `timezone` (a calendar expression) — they are mutually exclusive.
 
-## Firing schedules — `runSchedules`
+## Registering schedules — `config/durable.ts`
 
-`runSchedules(engine, schedules, nowMs)` evaluates each schedule against `nowMs` and starts any window that is due, returning the run ids it started. Call it from your worker loop on each tick:
+Add a `schedules` array to your durable config. The `durable:work` worker loop reads it and fires any due windows on every tick — the 5th phase of the tick, right after it sweeps execution timeouts. No code to call yourself:
 
-```ts title="start/durable.ts"
-import app from '@adonisjs/core/services/app'
-import { WorkflowEngine, runSchedules, type ScheduledWorkflow } from '@agora/durable'
+```ts title="config/durable.ts"
+import { defineConfig, transports } from '@agora/durable'
 
-const engine = await app.container.make(WorkflowEngine)
-
-export const schedules: ScheduledWorkflow[] = [
-  // Nightly report at 02:00 in São Paulo — DST-aware.
-  { key: 'nightly-report', workflow: 'daily-report', cron: '0 2 * * *', timezone: 'America/Sao_Paulo' },
-  // Sync the cache every five minutes.
-  { key: 'cache-sync', workflow: 'cache-sync', everyMs: 5 * 60 * 1000 },
-]
-
-// In a worker tick (e.g. alongside the durable:work loop):
-await runSchedules(engine, schedules, Date.now())
+export default defineConfig({
+  transport: 'memory',
+  transports: { memory: transports.memory() },
+  schedules: [
+    // Nightly report at 02:00 in São Paulo — DST-aware.
+    { key: 'nightly-report', workflow: 'daily-report', cron: '0 2 * * *', timezone: 'America/Sao_Paulo' },
+    // Sync the cache every five minutes.
+    { key: 'cache-sync', workflow: 'cache-sync', everyMs: 5 * 60 * 1000 },
+  ],
+})
 ```
+
+Then run the worker: `node ace durable:work`. The loop fires the schedules each tick on **worker** instances; the idempotent time-bucket run id (below) keeps each window to exactly one run no matter how many workers tick at once.
+
+<Callout type="info">
+Schedules only fire from the `durable:work` loop. A dashboard-/dispatch-only instance that never runs the worker loop will not start them — run at least one worker.
+</Callout>
 
 The referenced workflows are ordinary registered workflows:
 
@@ -98,4 +102,14 @@ Cron parsing uses `cron-parser`. Install it where you run the engine: `npm i cro
 
 The guarantee that makes scheduling safe in a multi-instance deployment is the **idempotent time-bucket run id**. Each window — a fixed-interval index, or a cron fire time — maps to a deterministic run id, and `engine.start` is idempotent by run id: starting the same id twice is a no-op. So when several worker instances tick at the same moment and all try to start the current window, they all compute the same run id and only the first actually creates the run.
 
-The result for scheduling: **each window starts exactly once**, no matter how many instances are racing the tick or how often you call `runSchedules`.
+The result for scheduling: **each window starts exactly once**, no matter how many worker instances are racing the tick.
+
+## Lower-level — `runSchedules`
+
+The worker loop fires schedules for you, so registering them in `config/durable.ts` is all you normally need. If you drive ticks yourself (a custom loop, an external scheduler), call `runSchedules(engine, schedules, nowMs)` directly — it evaluates each schedule against `nowMs`, starts any due window, and returns the run ids it started:
+
+```ts
+import { WorkflowEngine, runSchedules, type ScheduledWorkflow } from '@agora/durable'
+
+await runSchedules(engine, schedules, Date.now())
+```

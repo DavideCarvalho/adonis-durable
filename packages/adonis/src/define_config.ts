@@ -1,4 +1,5 @@
 import type { ControlPlane, RunDispatcher } from './interfaces.js';
+import type { ScheduledWorkflow } from './scheduler.js';
 import { stores } from './stores/factory.js';
 import type { LucidStoreConfig, StoreContext, StoreFactory } from './stores/factory.js';
 import { transports } from './transports/factory.js';
@@ -62,6 +63,14 @@ export interface DurableConfig {
   compensationRetries?: number;
   /** Where a freshly-started run executes. Defaults to in-process (microtask). */
   runDispatcher?: RunDispatcher;
+  /**
+   * Recurring workflows to start on a schedule (fixed interval via `everyMs`, or cron via `cron` +
+   * `timezone`). The `durable:work` worker loop fires any due windows on every tick (the 5th phase,
+   * after timeouts are swept). `engine.start` is idempotent by each schedule's time-bucket run id, so
+   * racing worker instances start every window **exactly once**. Cron schedules need the optional
+   * `cron-parser` peer dependency. Omit (or leave empty) to register no schedules.
+   */
+  schedules?: ScheduledWorkflow[];
 }
 
 /** Identity helper giving `config/durable.ts` full type-checking. */

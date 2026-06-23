@@ -1,4 +1,5 @@
 export {
+  type TickOptions,
   type TickResult,
   type WorkerLogger,
   type WorkerLoopOptions,

@@ -1,18 +1,20 @@
 import { BaseCommand, flags } from '@adonisjs/core/ace';
 import type { CommandOptions } from '@adonisjs/core/types/ace';
 import { runWorkerLoop } from '../src/commands/worker.js';
+import type { DurableConfig } from '../src/define_config.js';
 import { WorkflowEngine } from '../src/index.js';
 
 /**
  * `node ace durable:work` — the long-running worker loop. Resolves the {@link WorkflowEngine} bound by
  * `@agora/durable`'s provider, then on an interval picks up pending runs, recovers crashed runs,
- * resumes due timers, and sweeps execution timeouts. Stays alive until SIGINT/SIGTERM, then drains
- * in-flight executions so a deploy hands off cleanly.
+ * resumes due timers, sweeps execution timeouts, and fires any `schedules` configured in
+ * `config/durable.ts`. Stays alive until SIGINT/SIGTERM, then drains in-flight executions so a deploy
+ * hands off cleanly.
  */
 export default class DurableWork extends BaseCommand {
   static override commandName = 'durable:work';
   static override description =
-    'Run the durable workflow worker loop (pending, recovery, timers, timeouts)';
+    'Run the durable workflow worker loop (pending, recovery, timers, timeouts, schedules)';
   static override options: CommandOptions = { startApp: true, staysAlive: true };
 
   @flags.number({ description: 'Poll interval in milliseconds between ticks', default: 1000 })
@@ -23,6 +25,9 @@ export default class DurableWork extends BaseCommand {
 
   override async run(): Promise<void> {
     const engine = await this.app.container.make(WorkflowEngine);
+    // Recurring schedules registered in `config/durable.ts` — fired as the worker tick's 5th phase.
+    const config = this.app.config.get<DurableConfig>('durable', {});
+    const schedules = config.schedules ?? [];
 
     // Resolve `stopSignal` once a termination signal arrives, so the loop finishes its current tick,
     // drains, and exits cleanly instead of being hard-killed mid-run.
@@ -42,6 +47,7 @@ export default class DurableWork extends BaseCommand {
       intervalMs: this.interval,
       drainTimeoutMs: this.drainTimeout,
       stopSignal,
+      schedules,
       logger: { info: (m) => this.logger.info(m), error: (m) => this.logger.error(m) },
     });
 

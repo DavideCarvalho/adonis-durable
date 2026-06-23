@@ -1,4 +1,5 @@
 import type { RunResult, WorkflowEngine } from '../index.js';
+import { type ScheduledWorkflow, runSchedules } from '../scheduler.js';
 
 /** A minimal logger the worker loop writes progress to (the ace command's `this.logger` fits). */
 export interface WorkerLogger {
@@ -8,24 +9,41 @@ export interface WorkerLogger {
 
 /**
  * Run one tick of the worker poll loop against the engine: pick up enqueued runs, recover runs left
- * incomplete by a crash, resume runs whose durable timers are due, and cancel runs past their
- * execution timeout. Returns a per-phase count of the runs each phase touched — the unit the
- * `durable:work` command logs and the tests assert on. Each phase is awaited independently so one
- * phase throwing does not abort the rest of the tick (the error is collected and surfaced).
+ * incomplete by a crash, resume runs whose durable timers are due, cancel runs past their execution
+ * timeout, and finally fire any due `schedules` (the 5th phase — see {@link TickOptions.schedules}).
+ * Returns a per-phase count of the runs each phase touched — the unit the `durable:work` command logs
+ * and the tests assert on. Each phase is awaited independently so one phase throwing does not abort the
+ * rest of the tick (the error is collected and surfaced).
  */
 export interface TickResult {
   pending: number;
   recovered: number;
   timers: number;
+  /** Run ids the schedules phase started this tick (due windows fired). */
+  scheduled: number;
   /** Phase errors caught during the tick (e.g. a transient store hiccup), keyed by phase name. */
   errors: { phase: string; error: Error }[];
+}
+
+/** Per-tick inputs beyond the engine. */
+export interface TickOptions {
+  /** Logical "now" (epoch ms) for the tick — passed to each phase. Defaults to the real clock. */
+  now?: number;
+  /**
+   * Recurring schedules fired after timeouts are swept (the 5th phase). `engine.start` is idempotent
+   * by each schedule's time-bucket run id, so racing workers start every window exactly once. Empty
+   * or undefined skips the phase entirely.
+   */
+  schedules?: readonly ScheduledWorkflow[];
 }
 
 const settledCount = (results: RunResult[]): number => results.length;
 
 /** Execute a single poll-loop tick. See {@link TickResult}. Never throws — phase errors are collected. */
-export async function runTick(engine: WorkflowEngine, now?: number): Promise<TickResult> {
-  const result: TickResult = { pending: 0, recovered: 0, timers: 0, errors: [] };
+export async function runTick(engine: WorkflowEngine, options: TickOptions = {}): Promise<TickResult> {
+  const now = options.now;
+  const schedules = options.schedules;
+  const result: TickResult = { pending: 0, recovered: 0, timers: 0, scheduled: 0, errors: [] };
   const phase = async (name: string, fn: () => Promise<number>): Promise<number> => {
     try {
       return await fn();
@@ -47,6 +65,14 @@ export async function runTick(engine: WorkflowEngine, now?: number): Promise<Tic
     await engine.sweepTimeouts(now);
     return 0;
   });
+  // 5th phase — fire any due recurring schedules (mirrors the NestJS timer poller). Skipped entirely
+  // when none are registered; idempotent by the schedule's time-bucket run id, so racing workers
+  // start each window exactly once.
+  result.scheduled = await phase('runSchedules', async () => {
+    if (!schedules || schedules.length === 0) return 0;
+    const ids = await runSchedules(engine, schedules, now ?? Date.now());
+    return ids.length;
+  });
   return result;
 }
 
@@ -65,6 +91,8 @@ export interface WorkerLoopOptions {
   drainTimeoutMs?: number;
   /** Injectable sleep, for tests. Default a real timer that resolves after `ms`. */
   sleep?: (ms: number) => Promise<void>;
+  /** Recurring schedules to fire each tick (the 5th phase). See {@link TickOptions.schedules}. */
+  schedules?: readonly ScheduledWorkflow[];
 }
 
 const realSleep = (ms: number): Promise<void> =>
@@ -89,12 +117,15 @@ export async function runWorkerLoop(
   });
   let ticks = 0;
   while (!stopped) {
-    const result = await runTick(engine);
+    const result = await runTick(
+      engine,
+      options.schedules ? { schedules: options.schedules } : {},
+    );
     ticks += 1;
-    const touched = result.pending + result.recovered + result.timers;
+    const touched = result.pending + result.recovered + result.timers + result.scheduled;
     if (touched > 0) {
       options.logger.info(
-        `tick: ${result.pending} pending, ${result.recovered} recovered, ${result.timers} timers`,
+        `tick: ${result.pending} pending, ${result.recovered} recovered, ${result.timers} timers, ${result.scheduled} scheduled`,
       );
     }
     for (const { phase, error } of result.errors) {

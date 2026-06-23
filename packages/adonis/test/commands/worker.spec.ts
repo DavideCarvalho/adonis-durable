@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { type WorkerLogger, runTick, runWorkerLoop } from '../../src/commands/worker.js';
-import { InMemoryStateStore, InMemoryTransport, WorkflowEngine } from '../../src/index.js';
+import {
+  InMemoryStateStore,
+  InMemoryTransport,
+  type ScheduledWorkflow,
+  WorkflowEngine,
+} from '../../src/index.js';
 
 function makeEngine() {
   const store = new InMemoryStateStore();
@@ -48,6 +53,43 @@ describe('runTick', () => {
     }
     await runTick(engine);
     expect(calls).toEqual(['runPending', 'recoverIncomplete', 'resumeDueTimers', 'sweepTimeouts']);
+  });
+
+  it('fires a DUE schedule through the tick (the 5th phase) and dispatches a run', async () => {
+    const { engine, store } = makeEngine();
+    engine.register('cache-sync', '1', async () => 'synced');
+    const schedules: ScheduledWorkflow[] = [
+      { key: 'cache-sync', workflow: 'cache-sync', everyMs: 60_000 },
+    ];
+    const now = 120_000; // bucket = floor(120000 / 60000) = 2 → run id sched:cache-sync:2
+    const result = await runTick(engine, { schedules, now });
+    expect(result.scheduled).toBe(1);
+    expect(result.errors).toHaveLength(0);
+    const run = await engine.waitForRun('sched:cache-sync:2');
+    expect(run.status).toBe('completed');
+    expect(await store.getRun('sched:cache-sync:2')).not.toBeNull();
+  });
+
+  it('skips the schedules phase entirely when none are registered', async () => {
+    const { engine } = makeEngine();
+    const result = await runTick(engine);
+    expect(result.scheduled).toBe(0);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('starts each schedule window exactly once across repeated ticks (idempotent)', async () => {
+    const { engine } = makeEngine();
+    let runs = 0;
+    engine.register('hourly', '1', async () => {
+      runs += 1;
+      return runs;
+    });
+    const schedules: ScheduledWorkflow[] = [{ key: 'hourly', workflow: 'hourly', everyMs: 60_000 }];
+    const now = 120_000; // same window across both ticks
+    await runTick(engine, { schedules, now });
+    await runTick(engine, { schedules, now });
+    await engine.waitForRun('sched:hourly:2');
+    expect(runs).toBe(1);
   });
 });
 
@@ -98,5 +140,39 @@ describe('runWorkerLoop', () => {
     // The default in-process dispatcher may have already run it; either way it must be settled.
     const run = await store.getRun('run1');
     expect(run?.status).toBe('completed');
+  });
+
+  it('fires configured schedules from the loop', async () => {
+    const { engine, store } = makeEngine();
+    let runs = 0;
+    engine.register('cache-sync', '1', async () => {
+      runs += 1;
+      return 'ok';
+    });
+    const schedules: ScheduledWorkflow[] = [
+      { key: 'cache-sync', workflow: 'cache-sync', everyMs: 60_000 },
+    ];
+    const logger = captureLogger();
+    let stop!: () => void;
+    const stopSignal = new Promise<void>((resolve) => {
+      stop = resolve;
+    });
+    let sleeps = 0;
+    const sleep = async (): Promise<void> => {
+      sleeps += 1;
+      if (sleeps >= 2) stop();
+    };
+    await runWorkerLoop(engine, {
+      intervalMs: 1,
+      stopSignal,
+      logger,
+      drainTimeoutMs: 50,
+      sleep,
+      schedules,
+    });
+    // The loop must have started the current window's run (and only once across both ticks).
+    expect(runs).toBe(1);
+    const ids = (await store.listRuns({})).map((r) => r.id);
+    expect(ids.some((id) => id.startsWith('sched:cache-sync:'))).toBe(true);
   });
 });

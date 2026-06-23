@@ -15,7 +15,7 @@ node ace configure @agora/durable
 
 ## `durable:work` — the worker loop
 
-The long-running worker. On an interval it picks up pending runs, recovers crashed runs, resumes due timers, and sweeps execution timeouts. It stays alive until `SIGINT`/`SIGTERM`, then **drains** in-flight executions so a deploy hands off cleanly.
+The long-running worker. On an interval it picks up pending runs, recovers crashed runs, resumes due timers, sweeps execution timeouts, and fires any due [scheduled workflows](/docs/durable/authoring/scheduling). It stays alive until `SIGINT`/`SIGTERM`, then **drains** in-flight executions so a deploy hands off cleanly.
 
 ```bash
 node ace durable:work
@@ -27,10 +27,10 @@ node ace durable:work --interval=500 --drainTimeout=15000
 | `--interval` | `1000` | poll interval in ms between ticks |
 | `--drainTimeout` | `10000` | drain timeout in ms on shutdown |
 
-Each tick runs `engine.runPending()` → `engine.recoverIncomplete()` → `engine.resumeDueTimers()` → `engine.sweepTimeouts()`. Run this as a dedicated process (or several) when you split web from worker; in a single-process app the in-process dispatcher already runs workflows, so this is optional but recommended for [recovery and timers](/docs/durable/concepts/durability#self-healing-recovery).
+Each tick runs `engine.runPending()` → `engine.recoverIncomplete()` → `engine.resumeDueTimers()` → `engine.sweepTimeouts()` → fire due [schedules](/docs/durable/authoring/scheduling). Run this as a dedicated process (or several) when you split web from worker; in a single-process app the in-process dispatcher already runs workflows, so this is optional but recommended for [recovery and timers](/docs/durable/concepts/durability#self-healing-recovery).
 
 <Callout type="info">
-This is also where you'd call [`runSchedules`](/docs/durable/authoring/scheduling) each tick if you use scheduled workflows, and where a [queue](/docs/durable/transports/queue) or [DB](/docs/durable/transports/db) transport worker registers its handlers for a group.
+Any [scheduled workflows](/docs/durable/authoring/scheduling) registered under `schedules` in `config/durable.ts` are fired by this loop (the tick's 5th phase) — so you need at least one `durable:work` process running for them to start. This is also where a [queue](/docs/durable/transports/queue) or [DB](/docs/durable/transports/db) transport worker registers its handlers for a group.
 </Callout>
 
 ## `durable:runs` — list runs

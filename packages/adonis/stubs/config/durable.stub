@@ -35,4 +35,15 @@ export default defineConfig({
     memory: transports.memory(),
   },
   // leaseMs: 30_000,
+
+  /**
+   * Recurring workflows fired by the `durable:work` worker loop on every tick. Each window starts
+   * exactly once even with several worker instances racing (idempotent by the schedule's time-bucket
+   * run id). Use `everyMs` for a fixed interval, or `cron` + `timezone` for a calendar schedule (cron
+   * needs the optional `cron-parser` peer dependency). See docs/authoring/scheduling.
+   */
+  // schedules: [
+  //   { key: 'nightly-report', workflow: 'daily-report', cron: '0 2 * * *', timezone: 'America/Sao_Paulo' },
+  //   { key: 'cache-sync', workflow: 'cache-sync', everyMs: 5 * 60 * 1000 },
+  // ],
 })
