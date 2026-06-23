@@ -1,5 +1,11 @@
 # @adonis-agora/durable
 
+## 0.3.0
+
+### Minor Changes
+
+- [`6b47d1a`](https://github.com/DavideCarvalho/adonis-durable/commit/6b47d1a7d0bc6f76e5b6ebe704c3ea8cfe025d53) - Require AdonisJS v7 (bump @adonisjs/\* peers; Lucid 22, Queue 0.6)
+
 ## 0.2.0
 
 ### Minor Changes
