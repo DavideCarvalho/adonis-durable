@@ -1,8 +1,8 @@
 ---
-'@agora/durable-eslint-plugin': minor
+'@adonis-agora/durable-eslint-plugin': minor
 ---
 
-Add `@agora/durable-eslint-plugin`: ESLint rules enforcing durable-workflow determinism. The
+Add `@adonis-agora/durable-eslint-plugin`: ESLint rules enforcing durable-workflow determinism. The
 `no-nondeterminism` rule flags `Date.now()`, `performance.now()`, `new Date()`, `Math.random()`, and
 `crypto.randomUUID()` read directly in a workflow body — they differ across replays and silently
 corrupt a durable run — and points to the `ctx.now()`/`ctx.random()`/`ctx.uuid()` escape hatches. It

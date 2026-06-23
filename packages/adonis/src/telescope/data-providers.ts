@@ -9,7 +9,7 @@ import type { DataProvider, ExtensionContext, TelescopeEntryLike } from './teles
  *    `agora:durable:*` lifecycle events the generic diagnostics watcher captured into Telescope
  *    (recorded as `type: 'diagnostic'`, `tag: 'lib:durable'`), so they are the rolling history.
  *
- * No durable-specific watcher is needed: the `@agora/durable` provider already bridges engine events
+ * No durable-specific watcher is needed: the `@adonis-agora/durable` provider already bridges engine events
  * onto the diagnostics bus, and Telescope's generic watcher records them.
  */
 

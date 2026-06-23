@@ -19,7 +19,7 @@ import type {
  * `@adonisjs/lucid`) is imported lazily, only when that driver is actually selected.
  *
  * ```ts
- * import { defineConfig, transports, stores } from '@agora/durable'
+ * import { defineConfig, transports, stores } from '@adonis-agora/durable'
  * import { redis } from '@adonisjs/queue'
  *
  * export default defineConfig({

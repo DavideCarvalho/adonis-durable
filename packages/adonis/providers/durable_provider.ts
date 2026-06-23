@@ -12,7 +12,7 @@ import {
   attachDurableDiagnostics,
 } from '../src/index.js';
 
-/** The read view of `@agora/context`'s accessor, read structurally from its global slot. */
+/** The read view of `@adonis-agora/context`'s accessor, read structurally from its global slot. */
 interface ContextAccessorLike {
   traceId(): string | undefined;
   get(): Record<string, unknown> | undefined;
@@ -20,26 +20,26 @@ interface ContextAccessorLike {
 const CONTEXT_ACCESSOR = Symbol.for('@agora/context:accessor');
 
 /**
- * Global slot `@agora/diagnostics-otel` publishes its `otelTraceparent` under: a
+ * Global slot `@adonis-agora/diagnostics-otel` publishes its `otelTraceparent` under: a
  * `() => string | undefined` returning the active OTel span's W3C `traceparent`.
  * Read structurally so durable continues the OpenTelemetry trace on remote steps
  * with zero config when OTel is installed — and no hard dependency when it is not.
  */
 const OTEL_TRACEPARENT = Symbol.for('@agora/otel:traceparent');
 
-/** `@agora/diagnostics`'s emit capability slot (set at that package's module load when installed). */
+/** `@adonis-agora/diagnostics`'s emit capability slot (set at that package's module load when installed). */
 const DIAGNOSTICS_EMIT = Symbol.for('@agora/diagnostics:emit');
 
 /**
- * Wires `@agora/durable` into the AdonisJS application: binds a singleton
+ * Wires `@adonis-agora/durable` into the AdonisJS application: binds a singleton
  * {@link WorkflowEngine} built from `config/durable.ts`.
  *
  * Defaults to an in-process store + transport (single-process, zero infra). Pick a `transport` /
  * `store` by name from the config's `transports` / `stores` maps to run cross-process or persist
  * durably; each selected driver's peer dependency is imported lazily inside its factory thunk, only
- * when that driver is chosen. When `@agora/context` is installed, the originating
+ * when that driver is chosen. When `@adonis-agora/context` is installed, the originating
  * tenant/user/correlation carrier is attached to each dispatched task (best-effort, read structurally
- * from the global accessor slot — no hard dependency). When `@agora/diagnostics-otel` (and an OTel SDK
+ * from the global accessor slot — no hard dependency). When `@adonis-agora/diagnostics-otel` (and an OTel SDK
  * such as `@adonisjs/otel`) is installed, each dispatched task is stamped with the active OTel
  * `traceparent` so a worker continues the trace.
  *
@@ -84,9 +84,9 @@ export default class DurableProvider {
           ? { compensationRetries: config.compensationRetries }
           : {}),
         ...(config.runDispatcher ? { runDispatcher: config.runDispatcher } : {}),
-        // Best-effort context propagation from @agora/context (no hard dep).
+        // Best-effort context propagation from @adonis-agora/context (no hard dep).
         ...(accessor ? { context: () => accessor.get() } : {}),
-        // Best-effort OTel trace continuation from @agora/diagnostics-otel (no hard dep).
+        // Best-effort OTel trace continuation from @adonis-agora/diagnostics-otel (no hard dep).
         ...(otelTraceparent ? { traceparent: otelTraceparent } : {}),
       };
 
@@ -121,11 +121,11 @@ export default class DurableProvider {
   }
 
   /**
-   * Once everything is booted, bridge engine lifecycle events onto the `@agora/diagnostics` bus —
+   * Once everything is booted, bridge engine lifecycle events onto the `@adonis-agora/diagnostics` bus —
    * but only when diagnostics is actually installed (its emit slot is populated at module load).
    * Gating on the slot avoids eagerly constructing the engine when diagnostics is absent; when it is
    * present, this makes durable runs visible to `onDiagnostic`, Telescope, the relays and OTel with
-   * zero config. No hard dependency on `@agora/diagnostics`.
+   * zero config. No hard dependency on `@adonis-agora/diagnostics`.
    */
   async ready() {
     const emit = (globalThis as Record<symbol, unknown>)[DIAGNOSTICS_EMIT];

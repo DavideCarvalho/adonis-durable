@@ -25,7 +25,7 @@ export interface LucidStoreConfig {
  * The store factory namespace used in `config/durable.ts`:
  *
  * ```ts
- * import { defineConfig, stores } from '@agora/durable'
+ * import { defineConfig, stores } from '@adonis-agora/durable'
  *
  * export default defineConfig({
  *   store: 'lucid',

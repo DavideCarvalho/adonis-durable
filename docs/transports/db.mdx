@@ -1,16 +1,16 @@
 ---
 title: SQL (database)
-description: A broker-less, DBOS-style transport driver — remote steps are rows in the Lucid database you already run. Workers claim tasks with an atomic, portable lease so a row is never run twice. The migration ships with @agora/durable.
+description: A broker-less, DBOS-style transport driver — remote steps are rows in the Lucid database you already run. Workers claim tasks with an atomic, portable lease so a row is never run twice. The migration ships with @adonis-agora/durable.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
 The `db` driver needs **no broker**. A remote step is a **row** in the same database your durable store already uses: `ctx.call` inserts a task row, a worker claims it with an atomic lease, runs the handler, writes a result row, and the engine polls that row to resume the run. The database you already operate *is* the queue.
 
-It ships **inside `@agora/durable`** — `@adonisjs/lucid` is an optional peer, imported lazily only when you select the `db` transport. The transport tables come from a migration published when you configure the package:
+It ships **inside `@adonis-agora/durable`** — `@adonisjs/lucid` is an optional peer, imported lazily only when you select the `db` transport. The transport tables come from a migration published when you configure the package:
 
 ```bash
-node ace configure @agora/durable
+node ace configure @adonis-agora/durable
 node ace migration:run
 ```
 
@@ -21,7 +21,7 @@ node ace migration:run
 `transports.db()` rides your app's default Lucid connection — the driver resolves the `db` service for you when it starts:
 
 ```ts title="config/durable.ts"
-import { defineConfig, transports } from '@agora/durable'
+import { defineConfig, transports } from '@adonis-agora/durable'
 
 export default defineConfig({
   transport: 'db',
@@ -35,7 +35,7 @@ A worker process constructs the transport pinned to the group it serves and regi
 
 ```ts title="start/worker.ts (a separate worker process)"
 import db from '@adonisjs/lucid/services/db'
-import { DbTransport } from '@agora/durable'
+import { DbTransport } from '@adonis-agora/durable'
 
 const transport = new DbTransport({ db, group: 'pipeline' })
 transport.handle('pipeline.extract', async (input) => extract(input))
@@ -55,7 +55,7 @@ Trade-off vs a real broker: throughput is bounded by polling + row contention �
 | `autoCreate` | `true` | Create the transport tables on first use (in addition to the published migration). |
 | `instanceId` | random uuid | Stable process id stamped on claims and control messages. |
 
-`transports.db(config)` returns the lazy driver thunk used in `config/durable.ts`; the underlying class is `DbTransport`, also exported from `@agora/durable` for constructing a worker-side instance directly. `@agora/durable` also exports `TRANSPORT_TABLES`, `createDurableTransportTables(db)`, and `dropDurableTransportTables(db)` for managing the schema yourself.
+`transports.db(config)` returns the lazy driver thunk used in `config/durable.ts`; the underlying class is `DbTransport`, also exported from `@adonis-agora/durable` for constructing a worker-side instance directly. `@adonis-agora/durable` also exports `TRANSPORT_TABLES`, `createDurableTransportTables(db)`, and `dropDurableTransportTables(db)` for managing the schema yourself.
 
 ## The tables
 

@@ -35,7 +35,7 @@ engine.register('invoice', '1', async (ctx, order: Order) => {
 Each of these is itself a checkpointed step, so the value is captured the first time and returned from the checkpoint on every replay. Reach for `Date.now()`/`Math.random()`/`crypto.randomUUID()` only *inside* a `ctx.step` body (whose whole result is checkpointed) — never in the deterministic prefix of the workflow body.
 
 <Callout type="warn">
-Enable the [`@agora/durable-eslint-plugin`](/docs/durable/tooling/linting) so these mistakes are caught at author time, in your editor and CI, rather than at replay time.
+Enable the [`@adonis-agora/durable-eslint-plugin`](/docs/durable/tooling/linting) so these mistakes are caught at author time, in your editor and CI, rather than at replay time.
 </Callout>
 
 ## Workflow versions — for breaking changes

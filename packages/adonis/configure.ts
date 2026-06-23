@@ -2,7 +2,7 @@ import type Configure from '@adonisjs/core/commands/configure';
 import { stubsRoot } from './stubs/main.js';
 
 /**
- * `node ace configure @agora/durable` — auto-wires the package:
+ * `node ace configure @adonis-agora/durable` — auto-wires the package:
  *
  * 1. registers the core service provider in `adonisrc.ts`;
  * 2. registers the ace commands barrel (`durable:work`, `durable:runs`,
@@ -17,9 +17,9 @@ export async function configure(command: Configure) {
   const codemods = await command.createCodemods();
 
   await codemods.updateRcFile((rcFile) => {
-    rcFile.addProvider('@agora/durable/durable_provider');
-    rcFile.addProvider('@agora/durable/dashboard_provider');
-    rcFile.addCommand('@agora/durable/commands');
+    rcFile.addProvider('@adonis-agora/durable/durable_provider');
+    rcFile.addProvider('@adonis-agora/durable/dashboard_provider');
+    rcFile.addCommand('@adonis-agora/durable/commands');
   });
 
   await codemods.makeUsingStub(stubsRoot, 'config/durable.stub', {});

@@ -45,7 +45,7 @@ Use `setEvent` for anything an outside observer might want before the run comple
 From outside the run — a controller, a polling endpoint, another service — read the latest published value with `engine.getEvent(runId, key)`. It returns the most recent value for that key, or `undefined` if the run never published it. Crucially, **the read has no effect on the run**: it does not resume a suspended run, does not consume a logical position, and does not appear in the run's history.
 
 ```ts
-import { WorkflowEngine } from '@agora/durable'
+import { WorkflowEngine } from '@adonis-agora/durable'
 import { inject } from '@adonisjs/core'
 
 @inject()

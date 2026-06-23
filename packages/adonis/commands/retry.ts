@@ -5,7 +5,7 @@ import { WorkflowEngine } from '../src/index.js';
 
 /**
  * `node ace durable:retry <runId>` — re-enqueue a run for a worker to (re-)execute. Resolves the
- * engine bound by `@agora/durable`'s provider and calls its `requeue`: the run goes back to `pending`,
+ * engine bound by `@adonis-agora/durable`'s provider and calls its `requeue`: the run goes back to `pending`,
  * any stale lease is cleared, and a worker resumes it (replaying its checkpoints, re-attempting the
  * failed step). Run `durable:work` (or any worker) to pick it up.
  */

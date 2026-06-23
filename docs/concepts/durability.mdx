@@ -77,7 +77,7 @@ engine.register('checkout', '1', async (ctx, order) => {
 ```
 
 <Callout type="warn">
-The [`@agora/durable-eslint-plugin`](/docs/durable/tooling/linting) catches `Date.now()`, `Math.random()`, `new Date()`, and `crypto.randomUUID()` inside a workflow body at author time. The engine also throws a `NonDeterminismError` at replay time if the recorded path diverges. See [Versioning & determinism](/docs/durable/authoring/versioning).
+The [`@adonis-agora/durable-eslint-plugin`](/docs/durable/tooling/linting) catches `Date.now()`, `Math.random()`, `new Date()`, and `crypto.randomUUID()` inside a workflow body at author time. The engine also throws a `NonDeterminismError` at replay time if the recorded path diverges. See [Versioning & determinism](/docs/durable/authoring/versioning).
 </Callout>
 
 ## Consequences

@@ -1,10 +1,10 @@
 {{{
   exports({ to: app.configPath('durable_dashboard.ts') })
 }}}
-import { defineConfig } from '@agora/durable/dashboard'
+import { defineConfig } from '@adonis-agora/durable/dashboard'
 
 /**
- * Configuration for the @agora/durable dashboard.
+ * Configuration for the @adonis-agora/durable dashboard.
  *
  * By default the dashboard is open OUTSIDE production, and in production it
  * requires a bearer token equal to `DURABLE_DASHBOARD_TOKEN` (deny if unset).

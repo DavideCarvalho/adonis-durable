@@ -3,7 +3,7 @@ title: Testing
 description: Unit-test workflows with an in-memory engine harness, a clock you control for durable sleep, crash/flaky-step injection, and assertions that read the recorded state — no Postgres, no Redis, no real time.
 ---
 
-The `@agora/durable/testing` subpath runs a whole workflow in a unit test — in-memory store and transport, a clock you control, and assertions that read back the recorded state. It ships in the main `@agora/durable` package; install `vitest` as the only extra peer.
+The `@adonis-agora/durable/testing` subpath runs a whole workflow in a unit test — in-memory store and transport, a clock you control, and assertions that read back the recorded state. It ships in the main `@adonis-agora/durable` package; install `vitest` as the only extra peer.
 
 ```bash
 npm i -D vitest
@@ -15,7 +15,7 @@ npm i -D vitest
 
 ```ts
 import { test } from '@japa/runner'
-import { createTestEngine, assertRunStatus, assertOutput } from '@agora/durable/testing'
+import { createTestEngine, assertRunStatus, assertOutput } from '@adonis-agora/durable/testing'
 
 test('checkout completes', async () => {
   const t = createTestEngine()
@@ -54,7 +54,7 @@ The clock itself (`t.clock`, a `MutableClock`) has `set(ms)` and `advance(ms)` i
 `failOnce` / `failTimes` make a step throw before succeeding — to drive retries and resume:
 
 ```ts
-import { failOnce, assertStepAttempts } from '@agora/durable/testing'
+import { failOnce, assertStepAttempts } from '@adonis-agora/durable/testing'
 
 t.engine.register('wf', '1', async (ctx) =>
   ctx.step('charge', failOnce({ ok: true }), { retries: 3 }),

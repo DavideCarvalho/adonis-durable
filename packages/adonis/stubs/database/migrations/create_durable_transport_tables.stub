@@ -4,7 +4,7 @@
 import { BaseSchema } from '@adonisjs/lucid/schema'
 
 /**
- * Transport tables for the @agora/durable `db` transport: the point-to-point work channels (tasks /
+ * Transport tables for the @adonis-agora/durable `db` transport: the point-to-point work channels (tasks /
  * results / heartbeats / control) that let durable remote steps run cross-process over the database
  * alone. JSON payloads are stored as TEXT (the transport (de)serializes them) and timestamps as
  * epoch-ms integers, so the schema is portable across SQLite / Postgres / MySQL. Only needed when you

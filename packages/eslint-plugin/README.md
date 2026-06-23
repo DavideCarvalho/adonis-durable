@@ -1,6 +1,6 @@
-# @agora/durable-eslint-plugin
+# @adonis-agora/durable-eslint-plugin
 
-ESLint rules enforcing **workflow determinism** for [`@agora/durable`](../adonis). A durable workflow
+ESLint rules enforcing **workflow determinism** for [`@adonis-agora/durable`](../adonis). A durable workflow
 body is replayed from its checkpoints on every resume, so any non-deterministic source read directly
 in the orchestration body (rather than recorded once inside a `ctx.step`) silently corrupts the run.
 This plugin flags them.
@@ -8,14 +8,14 @@ This plugin flags them.
 ## Install
 
 ```sh
-npm i -D @agora/durable-eslint-plugin
+npm i -D @adonis-agora/durable-eslint-plugin
 ```
 
 ## Usage (flat config)
 
 ```js
 // eslint.config.js
-import durable from '@agora/durable-eslint-plugin';
+import durable from '@adonis-agora/durable-eslint-plugin';
 
 export default [durable.configs.recommended];
 ```
@@ -23,12 +23,12 @@ export default [durable.configs.recommended];
 Or wire it manually:
 
 ```js
-import durable from '@agora/durable-eslint-plugin';
+import durable from '@adonis-agora/durable-eslint-plugin';
 
 export default [
   {
-    plugins: { '@agora/durable': durable },
-    rules: { '@agora/durable/no-nondeterminism': 'error' },
+    plugins: { '@adonis-agora/durable': durable },
+    rules: { '@adonis-agora/durable/no-nondeterminism': 'error' },
   },
 ];
 ```

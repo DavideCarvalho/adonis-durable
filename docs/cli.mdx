@@ -1,17 +1,17 @@
 ---
 title: CLI
-description: Ace commands for durable — durable:work runs the worker loop, durable:runs lists runs, and durable:retry re-enqueues a run, all resolving the engine bound by @agora/durable.
+description: Ace commands for durable — durable:work runs the worker loop, durable:runs lists runs, and durable:retry re-enqueues a run, all resolving the engine bound by @adonis-agora/durable.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-`@agora/durable` ships three ace commands: a long-running **worker loop**, a run **lister**, and a **retry**. All three resolve the [`WorkflowEngine`](/docs/durable/concepts/workflows-and-steps) bound by the provider, so they operate on the same engine (and store) your app is configured with.
+`@adonis-agora/durable` ships three ace commands: a long-running **worker loop**, a run **lister**, and a **retry**. All three resolve the [`WorkflowEngine`](/docs/durable/concepts/workflows-and-steps) bound by the provider, so they operate on the same engine (and store) your app is configured with.
 
 ```bash
-node ace configure @agora/durable
+node ace configure @adonis-agora/durable
 ```
 
-`configure` registers the commands barrel (`@agora/durable/commands`) in `adonisrc.ts` so the three commands become available to ace — there's no separate package to install.
+`configure` registers the commands barrel (`@adonis-agora/durable/commands`) in `adonisrc.ts` so the three commands become available to ace — there's no separate package to install.
 
 ## `durable:work` — the worker loop
 

@@ -1,6 +1,6 @@
 ---
 title: Overview
-description: Where durable state lives. A config-driven StateStore with a Lucid driver that runs on Postgres, MySQL, or SQLite, an in-memory store for tests, and a migration shipped with @agora/durable.
+description: Where durable state lives. A config-driven StateStore with a Lucid driver that runs on Postgres, MySQL, or SQLite, an in-memory store for tests, and a migration shipped with @adonis-agora/durable.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
@@ -19,7 +19,7 @@ Stores are **config-driven drivers**: list the ones you use under `stores` in `c
 The default — when `config/durable.ts` sets no `store` — is an in-memory store: zero setup, but state is lost on restart, so it's only for development and tests. For anything durable, select the [Lucid store](/docs/durable/stores/lucid).
 
 ```ts title="config/durable.ts"
-import { defineConfig, stores, transports } from '@agora/durable'
+import { defineConfig, stores, transports } from '@adonis-agora/durable'
 
 export default defineConfig({
   store: 'lucid',

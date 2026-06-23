@@ -1,5 +1,5 @@
 ---
-'@agora/durable': minor
+'@adonis-agora/durable': minor
 ---
 
 Re-add run-level priority dispatch (parity with the NestJS engine). `StartOptions.priority` is now

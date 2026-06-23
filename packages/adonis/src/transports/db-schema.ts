@@ -22,7 +22,7 @@ export const TRANSPORT_TABLES = {
  * `claimed_by`) and then deleted once handled — the DB is the queue.
  *
  * Call this on boot or once at deploy time. For an AdonisJS app prefer the published migration
- * (`node ace configure @agora/durable`); this helper is for standalone use and tests.
+ * (`node ace configure @adonis-agora/durable`); this helper is for standalone use and tests.
  */
 export async function createDurableTransportTables(db: Database): Promise<void> {
   // Knex's schema builder is stateful — take a FRESH `db.connection().schema` per hasTable/createTable

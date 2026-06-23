@@ -21,7 +21,7 @@ export const DURABLE_TABLES = {
  * by the store, so the schema is portable (SQLite has no JSON column type; Postgres/MySQL accept text).
  *
  * Call this on boot (e.g. from a `StateStore.ensureSchema`) or once at deploy time. For an AdonisJS app
- * prefer the published migration (`node ace configure @agora/durable`); this helper is for standalone
+ * prefer the published migration (`node ace configure @adonis-agora/durable`); this helper is for standalone
  * use, tests, and `ensureSchema`.
  */
 export async function createDurableTables(db: Database): Promise<void> {

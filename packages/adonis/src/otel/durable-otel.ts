@@ -29,7 +29,8 @@ export function attachDurableOtel(
   engine: WorkflowEngine,
   options: DurableOtelOptions = {},
 ): () => void {
-  const tracer = options.tracer ?? (options.provider ?? trace).getTracer('@agora/durable', '0.1.0');
+  const tracer =
+    options.tracer ?? (options.provider ?? trace).getTracer('@adonis-agora/durable', '0.1.0');
   const roots = new Map<string, Span>();
 
   const endRoot = (

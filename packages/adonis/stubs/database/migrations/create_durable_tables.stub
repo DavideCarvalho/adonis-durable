@@ -4,7 +4,7 @@
 import { BaseSchema } from '@adonisjs/lucid/schema'
 
 /**
- * Durable workflow tables for the @agora/durable `lucid` state store: runs, step checkpoints, the
+ * Durable workflow tables for the @adonis-agora/durable `lucid` state store: runs, step checkpoints, the
  * search-attribute side-table, signal waiters and buffered signals. JSON payloads are stored as TEXT (the store
  * (de)serializes them) and timestamps as epoch-ms integers, so the schema is portable across
  * SQLite / Postgres / MySQL.

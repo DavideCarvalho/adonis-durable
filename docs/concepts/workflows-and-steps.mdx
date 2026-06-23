@@ -11,7 +11,7 @@ A workflow is registered on the engine by **name** and **version**; its body is 
 
 ```ts
 import app from '@adonisjs/core/services/app'
-import { WorkflowEngine, type WorkflowCtx } from '@agora/durable'
+import { WorkflowEngine, type WorkflowCtx } from '@adonis-agora/durable'
 
 const engine = await app.container.make(WorkflowEngine)
 
@@ -47,7 +47,7 @@ Toggle this with the engine's `trackStepStart` option (default `true`). The `ste
 Declare a typed remote step with `remoteStep`, then call it with `ctx.call` — the engine dispatches it over the [transport](/docs/durable/transports) and checkpoints the result. The handler can live in another process.
 
 ```ts
-import { remoteStep } from '@agora/durable'
+import { remoteStep } from '@adonis-agora/durable'
 import { z } from 'zod'
 
 export const chargeCard = remoteStep({
@@ -93,7 +93,7 @@ const [a, b] = await Promise.all([
 Any thrown error is retried up to the step's limit. To stop retrying a business failure that a retry can't fix, throw `FatalError` — it fails the run immediately:
 
 ```ts
-import { FatalError } from '@agora/durable'
+import { FatalError } from '@adonis-agora/durable'
 
 await ctx.step('charge', async () => {
   const res = await stripe.charge(order)

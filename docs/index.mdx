@@ -8,7 +8,7 @@ import { Callout } from 'fumadocs-ui/components/callout';
 import { Steps, Step } from 'fumadocs-ui/components/steps';
 import { Cards, Card } from 'fumadocs-ui/components/card';
 
-**`@agora/durable`** brings durable execution to AdonisJS. You write a workflow as ordinary async code — call a step, use its result, call the next — and the engine records every step's output. If the process crashes or you deploy mid-run, the workflow resumes from the last checkpoint instead of starting over. Steps can run in-process or on a remote worker, but it stays **one workflow**, with **one source of truth**, and **one end-to-end timeline**.
+**`@adonis-agora/durable`** brings durable execution to AdonisJS. You write a workflow as ordinary async code — call a step, use its result, call the next — and the engine records every step's output. If the process crashes or you deploy mid-run, the workflow resumes from the last checkpoint instead of starting over. Steps can run in-process or on a remote worker, but it stays **one workflow**, with **one source of truth**, and **one end-to-end timeline**.
 
 <Callout type="info" title="The one rule">
 The engine recovers a run by **replaying** the workflow function from the top. Completed steps return their saved result instead of executing again, so your workflow body must be deterministic — no `Date.now()`, `Math.random()`, or direct I/O outside a step. See [Durability & replay](/docs/durable/concepts/durability).
@@ -16,7 +16,7 @@ The engine recovers a run by **replaying** the workflow function from the top. C
 
 ## The problem it solves
 
-Multi-step processes are usually scattered: a queued job here, a cron there, a manual retry script somewhere else, and no single place to read or watch the whole thing. When a process dies halfway through, you are left reconstructing which steps already ran. `@agora/durable` collapses that into three guarantees:
+Multi-step processes are usually scattered: a queued job here, a cron there, a manual retry script somewhere else, and no single place to read or watch the whole thing. When a process dies halfway through, you are left reconstructing which steps already ran. `@adonis-agora/durable` collapses that into three guarantees:
 
 - **The flow becomes code, in one place.** Read the workflow function and you understand the whole sequence — even when steps execute in different processes.
 - **Durability by replay.** A crash or deploy never re-runs completed work. Each step is checkpointed; on recovery, finished steps replay their saved result and only unfinished work executes.
@@ -32,7 +32,7 @@ The minimal loop — install, configure, register a workflow, start a run — wi
 Install and configure the umbrella package:
 
 ```bash
-node ace add @agora/durable
+node ace add @adonis-agora/durable
 ```
 
 This registers the provider in `adonisrc.ts` and publishes `config/durable.ts`.
@@ -44,7 +44,7 @@ Register a workflow on the engine. Every `ctx.step` is checkpointed; `ctx.waitFo
 
 ```ts title="start/durable.ts"
 import app from '@adonisjs/core/services/app'
-import { WorkflowEngine } from '@agora/durable'
+import { WorkflowEngine } from '@adonis-agora/durable'
 
 const engine = await app.container.make(WorkflowEngine)
 
@@ -63,7 +63,7 @@ engine.register('checkout', '1', async (ctx, order: { id: string; total: number 
 Start a run from a controller. `start` **enqueues** the run and returns immediately — the HTTP handler never blocks on workflow logic:
 
 ```ts
-import { WorkflowEngine } from '@agora/durable'
+import { WorkflowEngine } from '@adonis-agora/durable'
 import { inject } from '@adonisjs/core'
 
 @inject()
@@ -98,7 +98,7 @@ Need the outcome inline instead? `await engine.waitForRun(runId)` resolves once 
 A step does not have to run in the same process. Declare a **remote step** with a typed, validated contract and call it with `ctx.call` — the engine dispatches it over a pluggable [transport](/docs/durable/transports) to wherever its handler lives:
 
 ```ts title="app/durable/steps.ts"
-import { remoteStep } from '@agora/durable'
+import { remoteStep } from '@adonis-agora/durable'
 import { z } from 'zod'
 
 export const chargeCard = remoteStep({

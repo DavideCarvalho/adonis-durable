@@ -6,7 +6,7 @@ import { WorkflowEngine } from '../src/index.js';
 
 /**
  * `node ace durable:work` — the long-running worker loop. Resolves the {@link WorkflowEngine} bound by
- * `@agora/durable`'s provider, then on an interval picks up pending runs, recovers crashed runs,
+ * `@adonis-agora/durable`'s provider, then on an interval picks up pending runs, recovers crashed runs,
  * resumes due timers, sweeps execution timeouts, and fires any `schedules` configured in
  * `config/durable.ts`. Stays alive until SIGINT/SIGTERM, then drains in-flight executions so a deploy
  * hands off cleanly.

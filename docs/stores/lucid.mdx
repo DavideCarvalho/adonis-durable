@@ -1,12 +1,12 @@
 ---
 title: Lucid
-description: The Lucid StateStore driver — persist runs and checkpoints to Postgres, MySQL, or SQLite through @adonisjs/lucid. The migration ships with @agora/durable; select the store with stores.lucid().
+description: The Lucid StateStore driver — persist runs and checkpoints to Postgres, MySQL, or SQLite through @adonisjs/lucid. The migration ships with @adonis-agora/durable; select the store with stores.lucid().
 ---
 
 import { Steps, Step } from 'fumadocs-ui/components/steps';
 import { Callout } from 'fumadocs-ui/components/callout';
 
-The `lucid` driver persists runs and step checkpoints through [`@adonisjs/lucid`](https://lucid.adonisjs.com) — on **Postgres, MySQL, or SQLite**. Timestamps and `wakeAt` are stored as epoch-ms big integers, so the schema is dialect-portable. It ships **inside `@agora/durable`**; `@adonisjs/lucid` is an optional peer, imported lazily only when you select the `lucid` store.
+The `lucid` driver persists runs and step checkpoints through [`@adonisjs/lucid`](https://lucid.adonisjs.com) — on **Postgres, MySQL, or SQLite**. Timestamps and `wakeAt` are stored as epoch-ms big integers, so the schema is dialect-portable. It ships **inside `@adonis-agora/durable`**; `@adonisjs/lucid` is an optional peer, imported lazily only when you select the `lucid` store.
 
 <Steps>
 <Step>
@@ -14,7 +14,7 @@ The `lucid` driver persists runs and step checkpoints through [`@adonisjs/lucid`
 ## Publish the migration
 
 ```bash
-node ace configure @agora/durable
+node ace configure @adonis-agora/durable
 ```
 
 `configure` registers the provider, publishes `config/durable.ts`, and publishes the migration that creates the five durable tables (alongside the optional `db`-transport migration — delete that one if you don't use the `db` transport).
@@ -36,7 +36,7 @@ node ace migration:run
 `store` names a key of the `stores` map. `stores.lucid()` rides your app's default Lucid connection — the driver resolves the `db` service for you when it starts:
 
 ```ts title="config/durable.ts"
-import { defineConfig, stores } from '@agora/durable'
+import { defineConfig, stores } from '@adonis-agora/durable'
 
 export default defineConfig({
   store: 'lucid',
@@ -70,7 +70,7 @@ The migration creates five tables (default names, from the `DURABLE_TABLES` cons
 The runs table is indexed on `status` and on `(status, wake_at)` so the worker's `listPendingRuns` and `listDueTimers` scans stay fast; checkpoints are keyed `(run_id, seq)` with a `(run_id, name)` index for targeted reads; and the attributes table is indexed per `(key, value)` so [search-attribute](/docs/durable/concepts/workflows-and-steps#tags) filters push down to SQL.
 
 <Callout type="info">
-Prefer to own the schema yourself? `@agora/durable` exports `createDurableTables(db)` and `dropDurableTables(db)` (plus `DURABLE_TABLES`), so you can build the tables from your own migration or a setup hook instead of the published stub. The store's `ensureSchema()` is also idempotent — calling it twice is safe.
+Prefer to own the schema yourself? `@adonis-agora/durable` exports `createDurableTables(db)` and `dropDurableTables(db)` (plus `DURABLE_TABLES`), so you can build the tables from your own migration or a setup hook instead of the published stub. The store's `ensureSchema()` is also idempotent — calling it twice is safe.
 </Callout>
 
 ## Read API for dashboards & tooling

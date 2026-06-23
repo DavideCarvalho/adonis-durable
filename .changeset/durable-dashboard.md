@@ -1,8 +1,8 @@
 ---
-'@agora/durable-dashboard': minor
+'@adonis-agora/durable-dashboard': minor
 ---
 
-Add `@agora/durable-dashboard`: a web dashboard + JSON API for inspecting and operating durable
+Add `@adonis-agora/durable-dashboard`: a web dashboard + JSON API for inspecting and operating durable
 workflow runs in an AdonisJS app. A provider mounts routes under a configurable prefix (default
 `/durable`) behind a pluggable `authorize(ctx)` guard from `config/durable_dashboard.ts` — open
 outside production, bearer-token-gated (`DURABLE_DASHBOARD_TOKEN`) and fail-closed in production by

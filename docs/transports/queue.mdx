@@ -7,7 +7,7 @@ import { Callout } from 'fumadocs-ui/components/callout';
 
 The `queue` driver carries steps over [`@adonisjs/queue`](https://github.com/adonisjs/queue) — the path for steps that run in another process. It rides any `@adonisjs/queue` adapter (Redis, a database adapter, or the fake adapter in tests), so it reuses the queue infrastructure you already run.
 
-It ships **inside `@agora/durable`** — there's nothing extra to install. `@adonisjs/queue` is an optional peer, imported lazily only when you select the `queue` transport, so install and configure it where you use the driver:
+It ships **inside `@adonis-agora/durable`** — there's nothing extra to install. `@adonisjs/queue` is an optional peer, imported lazily only when you select the `queue` transport, so install and configure it where you use the driver:
 
 ```bash
 npm i @adonisjs/queue
@@ -39,7 +39,7 @@ The default `prefix` is `durable` and the default `pollIntervalMs` is `200`.
 Run **one instance engine-side** (consumes results) and **one per worker process** (registers handlers for its group):
 
 ```ts title="config/durable.ts (engine side)"
-import { defineConfig, transports } from '@agora/durable'
+import { defineConfig, transports } from '@adonis-agora/durable'
 
 export default defineConfig({
   transport: 'queue',
@@ -58,7 +58,7 @@ node ace durable:work --group=payments
 ```
 
 <Callout type="info">
-Both the engine and the `durable:work` worker resolve the adapter from the `connection` you named in `config/queue.ts`, so the driver + host live in exactly one place. For a non-Adonis setup you can still construct the primitive `QueueTransport` (exported from `@agora/durable`) by hand and hand it a raw `@adonisjs/queue` adapter via its `adapter` option.
+Both the engine and the `durable:work` worker resolve the adapter from the `connection` you named in `config/queue.ts`, so the driver + host live in exactly one place. For a non-Adonis setup you can still construct the primitive `QueueTransport` (exported from `@adonis-agora/durable`) by hand and hand it a raw `@adonisjs/queue` adapter via its `adapter` option.
 </Callout>
 
 ## Options — `transports.queue(config)`
@@ -72,7 +72,7 @@ Both the engine and the `durable:work` worker resolve the adapter from the `conn
 | `pollIntervalMs` | `200` | Poll interval in ms between queue reads. |
 | `instanceId` | random uuid | Stable process id stamped on heartbeats and control messages. |
 
-`transports.queue(config)` returns the lazy driver thunk used in `config/durable.ts`; the underlying class is `QueueTransport`, also exported from `@agora/durable` for constructing a worker-side instance directly.
+`transports.queue(config)` returns the lazy driver thunk used in `config/durable.ts`; the underlying class is `QueueTransport`, also exported from `@adonis-agora/durable` for constructing a worker-side instance directly.
 
 ## Queue naming
 

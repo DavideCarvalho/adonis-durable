@@ -1,31 +1,31 @@
-# `@agora/durable`
+# `@adonis-agora/durable`
 
 > Durable cross-app workflows for **AdonisJS** — deterministic replay engine.
 > Part of the [Agora](https://github.com/DavideCarvalho) ecosystem.
 
 ## Packages
 
-Everything ships in **one** package — install `@agora/durable` and reach each
+Everything ships in **one** package — install `@adonis-agora/durable` and reach each
 feature through a subpath. The deterministic replay engine + AdonisJS binding is
 the default entry; the integrations are optional subpaths whose peer dependencies
 are installed only when used.
 
 | Package | Status | What |
 |---|---|---|
-| [`@agora/durable`](./packages/adonis) | ✅ shipped | the whole library — engine + AdonisJS binding (`.`), plus subpaths: `./otel`, `./telescope`, `./dashboard` (+ `./dashboard_provider`), `./commands` (ace commands), `./testing`, `./admission-redis` |
-| [`@agora/durable-eslint-plugin`](./packages/eslint-plugin) | ✅ shipped | ESLint rules enforcing workflow determinism (resolved by name; kept standalone) |
+| [`@adonis-agora/durable`](./packages/adonis) | ✅ shipped | the whole library — engine + AdonisJS binding (`.`), plus subpaths: `./otel`, `./telescope`, `./dashboard` (+ `./dashboard_provider`), `./commands` (ace commands), `./testing`, `./admission-redis` |
+| [`@adonis-agora/durable-eslint-plugin`](./packages/eslint-plugin) | ✅ shipped | ESLint rules enforcing workflow determinism (resolved by name; kept standalone) |
 
 ### Subpaths
 
 | Import | What |
 |---|---|
-| `@agora/durable` | framework-agnostic engine (replay, steps, signals, sleeps, child workflows, sagas/compensation, leases, DLQ, continue-as-new, cron, cancellation, versioning), the config-driven transport (`memory` / `queue` / `db`) and state-store (`lucid`) drivers, and the AdonisJS binding (`defineConfig`, `WorkflowEngine` as a container singleton from `config/durable.ts`) |
-| `@agora/durable/otel` | OpenTelemetry spans + lightweight metrics — one trace per run, one span per step (needs `@opentelemetry/api`) |
-| `@agora/durable/telescope` | a `@agora/telescope` extension — a Workflows health dashboard (golden signals) |
-| `@agora/durable/dashboard` | a self-contained web dashboard + JSON API for inspecting/operating runs (wire `@agora/durable/dashboard_provider`) |
-| `@agora/durable/commands` | the ace commands — `durable:work`, `durable:runs`, `durable:retry` |
-| `@agora/durable/testing` | test harness + cross-backend conformance suites (needs `vitest`) |
-| `@agora/durable/admission-redis` | Redis-backed global admission backend for fleet-wide concurrency/rate/priority/fairness (needs `@adonisjs/redis` + `ioredis`) |
+| `@adonis-agora/durable` | framework-agnostic engine (replay, steps, signals, sleeps, child workflows, sagas/compensation, leases, DLQ, continue-as-new, cron, cancellation, versioning), the config-driven transport (`memory` / `queue` / `db`) and state-store (`lucid`) drivers, and the AdonisJS binding (`defineConfig`, `WorkflowEngine` as a container singleton from `config/durable.ts`) |
+| `@adonis-agora/durable/otel` | OpenTelemetry spans + lightweight metrics — one trace per run, one span per step (needs `@opentelemetry/api`) |
+| `@adonis-agora/durable/telescope` | a `@adonis-agora/telescope` extension — a Workflows health dashboard (golden signals) |
+| `@adonis-agora/durable/dashboard` | a self-contained web dashboard + JSON API for inspecting/operating runs (wire `@adonis-agora/durable/dashboard_provider`) |
+| `@adonis-agora/durable/commands` | the ace commands — `durable:work`, `durable:runs`, `durable:retry` |
+| `@adonis-agora/durable/testing` | test harness + cross-backend conformance suites (needs `vitest`) |
+| `@adonis-agora/durable/admission-redis` | Redis-backed global admission backend for fleet-wide concurrency/rate/priority/fairness (needs `@adonisjs/redis` + `ioredis`) |
 
 Defaults to an in-process store + transport (single-process). For cross-process /
 production, select a driver by name in `config/durable.ts` — the `queue`

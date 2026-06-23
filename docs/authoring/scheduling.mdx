@@ -35,7 +35,7 @@ Every schedule has a stable `key`, the `workflow` name to start, and an optional
 Add a `schedules` array to your durable config. The `durable:work` worker loop reads it and fires any due windows on every tick — the 5th phase of the tick, right after it sweeps execution timeouts. No code to call yourself:
 
 ```ts title="config/durable.ts"
-import { defineConfig, transports } from '@agora/durable'
+import { defineConfig, transports } from '@adonis-agora/durable'
 
 export default defineConfig({
   transport: 'memory',
@@ -109,7 +109,7 @@ The result for scheduling: **each window starts exactly once**, no matter how ma
 The worker loop fires schedules for you, so registering them in `config/durable.ts` is all you normally need. If you drive ticks yourself (a custom loop, an external scheduler), call `runSchedules(engine, schedules, nowMs)` directly — it evaluates each schedule against `nowMs`, starts any due window, and returns the run ids it started:
 
 ```ts
-import { WorkflowEngine, runSchedules, type ScheduledWorkflow } from '@agora/durable'
+import { WorkflowEngine, runSchedules, type ScheduledWorkflow } from '@adonis-agora/durable'
 
 await runSchedules(engine, schedules, Date.now())
 ```

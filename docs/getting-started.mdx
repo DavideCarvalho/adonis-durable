@@ -16,18 +16,18 @@ This guide gets a workflow running in an AdonisJS app in a few minutes — no br
 <Tab value="node ace">
 
 ```bash
-node ace add @agora/durable
+node ace add @adonis-agora/durable
 ```
 
-`add` installs the package, registers `@agora/durable/durable_provider` in `adonisrc.ts`, and publishes `config/durable.ts`.
+`add` installs the package, registers `@adonis-agora/durable/durable_provider` in `adonisrc.ts`, and publishes `config/durable.ts`.
 
 </Tab>
 
 <Tab value="manual">
 
 ```bash
-npm i @agora/durable
-node ace configure @agora/durable
+npm i @adonis-agora/durable
+node ace configure @adonis-agora/durable
 ```
 
 `configure` runs the same codemods as `add` (register the provider, publish the config).
@@ -39,7 +39,7 @@ node ace configure @agora/durable
 The published `config/durable.ts` defaults to the in-process `memory` transport + the in-memory store, so the engine works with zero extra infrastructure. Drivers are selected by **name** from the `transports` / `stores` maps — each lazily imports its optional peer (`@adonisjs/queue`, `@adonisjs/lucid`) only when chosen:
 
 ```ts title="config/durable.ts"
-import { defineConfig, transports } from '@agora/durable'
+import { defineConfig, transports } from '@adonis-agora/durable'
 
 export default defineConfig({
   transport: 'memory',
@@ -63,7 +63,7 @@ The provider binds a singleton [`WorkflowEngine`](/docs/durable/concepts/workflo
 A step can run locally (`ctx.step`) or on a worker (`ctx.call`). Declare remote steps with a typed contract validated by [zod](https://zod.dev):
 
 ```ts title="app/durable/steps.ts"
-import { remoteStep } from '@agora/durable'
+import { remoteStep } from '@adonis-agora/durable'
 import { z } from 'zod'
 
 export const chargeCard = remoteStep({
@@ -81,7 +81,7 @@ Workflows are registered on the engine by **name** and **version** — the body 
 
 ```ts title="start/durable.ts"
 import app from '@adonisjs/core/services/app'
-import { WorkflowEngine } from '@agora/durable'
+import { WorkflowEngine } from '@adonis-agora/durable'
 import { chargeCard } from '#durable/steps'
 
 const engine = await app.container.make(WorkflowEngine)
@@ -110,7 +110,7 @@ preloads: [
 A remote step needs a handler registered on the transport. With the default in-process transport, register it on the same engine's transport at boot:
 
 ```ts title="start/durable.ts"
-import { InMemoryTransport } from '@agora/durable'
+import { InMemoryTransport } from '@adonis-agora/durable'
 
 // The default in-process transport (when none is configured) is an InMemoryTransport.
 // In a single-process app you can register handlers on a transport you also pass to the engine:
@@ -130,7 +130,7 @@ Inject the `WorkflowEngine` and start the workflow. `start` **enqueues** the run
 
 ```ts title="app/controllers/checkout_controller.ts"
 import type { HttpContext } from '@adonisjs/core/http'
-import { WorkflowEngine } from '@agora/durable'
+import { WorkflowEngine } from '@adonis-agora/durable'
 import { inject } from '@adonisjs/core'
 
 @inject()

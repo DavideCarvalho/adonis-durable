@@ -1,6 +1,6 @@
 ---
 title: Reliability
-description: How @agora/durable keeps long-running work correct in the face of transient failures, crashes and overload — step retries, saga compensation, durable flow-control queues and the dead-letter queue.
+description: How @adonis-agora/durable keeps long-running work correct in the face of transient failures, crashes and overload — step retries, saga compensation, durable flow-control queues and the dead-letter queue.
 ---
 
 import { Cards, Card } from 'fumadocs-ui/components/card';
@@ -24,5 +24,5 @@ The building blocks compose: a remote step can retry with backoff, register a co
 
 - **Retries** — both `ctx.step` and `ctx.call` retry on failure. A local step retries the in-process function; a remote step has a **durable** retry path (a failed call re-dispatches by suspending the run on a persisted `wakeAt`, so retries survive a crash) plus a `timeoutMs` heartbeat-liveness path for presumed-dead workers.
 - **Sagas** — attach a `compensate` callback to a step; the engine runs registered undos in reverse order when the run fails. `compensationRetries` retries a transient undo, and you can trigger the saga deliberately with `engine.cancel(runId, { compensate: true })`.
-- **Flow control** — register a queue with `engine.registerQueue` and reference it from `ctx.call(step, input, { queue })`. A call that can't be admitted re-suspends with a retry time. For a global cross-process cap, use the [`@agora/durable/admission-redis`](/docs/durable/reliability/flow-control#distributed-admission-redis) backend.
+- **Flow control** — register a queue with `engine.registerQueue` and reference it from `ctx.call(step, input, { queue })`. A call that can't be admitted re-suspends with a retry time. For a global cross-process cap, use the [`@adonis-agora/durable/admission-redis`](/docs/durable/reliability/flow-control#distributed-admission-redis) backend.
 - **Dead-lettering** — `maxRecoveryAttempts` caps how many times crash-recovery retries a run before moving it to the terminal `dead` status, where it stays inspectable and retriable. `engine.onDead` routes the dead run to a handler.

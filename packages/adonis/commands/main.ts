@@ -4,8 +4,8 @@ import DurableRuns from './runs.js';
 import DurableWork from './work.js';
 
 /**
- * The commands barrel for `@agora/durable`. Registered in an app's `adonisrc` via
- * `rcFile.addCommand('@agora/durable/commands')` (done by this package's `configure`). The ace
+ * The commands barrel for `@adonis-agora/durable`. Registered in an app's `adonisrc` via
+ * `rcFile.addCommand('@adonis-agora/durable/commands')` (done by this package's `configure`). The ace
  * kernel imports this module and treats it as a commands loader: a {@link ListLoader} over the three
  * durable commands provides their metadata and constructors.
  */

@@ -33,7 +33,7 @@ With `backoff: 'exp'`, `backoffMs: 200` the delays before attempts 2, 3, 4… ar
 Not every failure is worth retrying. A declined card or invalid input will fail the same way on every attempt. Throw a `FatalError` to fail the run immediately, regardless of the step's `retries`:
 
 ```ts
-import { FatalError } from '@agora/durable'
+import { FatalError } from '@adonis-agora/durable'
 
 await ctx.step('charge', async () => {
   const res = await stripe.charge(order)

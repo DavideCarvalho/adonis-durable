@@ -22,7 +22,7 @@ Transports are **config-driven drivers**: list the ones you use under `transport
 `transport` names a key of the `transports` map; that driver is what the engine dispatches every remote step over. Omit `transport` (or pick `memory`) for the in-process default.
 
 ```ts title="config/durable.ts"
-import { defineConfig, transports } from '@agora/durable'
+import { defineConfig, transports } from '@adonis-agora/durable'
 
 export default defineConfig({
   transport: 'queue',
@@ -42,7 +42,7 @@ Switching transports is a one-line change to `transport` — the workflow code n
 `transports.memory()` routes tasks to handlers registered in the same process with `transport.handle(name, fn)`. It's the default when `config/durable.ts` sets no `transport`:
 
 ```ts title="start/durable.ts"
-import { InMemoryTransport } from '@agora/durable'
+import { InMemoryTransport } from '@adonis-agora/durable'
 
 const transport = new InMemoryTransport()
 transport.handle('payments.charge-card', async (input) => ({ chargeId: await charge(input) }))

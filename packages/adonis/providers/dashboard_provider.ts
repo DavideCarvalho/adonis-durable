@@ -49,7 +49,7 @@ export default class DashboardProvider {
     const apiBase = `${config.path}/api`;
 
     // Resolve the engine lazily per request: the singleton is built by
-    // @agora/durable's provider, and runs/checkpoints are read through its own
+    // @adonis-agora/durable's provider, and runs/checkpoints are read through its own
     // read API (listRuns / listCheckpoints), so the dashboard needs nothing else.
     const deps = async (): Promise<Deps> => {
       const engine = await this.app.container.make(WorkflowEngine);

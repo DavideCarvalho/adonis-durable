@@ -78,7 +78,7 @@ export interface DbTransportConfig {
  * The transport factory namespace used in `config/durable.ts`:
  *
  * ```ts
- * import { defineConfig, transports } from '@agora/durable'
+ * import { defineConfig, transports } from '@adonis-agora/durable'
  *
  * export default defineConfig({
  *   transport: 'queue',

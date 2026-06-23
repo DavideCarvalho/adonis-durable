@@ -1,10 +1,10 @@
 {{{
   exports({ to: app.configPath('durable.ts') })
 }}}
-import { defineConfig, transports } from '@agora/durable'
+import { defineConfig, transports } from '@adonis-agora/durable'
 
 /**
- * Configuration for @agora/durable. Pick a `transport` (and optionally a `store`) by name from the
+ * Configuration for @adonis-agora/durable. Pick a `transport` (and optionally a `store`) by name from the
  * maps below; each driver's peer dependency is imported lazily, only when selected. The default is
  * the in-process `memory` transport + the in-memory store — single-process, no extra infrastructure.
  *
@@ -12,7 +12,7 @@ import { defineConfig, transports } from '@agora/durable'
  * transport, and the `lucid` store, then run `node ace migration:run`:
  *
  * ```ts
- * import { defineConfig, transports, stores } from '@agora/durable'
+ * import { defineConfig, transports, stores } from '@adonis-agora/durable'
  *
  * export default defineConfig({
  *   transport: 'queue',

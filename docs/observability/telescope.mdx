@@ -3,14 +3,14 @@ title: Telescope
 description: Surface workflow runs and steps inside Telescope with durableTelescopeExtension() — a Workflows dashboard with golden-signal health, current-state gauges, and recent failures, alongside your app's requests, queries, and jobs.
 ---
 
-Already running [Telescope](/docs/telescope)? The `@agora/durable/telescope` subpath adds a dedicated **Workflows** view so durable flows appear next to your requests, queries, and jobs — with a health dashboard built from the engine's lifecycle events and live store reads. It ships in the main `@agora/durable` package — no extra install.
+Already running [Telescope](/docs/telescope)? The `@adonis-agora/durable/telescope` subpath adds a dedicated **Workflows** view so durable flows appear next to your requests, queries, and jobs — with a health dashboard built from the engine's lifecycle events and live store reads. It ships in the main `@adonis-agora/durable` package — no extra install.
 
 ## Registering the extension
 
 Register `durableTelescopeExtension()` under Telescope's `extensions`:
 
 ```ts title="config/telescope.ts"
-import { durableTelescopeExtension } from '@agora/durable/telescope'
+import { durableTelescopeExtension } from '@adonis-agora/durable/telescope'
 
 export default defineConfig({
   extensions: [
@@ -21,7 +21,7 @@ export default defineConfig({
 
 The extension contributes a `durable` entry type (labeled **Workflows** in the nav), a `durable.workflows` dashboard, and a set of data providers. `runHref` is an optional URL template (default `'/durable/runs/{runId}'`) used to deep-link a run row out to the [durable dashboard](/docs/durable/observability/dashboard); `{runId}` is substituted per row.
 
-The durable runs become Telescope entries automatically — the `@agora/durable` provider bridges engine lifecycle events onto the [`@agora/diagnostics`](/docs/diagnostics) bus when diagnostics is installed, and Telescope captures from that bus. So you get one entry per lifecycle event (`run.started`, `step.completed`, `run.failed`, …) with zero extra wiring.
+The durable runs become Telescope entries automatically — the `@adonis-agora/durable` provider bridges engine lifecycle events onto the [`@adonis-agora/diagnostics`](/docs/diagnostics) bus when diagnostics is installed, and Telescope captures from that bus. So you get one entry per lifecycle event (`run.started`, `step.completed`, `run.failed`, …) with zero extra wiring.
 
 ## The Workflows dashboard
 

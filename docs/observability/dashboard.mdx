@@ -5,20 +5,20 @@ description: The embedded dashboard — a self-contained HTML page plus a JSON A
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-The dashboard mounts a control plane into your AdonisJS app: a self-contained HTML page plus its JSON API. It reads straight from the [state store](/docs/durable/stores) through the engine's read API, so it works without an OpenTelemetry collector. It ships in the main `@agora/durable` package — no extra install.
+The dashboard mounts a control plane into your AdonisJS app: a self-contained HTML page plus its JSON API. It reads straight from the [state store](/docs/durable/stores) through the engine's read API, so it works without an OpenTelemetry collector. It ships in the main `@adonis-agora/durable` package — no extra install.
 
 ```bash
-node ace configure @agora/durable
+node ace configure @adonis-agora/durable
 ```
 
-`configure` registers `@agora/durable/dashboard_provider` in `adonisrc.ts` and publishes `config/durable_dashboard.ts`. The provider registers the routes on boot — nothing else to wire.
+`configure` registers `@adonis-agora/durable/dashboard_provider` in `adonisrc.ts` and publishes `config/durable_dashboard.ts`. The provider registers the routes on boot — nothing else to wire.
 
 ## Configuration
 
 `config/durable_dashboard.ts` controls where it mounts and who may reach it:
 
 ```ts title="config/durable_dashboard.ts"
-import { defineConfig } from '@agora/durable/dashboard'
+import { defineConfig } from '@adonis-agora/durable/dashboard'
 
 export default defineConfig({
   // enabled: true,

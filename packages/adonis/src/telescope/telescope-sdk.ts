@@ -1,12 +1,12 @@
 /**
- * A local, structural mirror of the `@agora/telescope` extension SDK contract.
+ * A local, structural mirror of the `@adonis-agora/telescope` extension SDK contract.
  *
- * We deliberately do NOT import `@agora/telescope` — it lives in a separate repo, so a workspace
- * dependency would not resolve (the same cross-repo decoupling `@agora/telescope` itself uses to read
- * `@agora/diagnostics` without importing it). Instead we declare the same shapes here; the exported
- * extension object structurally satisfies `@agora/telescope`'s `TelescopeExtension` when an app wires
+ * We deliberately do NOT import `@adonis-agora/telescope` — it lives in a separate repo, so a workspace
+ * dependency would not resolve (the same cross-repo decoupling `@adonis-agora/telescope` itself uses to read
+ * `@adonis-agora/diagnostics` without importing it). Instead we declare the same shapes here; the exported
+ * extension object structurally satisfies `@adonis-agora/telescope`'s `TelescopeExtension` when an app wires
  * it into `config/telescope.ts` (where both packages are installed). Keep these in lockstep with
- * `@agora/telescope`'s `extension/types.ts`.
+ * `@adonis-agora/telescope`'s `extension/types.ts`.
  */
 
 /** The slice of a telescope entry the data providers read. */
@@ -25,7 +25,7 @@ export interface ContainerLike {
   make<T>(token: unknown): Promise<T>;
 }
 
-/** Read-only context handed to every extension hook (mirror of `@agora/telescope`'s). */
+/** Read-only context handed to every extension hook (mirror of `@adonis-agora/telescope`'s). */
 export interface ExtensionContext {
   readonly store: TelescopeStoreLike;
   readonly container: ContainerLike;

@@ -4,7 +4,7 @@ import { MockAdapter } from '../../../src/transports/queue-mock-adapter.js';
 
 /** A fake booted app exposing only `config.get('queue', …)` — what the factory reads. */
 function fakeCtx(queueConfig: unknown) {
-  return {
+  const ctx = {
     app: {
       container: {
         make: async () => {
@@ -15,8 +15,9 @@ function fakeCtx(queueConfig: unknown) {
         get: (key: string, fallback?: unknown) => (key === 'queue' ? queueConfig : fallback),
       },
     },
-    // biome-ignore lint/suspicious/noExplicitAny: structural test double for TransportContext
-  } as any;
+  };
+  // structural test double for TransportContext
+  return ctx as any;
 }
 
 describe('transports.queue — connection resolution from config/queue.ts', () => {
