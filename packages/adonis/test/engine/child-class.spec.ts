@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { WorkflowEngine } from '../../src/engine.js';
 import { startRun } from '../../src/test-helpers.js';
 import { InMemoryStateStore } from '../../src/testing/in-memory-state-store.js';
-import { WORKFLOW_NAME_KEY } from '../../src/workflow-ref.js';
+import { Workflow } from '../../src/workflow-ref.js';
 
 async function poll(fn: () => Promise<boolean>, timeoutMs = 1000): Promise<void> {
   const start = Date.now();
@@ -13,10 +13,13 @@ async function poll(fn: () => Promise<boolean>, timeoutMs = 1000): Promise<void>
   throw new Error('poll timed out');
 }
 
-/** Stamp a class with a registered name, the way the `@Workflow` decorator does. */
-function named<T extends abstract new (...args: never[]) => unknown>(cls: T, name: string): T {
-  (cls as { [WORKFLOW_NAME_KEY]?: string })[WORKFLOW_NAME_KEY] = name;
-  return cls;
+/** Stamp a class with a registered name via the `@Workflow` decorator (its metadata carries it). */
+function named<
+  T extends abstract new (
+    ...args: never[]
+  ) => { run(ctx: never, input: never): unknown },
+>(cls: T, name: string): T {
+  return Workflow({ name })(cls);
 }
 
 describe('class-ref forms of child / startChild / start', () => {

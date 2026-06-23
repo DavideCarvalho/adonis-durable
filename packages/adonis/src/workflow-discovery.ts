@@ -1,13 +1,13 @@
 import { readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { extname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { WorkflowEngine } from './engine.js';
-import { type WorkflowMeta, workflowMeta } from './workflow-ref.js';
+import { type WorkflowClass, type WorkflowMeta, workflowMeta } from './workflow-ref.js';
 
 /** A discovered, decorated workflow class plus the metadata its `@Workflow` decorator stamped. */
 export interface DiscoveredWorkflow {
   meta: WorkflowMeta;
-  cls: new () => { run(ctx: unknown, input: unknown): Promise<unknown> | unknown };
+  cls: WorkflowClass;
 }
 
 /**
@@ -35,15 +35,26 @@ export function registerWorkflowClass(engine: WorkflowEngine, cls: unknown): boo
 }
 
 /**
- * Scan a directory for modules and collect every exported `@Workflow`-decorated class (the default
- * export and any named export are considered). Used by the provider to auto-register the
- * `app/workflows` convention — mirroring `@adonisjs/queue`'s `app/jobs`. Missing directory →
- * empty list (the convention is opt-in: no `app/workflows`, nothing to register).
+ * Pick the module extension for the running environment so a built app (`.js`) and a dev/ts app
+ * (`.ts`, run under a loader) never double-register the same workflow. We import only files whose
+ * extension matches `import.meta.url`'s own (`.ts` when running from source, `.js` from `dist`),
+ * which keeps scanner and `make:workflow` (it scaffolds `.ts`) in agreement under both setups.
+ */
+const MODULE_EXT = extname(import.meta.url || '') === '.ts' ? '.ts' : '.js';
+
+/**
+ * Scan a directory RECURSIVELY for modules and collect every exported `@Workflow`-decorated class
+ * (the default export and any named export are considered) — so nested conventions like
+ * `app/workflows/billing/charge_workflow.ts` are found, matching `make:workflow`'s nested-path
+ * scaffolding. Only the environment-appropriate extension is imported (see {@link MODULE_EXT}), and
+ * each module path is visited once, so a built `.js` and a dev `.ts` of the same module never both
+ * register. Missing directory → empty list (the convention is opt-in: no `app/workflows`, nothing to
+ * register).
  */
 export async function discoverWorkflows(dir: string): Promise<DiscoveredWorkflow[]> {
   let entries: string[];
   try {
-    entries = await readdir(dir);
+    entries = await readdir(dir, { recursive: true });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw err;
@@ -52,17 +63,14 @@ export async function discoverWorkflows(dir: string): Promise<DiscoveredWorkflow
   const found: DiscoveredWorkflow[] = [];
   const seen = new Set<unknown>();
   for (const entry of entries.sort()) {
-    if (!/\.(js|ts)$/.test(entry) || /\.d\.ts$/.test(entry)) continue;
+    if (extname(entry) !== MODULE_EXT || entry.endsWith(`.d${MODULE_EXT}`)) continue;
     const mod = (await import(pathToFileURL(join(dir, entry)).href)) as Record<string, unknown>;
     for (const exported of Object.values(mod)) {
       if (seen.has(exported)) continue;
       const meta = workflowMeta(exported);
       if (!meta) continue;
       seen.add(exported);
-      found.push({
-        meta,
-        cls: exported as DiscoveredWorkflow['cls'],
-      });
+      found.push({ meta, cls: exported as WorkflowClass });
     }
   }
   return found;

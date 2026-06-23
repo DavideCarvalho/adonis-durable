@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -66,6 +66,25 @@ describe('app/workflows auto-discovery', () => {
 
     const res = await startRun(engine, 'greet', { name: 'davi' }, 'g1');
     expect(res.output).toBe('hi davi');
+  });
+
+  it('discovers @Workflow classes in NESTED directories (matches make:workflow nested paths)', async () => {
+    await mkdir(join(dir, 'billing'), { recursive: true });
+    await writeFile(
+      join(dir, 'billing', 'charge_workflow.ts'),
+      `import { Workflow } from '${SRC}/workflow-ref.js'
+       class ChargeWorkflow {
+         async run(_ctx, input) { return 'charged:' + input.id }
+       }
+       export default Workflow({ name: 'billing.charge', version: '1' })(ChargeWorkflow)`,
+    );
+
+    const engine = new WorkflowEngine({ store: new InMemoryStateStore() });
+    const registered = await registerWorkflowsFromDir(engine, dir);
+    expect(registered).toEqual([{ name: 'billing.charge', version: '1' }]);
+
+    const res = await startRun(engine, 'billing.charge', { id: 'x' }, 'c1');
+    expect(res.output).toBe('charged:x');
   });
 
   it('returns an empty list for a missing directory (convention is opt-in)', async () => {

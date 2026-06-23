@@ -2,30 +2,32 @@ import type { RemoteTask, StepEvent, StepLogger, StepResult } from './interfaces
 import { createStepLogger } from './step-logger.js';
 
 /**
- * The write slot `@adonis-agora/context` exposes to install a context snapshot for the current async
- * scope: `(snapshot: Record<string, unknown> | undefined) => void`. Read structurally so a worker
- * restores the originating request's userRef/tenant/traceId onto a step handler with zero config when
- * context is installed — and no hard dependency (no-op) when it is not. The key is a global-registry
- * symbol so it survives duplicate copies of either package in a dependency tree.
+ * The scoped-restore slot `@adonis-agora/context` exposes:
+ * `<T>(snapshot: Record<string, unknown> | undefined, fn: () => T) => T`. It runs `fn` INSIDE a
+ * freshly-activated context store seeded from `snapshot` (or just `fn()` when snapshot/slot is
+ * absent). Read structurally so a worker restores the originating request's userRef/tenant/traceId
+ * around a step handler with zero config when context is installed — and a clean no-op (`fn()`) when
+ * it is not. Wrapping (rather than the old `:set`, which only populates an already-active store) gives
+ * both correct propagation AND per-task isolation on a long-lived worker: each task runs in its own
+ * scope, so context never bleeds between tasks. The key is a global-registry symbol so it survives
+ * duplicate copies of either package in a dependency tree.
  */
-const CONTEXT_SET = Symbol.for('@agora/context:set');
+const CONTEXT_SCOPE = Symbol.for('@agora/context:scope');
+
+type ContextScope = <T>(snapshot: Record<string, unknown> | undefined, fn: () => T) => T;
 
 /**
- * Best-effort: before a worker runs a step handler, write the task's context snapshot (stamped at
- * dispatch by the originating engine, see {@link RemoteTask.context}) into `@adonis-agora/context`'s
- * write slot, so the handler sees the originating userRef/tenant/traceId with no manual code. No-op
- * when context isn't installed (slot absent) or the task carries no snapshot. Never throws — a
- * propagation hiccup must not fail the step.
+ * Run `fn` inside the originating request's context (userRef/tenant/traceId), restored from the
+ * task's snapshot (stamped at dispatch by the originating engine, see {@link RemoteTask.context}),
+ * so a step handler sees it with no manual code. When `@adonis-agora/context` is not installed (slot
+ * absent) the body runs directly — a clean no-op fallback. Never throws from the propagation path: a
+ * non-function slot is ignored; errors inside `fn` propagate as the step's own failure (the scope
+ * helper itself re-throws nothing of its own).
  */
-function restoreContext(snapshot: Record<string, unknown> | undefined): void {
-  if (!snapshot) return;
-  const set = (globalThis as Record<symbol, unknown>)[CONTEXT_SET];
-  if (typeof set !== 'function') return;
-  try {
-    (set as (s: Record<string, unknown>) => void)(snapshot);
-  } catch {
-    // Context propagation is correlation metadata, never an authorization boundary — swallow.
-  }
+function withRestoredContext<T>(snapshot: Record<string, unknown> | undefined, fn: () => T): T {
+  const scope = (globalThis as Record<symbol, unknown>)[CONTEXT_SCOPE];
+  if (typeof scope !== 'function') return fn();
+  return (scope as ContextScope)(snapshot, fn);
 }
 
 /** Canonical step id — the stable identity of a step within a run, used for dedupe and
@@ -64,25 +66,27 @@ export async function runStepHandler(
   const events: StepEvent[] = [];
   const withEvents = (result: StepResult): StepResult =>
     events.length > 0 ? { ...result, events } : result;
-  // Restore the originating request's context (userRef/tenant/traceId) BEFORE the handler runs, so
-  // cross-process propagation is automatic — `ctx.call(remoteStep, input)` carries the caller's
-  // context with zero manual serialize/deserialize. Best-effort; no-op without `@adonis-agora/context`.
-  restoreContext(task.context);
-  try {
-    const output = await handler(task.input, createStepLogger(events, Date.now));
-    return withEvents({ ...base, status: 'completed', output });
-  } catch (err) {
-    // Carry `code`/`retryable` off the thrown error if present, so the engine's durable retry can
-    // honour a worker's "don't retry this" verdict (e.g. a declined card).
-    const e = err as { message?: string; code?: string; retryable?: boolean };
-    return withEvents({
-      ...base,
-      status: 'failed',
-      error: {
-        message: err instanceof Error ? err.message : String(err),
-        ...(typeof e?.code === 'string' ? { code: e.code } : {}),
-        ...(typeof e?.retryable === 'boolean' ? { retryable: e.retryable } : {}),
-      },
-    });
-  }
+  // Run the handler INSIDE the originating request's context (userRef/tenant/traceId), restored from
+  // the task snapshot, so cross-process propagation is automatic — `ctx.call(remoteStep, input)`
+  // carries the caller's context with zero manual serialize/deserialize, and each task runs in its
+  // own scope (no cross-task bleed on a long-lived worker). No-op without `@adonis-agora/context`.
+  return withRestoredContext(task.context, async () => {
+    try {
+      const output = await handler(task.input, createStepLogger(events, Date.now));
+      return withEvents({ ...base, status: 'completed', output });
+    } catch (err) {
+      // Carry `code`/`retryable` off the thrown error if present, so the engine's durable retry can
+      // honour a worker's "don't retry this" verdict (e.g. a declined card).
+      const e = err as { message?: string; code?: string; retryable?: boolean };
+      return withEvents({
+        ...base,
+        status: 'failed',
+        error: {
+          message: err instanceof Error ? err.message : String(err),
+          ...(typeof e?.code === 'string' ? { code: e.code } : {}),
+          ...(typeof e?.retryable === 'boolean' ? { retryable: e.retryable } : {}),
+        },
+      });
+    }
+  });
 }

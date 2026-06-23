@@ -17,41 +17,9 @@ import {
 
 /** The read view of `@adonis-agora/context`'s accessor, read structurally from its global slot. */
 interface ContextAccessorLike {
-  userRef?: () => string | undefined;
-  tenantId?: () => string | undefined;
-  traceId(): string | undefined;
   get(): Record<string, unknown> | undefined;
 }
 const CONTEXT_ACCESSOR = Symbol.for('@agora/context:accessor');
-
-/**
- * Snapshot the FULL Agora context off the accessor for cross-process propagation: the arbitrary
- * carrier from `get()` PLUS the structured userRef/tenantId/traceId, so a worker restores the
- * originating request's identity automatically (see `runStepHandler`'s restore). Best-effort and
- * structural — undefined when no context is live, never throws. The producer owns the carrier keys;
- * the engine treats the result as an opaque pass-through.
- */
-function snapshotContext(accessor: ContextAccessorLike): Record<string, unknown> | undefined {
-  let snapshot: Record<string, unknown> | undefined;
-  try {
-    const carrier = accessor.get();
-    if (carrier) snapshot = { ...carrier };
-    const userRef = accessor.userRef?.();
-    const tenantId = accessor.tenantId?.();
-    const traceId = accessor.traceId();
-    if (userRef !== undefined || tenantId !== undefined || traceId !== undefined) {
-      snapshot = {
-        ...snapshot,
-        ...(userRef !== undefined ? { userRef } : {}),
-        ...(tenantId !== undefined ? { tenantId } : {}),
-        ...(traceId !== undefined ? { traceId } : {}),
-      };
-    }
-  } catch {
-    // Propagation is best-effort correlation metadata — a read hiccup must not fail dispatch.
-  }
-  return snapshot;
-}
 
 /**
  * Global slot `@adonis-agora/diagnostics-otel` publishes its `otelTraceparent` under: a
@@ -122,9 +90,10 @@ export default class DurableProvider {
           ? { compensationRetries: config.compensationRetries }
           : {}),
         ...(config.runDispatcher ? { runDispatcher: config.runDispatcher } : {}),
-        // Best-effort context propagation from @adonis-agora/context (no hard dep): snapshot the full
-        // structured context (carrier + userRef/tenant/traceId) so the worker restores it automatically.
-        ...(accessor ? { context: () => snapshotContext(accessor) } : {}),
+        // Best-effort context propagation from @adonis-agora/context (no hard dep): pass the opaque
+        // carrier through verbatim. The carrier is producer-owned and shape-opaque; the worker's
+        // scope slot round-trips the whole snapshot via Context.run, so no field-picking is needed.
+        ...(accessor ? { context: () => accessor.get() } : {}),
         // Best-effort OTel trace continuation from @adonis-agora/diagnostics-otel (no hard dep).
         ...(otelTraceparent ? { traceparent: otelTraceparent } : {}),
       };

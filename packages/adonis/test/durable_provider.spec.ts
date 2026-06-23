@@ -74,27 +74,19 @@ describe('DurableProvider', () => {
     }
   });
 
-  it('snapshots the full @agora/context (carrier + userRef/tenant/traceId) onto each dispatched task', async () => {
+  it('passes the @agora/context carrier through verbatim (opaque, no field-picking)', async () => {
     const CONTEXT_ACCESSOR = Symbol.for('@agora/context:accessor');
     const g = globalThis as Record<symbol, unknown>;
-    g[CONTEXT_ACCESSOR] = {
-      userRef: () => 'user-7',
-      tenantId: () => 'acme',
-      traceId: () => 'trace-z',
-      get: () => ({ correlationId: 'corr-1' }),
-    };
+    const carrier = { correlationId: 'corr-1', userRef: 'user-7', tenantId: 'acme' };
+    g[CONTEXT_ACCESSOR] = { get: () => carrier };
     try {
       const { app, resolve } = fakeApp();
       new DurableProvider(app).register();
       const engine = await resolve();
       // Reach the engine's context thunk via the same path dispatch uses.
       const ctxThunk = (engine as unknown as { context?: () => Record<string, unknown> }).context;
-      expect(ctxThunk?.()).toEqual({
-        correlationId: 'corr-1',
-        userRef: 'user-7',
-        tenantId: 'acme',
-        traceId: 'trace-z',
-      });
+      // The carrier is opaque: whatever the accessor returns rides the task unchanged.
+      expect(ctxThunk?.()).toBe(carrier);
     } finally {
       delete g[CONTEXT_ACCESSOR];
     }

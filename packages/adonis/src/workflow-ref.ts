@@ -7,16 +7,10 @@
  */
 
 /**
- * The symbol the `@Workflow` decorator stamps a workflow's registered name onto, so a class ref can
- * be resolved back to its name. A global-registry symbol (`Symbol.for`) so it survives duplicate
- * copies of this package in a dependency tree.
- */
-export const WORKFLOW_NAME_KEY: unique symbol = Symbol.for('@agora/durable:workflow-name');
-
-/**
  * The symbol the `@Workflow` decorator stamps the full options onto (name + version + tags …), so
- * auto-discovery can register the class against the engine. A global-registry symbol so it survives
- * duplicate copies of this package in a dependency tree (mirrors {@link WORKFLOW_NAME_KEY}).
+ * auto-discovery can register the class against the engine and a class ref can be resolved back to
+ * its name via {@link workflowName}. A global-registry symbol (`Symbol.for`) so it survives duplicate
+ * copies of this package in a dependency tree.
  */
 export const WORKFLOW_META_KEY: unique symbol = Symbol.for('@agora/durable:workflow-meta');
 
@@ -40,9 +34,9 @@ export interface WorkflowMeta extends WorkflowOptions {
 }
 
 /**
- * Class decorator marking a class as a durable workflow. Stamps the registered name (so a class ref
- * resolves via {@link workflowName}) and the full options (so the provider's `app/workflows`
- * auto-discovery can register it on the engine — no manual `engine.register(...)`). The class must
+ * Class decorator marking a class as a durable workflow. Stamps the full options (name + version +
+ * tags …) so a class ref resolves via {@link workflowName} and the provider's `app/workflows`
+ * auto-discovery can register it on the engine — no manual `engine.register(...)`. The class must
  * expose `run(ctx, input)`; that method becomes the workflow body.
  *
  * ```ts
@@ -57,11 +51,6 @@ export function Workflow(options: WorkflowOptions) {
     target: T,
   ): T => {
     const meta: WorkflowMeta = { ...options, version: options.version ?? '1' };
-    Object.defineProperty(target, WORKFLOW_NAME_KEY, {
-      value: meta.name,
-      enumerable: false,
-      configurable: true,
-    });
     Object.defineProperty(target, WORKFLOW_META_KEY, {
       value: meta,
       enumerable: false,
@@ -109,12 +98,12 @@ export type WorkflowOutputOf<C> = C extends abstract new (
 
 /**
  * Resolve a {@link WorkflowRef} to its registered workflow name: a string is returned as-is; a
- * `@Workflow` class is resolved via the name the decorator stamped on it. Throws if a class was
- * never decorated (so it carries no registered name).
+ * `@Workflow` class is resolved via the name the decorator stamped in its metadata. Throws if a
+ * class was never decorated (so it carries no registered name).
  */
 export function workflowName(ref: WorkflowRef): string {
   if (typeof ref === 'string') return ref;
-  const name = (ref as { [WORKFLOW_NAME_KEY]?: string })[WORKFLOW_NAME_KEY];
+  const name = workflowMeta(ref)?.name;
   if (!name) {
     throw new Error(
       `workflow class ${ref.name} has no registered name — is it decorated with @Workflow({ name })?`,
