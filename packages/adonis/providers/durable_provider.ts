@@ -1,6 +1,8 @@
 import type { ApplicationService } from '@adonisjs/core/types';
+import type { ControlPlaneContext } from '../src/control-planes/factory.js';
 import type { DurableConfig } from '../src/define_config.js';
 import {
+  type ControlPlane,
   InMemoryStateStore,
   InMemoryTransport,
   type StateStore,
@@ -52,6 +54,7 @@ const DIAGNOSTICS_EMIT = Symbol.for('@agora/diagnostics:emit');
 export default class DurableProvider {
   #detachDiagnostics: (() => void) | null = null;
   #transport: (Transport & { close?: () => Promise<void> }) | null = null;
+  #controlPlane: (ControlPlane & { close?: () => Promise<void> }) | null = null;
 
   constructor(protected app: ApplicationService) {}
 
@@ -65,16 +68,19 @@ export default class DurableProvider {
         | (() => string | undefined)
         | undefined;
 
-      const ctx: TransportContext & StoreContext = { app: this.app };
+      const ctx: TransportContext & StoreContext & ControlPlaneContext = { app: this.app };
       const store = await this.#resolveStore(config, ctx);
       const transport = await this.#resolveTransport(config, ctx);
       // Hold the transport so `shutdown()` can release broker workers/connections cleanly.
       this.#transport = transport;
+      const controlPlane = await this.#resolveControlPlane(config, ctx);
+      // Hold the control plane so `shutdown()` can tear down its subscriber connection cleanly.
+      this.#controlPlane = controlPlane;
 
       const deps: WorkflowEngineDeps = {
         store,
         transport,
-        ...(config.controlPlane ? { controlPlane: config.controlPlane } : {}),
+        ...(controlPlane ? { controlPlane } : {}),
         ...(config.leaseMs !== undefined ? { leaseMs: config.leaseMs } : {}),
         ...(config.instanceId ? { instanceId: config.instanceId } : {}),
         ...(config.maxRecoveryAttempts !== undefined
@@ -121,6 +127,20 @@ export default class DurableProvider {
   }
 
   /**
+   * Resolve the configured control plane. `config.controlPlane` may be a ready {@link ControlPlane}
+   * instance (used as-is) or a {@link ControlPlaneFactory} thunk (called at boot so its peer
+   * dependency loads lazily). Omitted → no control plane (the engine runs local-only).
+   */
+  async #resolveControlPlane(
+    config: DurableConfig,
+    ctx: ControlPlaneContext,
+  ): Promise<(ControlPlane & { close?: () => Promise<void> }) | null> {
+    const cp = config.controlPlane;
+    if (!cp) return null;
+    return typeof cp === 'function' ? cp(ctx) : cp;
+  }
+
+  /**
    * Once everything is booted, bridge engine lifecycle events onto the `@adonis-agora/diagnostics` bus —
    * but only when diagnostics is actually installed (its emit slot is populated at module load).
    * Gating on the slot avoids eagerly constructing the engine when diagnostics is absent; when it is
@@ -140,5 +160,8 @@ export default class DurableProvider {
     // Release the transport's broker workers / queues / connections so a deploy hands off cleanly.
     await this.#transport?.close?.();
     this.#transport = null;
+    // Tear down the control plane's subscriber connection (Redis pub/sub) on the way out.
+    await this.#controlPlane?.close?.();
+    this.#controlPlane = null;
   }
 }

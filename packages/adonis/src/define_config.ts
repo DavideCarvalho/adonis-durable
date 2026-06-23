@@ -1,3 +1,9 @@
+import { controlPlanes } from './control-planes/factory.js';
+import type {
+  ControlPlaneContext,
+  ControlPlaneFactory,
+  RedisControlPlaneConfig,
+} from './control-planes/factory.js';
 import type { ControlPlane, RunDispatcher } from './interfaces.js';
 import type { ScheduledWorkflow } from './scheduler.js';
 import { stores } from './stores/factory.js';
@@ -51,8 +57,13 @@ export interface DurableConfig {
   store?: string;
   /** Named state stores, built with the {@link stores} factory. */
   stores?: Record<string, StoreFactory>;
-  /** Cross-instance broadcast for lifecycle events + cancellation. Omit for single-instance. */
-  controlPlane?: ControlPlane;
+  /**
+   * Cross-instance broadcast for lifecycle events + cancellation. Omit for single-instance. Either a
+   * ready {@link ControlPlane} instance, or a {@link ControlPlaneFactory} built with the
+   * {@link controlPlanes} factory (e.g. `controlPlanes.redis({ connection: 'main' })`) so the peer
+   * dependency (`@adonisjs/redis`) is imported lazily, only when selected.
+   */
+  controlPlane?: ControlPlane | ControlPlaneFactory;
   /** Recovery lease duration in ms. Default 30s. */
   leaseMs?: number;
   /** Unique id for this engine instance. Defaults to a random id. */
@@ -78,7 +89,7 @@ export function defineConfig(config: DurableConfig = {}): DurableConfig {
   return config;
 }
 
-export { transports, stores };
+export { transports, stores, controlPlanes };
 export type {
   TransportContext,
   TransportFactory,
@@ -88,4 +99,7 @@ export type {
   StoreContext,
   StoreFactory,
   LucidStoreConfig,
+  ControlPlaneContext,
+  ControlPlaneFactory,
+  RedisControlPlaneConfig,
 };

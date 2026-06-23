@@ -58,6 +58,11 @@
       "import": "./dist/src/admission-redis/index.js",
       "default": "./dist/src/admission-redis/index.js"
     },
+    "./control-plane-redis": {
+      "types": "./dist/src/control-plane-redis/index.d.ts",
+      "import": "./dist/src/control-plane-redis/index.js",
+      "default": "./dist/src/control-plane-redis/index.js"
+    },
     "./commands": {
       "types": "./dist/commands/main.d.ts",
       "import": "./dist/commands/main.js",

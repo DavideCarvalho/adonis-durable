@@ -1,0 +1,65 @@
+---
+title: Control plane
+description: The cross-instance broadcast channel for lifecycle events and cancellation — separate from the point-to-point task transport. Omit it and the engine is local-only; pick controlPlanes.redis to fan out across every replica over Redis pub/sub, interoperable with a NestJS fleet.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+The task [transport](/docs/durable/transports) is **point-to-point**: it carries one task to one worker and a result back. The **control plane** is a separate, *broadcast* channel across **every** engine instance (every pod). It carries what each instance may need regardless of who runs a given run:
+
+- **Lifecycle events** — so a dashboard-only pod can live-tail a run executing on a worker pod.
+- **Cancellation** — so the pod actually running a run learns it was cancelled elsewhere.
+- **Enqueue nudges** — so a worker picks up a freshly enqueued run now instead of on the next poll.
+
+This is purely out-of-band signalling. It carries **no replay/determinism weight** — the deterministic engine never depends on it; the engine dedupes its own broadcasts by the originating `instanceId`, so a publish that Redis echoes back to its own subscriber is ignored.
+
+## Local-only by default
+
+Omit `controlPlane` and the engine is **local-only**: events and cancellation reach subscribers on *this* instance but don't fan out to other processes. That's exactly right for a single-instance app — no extra infrastructure.
+
+```ts title="config/durable.ts"
+import { defineConfig, transports } from '@adonis-agora/durable'
+
+// No controlPlane → single-instance, local-only events + cancellation.
+export default defineConfig({ transport: 'queue', transports: { /* ... */ } })
+```
+
+## Multi-replica: `controlPlanes.redis`
+
+Running more than one replica? Without a control plane, a `cancel` issued on the API pod never reaches the worker pod running the run, and a dashboard pod can't live-tail runs executing elsewhere. Pick the Redis driver to fan both out over Redis pub/sub:
+
+```ts title="config/durable.ts"
+import { defineConfig, transports, controlPlanes } from '@adonis-agora/durable'
+
+export default defineConfig({
+  transport: 'queue',
+  transports: { queue: transports.queue({ connection: 'redis', group: 'workers' }) },
+  // Fan out lifecycle events + cancellation across every replica.
+  controlPlane: controlPlanes.redis({ connection: 'main' }),
+})
+```
+
+`connection` names a connection from `config/redis.ts` (defaults to `'main'`). Like the other drivers, `@adonisjs/redis` is imported **lazily** — only when this driver is selected — so it stays an optional peer. The provider tears down the subscriber connection on shutdown.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `connection` | `'main'` | `config/redis.ts` connection used for pub/sub. |
+| `prefix` | `'durable'` | Channel is `` `${prefix}-control` ``. |
+
+<Callout type="info">
+**Interoperates with a NestJS fleet.** The channel (`` `${prefix}-control` ``) and the JSON payload match the NestJS BullMQ transport's control plane, so an AdonisJS fleet and a NestJS fleet sharing one Redis fan out across both runtimes on the same channel.
+</Callout>
+
+## Passing an instance directly
+
+`controlPlane` also accepts a ready `ControlPlane` instance instead of a factory — useful for tests or a bespoke broker. A broadcast-capable transport that also implements `ControlPlane` can be passed as both.
+
+```ts
+import { RedisControlPlane } from '@adonis-agora/durable'
+import { Redis } from 'ioredis'
+
+const controlPlane = new RedisControlPlane({ connection: new Redis(), prefix: 'durable' })
+export default defineConfig({ controlPlane })
+```
+
+`RedisControlPlane` accepts **either** a raw `ioredis` instance (it duplicates a dedicated subscriber connection) **or** an `@adonisjs/redis` connection (which manages its own subscriber) — it detects which by feature, so the factory form and the manual form behave identically.

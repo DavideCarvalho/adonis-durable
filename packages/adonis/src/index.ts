@@ -48,6 +48,19 @@ export type { StoreContext, StoreFactory, LucidStoreConfig } from './stores/fact
 export { LucidStateStore, type LucidStateStoreOptions } from './stores/lucid.js';
 export { DURABLE_TABLES, createDurableTables, dropDurableTables } from './stores/lucid-schema.js';
 
+// --- config-driven control-plane drivers ------------------------------------
+export { controlPlanes } from './control-planes/factory.js';
+export type {
+  ControlPlaneContext,
+  ControlPlaneFactory,
+  RedisControlPlaneConfig,
+} from './control-planes/factory.js';
+export {
+  RedisControlPlane,
+  type RedisControlPlaneOptions,
+  type RedisPubSub,
+} from './control-plane-redis/redis-control-plane.js';
+
 // --- AdonisJS integration ---------------------------------------------------
 export { defineConfig } from './define_config.js';
 export type { DurableConfig } from './define_config.js';

@@ -66,10 +66,16 @@ The id of the transport that accepted the dispatch is stamped on the task as `ta
 The transport is **point-to-point**: it carries a task to one worker and a result back. But some things every engine instance needs regardless of who runs a given run — a dashboard-only process must live-tail a run executing on a worker, and the process actually running a run must learn it was cancelled elsewhere. That cross-instance fan-out is a **second channel**, the `controlPlane`, modelled separately from the task `transport`:
 
 ```ts
-export default defineConfig({ transport: 'queue', transports, controlPlane })
+import { controlPlanes } from '@adonis-agora/durable'
+
+export default defineConfig({
+  transport: 'queue',
+  transports,
+  controlPlane: controlPlanes.redis({ connection: 'main' }),
+})
 ```
 
-Omit it and the engine is **local-only**: events and cancellation reach subscribers on this instance but don't fan out to other processes (fine for a single-instance app). Supply one and lifecycle events broadcast to every process and a `cancel` reaches the process running the run.
+Omit it and the engine is **local-only**: events and cancellation reach subscribers on this instance but don't fan out to other processes (fine for a single-instance app). Supply one and lifecycle events broadcast to every process and a `cancel` reaches the process running the run. See [Control plane](/docs/durable/transports/control-plane) for the `controlPlanes.redis` driver (multi-replica, NestJS-interoperable).
 
 ## Wire protocol
 

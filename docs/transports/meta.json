@@ -1,4 +1,4 @@
 {
   "title": "Transports",
-  "pages": ["index", "queue", "db"]
+  "pages": ["index", "queue", "db", "control-plane"]
 }
