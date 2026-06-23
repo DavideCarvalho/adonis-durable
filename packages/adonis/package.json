@@ -1,6 +1,6 @@
 {
   "name": "@adonis-agora/durable",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Durable cross-app workflows for AdonisJS — deterministic replay engine, AdonisJS binding, ace commands, dashboard, OpenTelemetry, Telescope, testing harness and Redis admission, all in one package. Part of the Agora ecosystem.",
   "license": "MIT",
   "repository": {
@@ -97,13 +97,27 @@
     "vitest": "^3.0.0"
   },
   "peerDependenciesMeta": {
-    "@adonisjs/lucid": { "optional": true },
-    "@adonisjs/queue": { "optional": true },
-    "@adonisjs/redis": { "optional": true },
-    "@opentelemetry/api": { "optional": true },
-    "cron-parser": { "optional": true },
-    "ioredis": { "optional": true },
-    "vitest": { "optional": true }
+    "@adonisjs/lucid": {
+      "optional": true
+    },
+    "@adonisjs/queue": {
+      "optional": true
+    },
+    "@adonisjs/redis": {
+      "optional": true
+    },
+    "@opentelemetry/api": {
+      "optional": true
+    },
+    "cron-parser": {
+      "optional": true
+    },
+    "ioredis": {
+      "optional": true
+    },
+    "vitest": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@adonisjs/assembler": "^7.8.0",
@@ -122,7 +136,9 @@
     "vitest": "^3.0.0",
     "zod": "^3.25.0"
   },
-  "engines": { "node": ">=20.6.0" },
+  "engines": {
+    "node": ">=20.6.0"
+  },
   "keywords": [
     "adonisjs",
     "adonis",
