@@ -32,9 +32,14 @@ export type {
   TransportContext,
   TransportFactory,
   MemoryTransportConfig,
+  EventEmitterTransportConfig,
   QueueTransportConfig,
   DbTransportConfig,
 } from './transports/factory.js';
+export {
+  EventEmitterTransport,
+  type EventEmitterTransportOptions,
+} from './transports/event-emitter.js';
 export { QueueTransport, type QueueTransportOptions } from './transports/queue.js';
 export { DbTransport, type DbTransportOptions } from './transports/db.js';
 export {

@@ -11,6 +11,7 @@ import type { LucidStoreConfig, StoreContext, StoreFactory } from './stores/fact
 import { transports } from './transports/factory.js';
 import type {
   DbTransportConfig,
+  EventEmitterTransportConfig,
   MemoryTransportConfig,
   QueueTransportConfig,
   TransportContext,
@@ -31,7 +32,8 @@ import type {
  * export default defineConfig({
  *   transport: 'queue',
  *   transports: {
- *     memory: transports.memory(),
+ *     // production single-process, no external infra:
+ *     'event-emitter': transports.eventEmitter(),
  *     queue: transports.queue({ adapter: redis({ host: '127.0.0.1' }), group: 'durable' }),
  *     db: transports.db({ connection: 'pg' }),
  *   },
@@ -101,6 +103,7 @@ export type {
   TransportContext,
   TransportFactory,
   MemoryTransportConfig,
+  EventEmitterTransportConfig,
   QueueTransportConfig,
   DbTransportConfig,
   StoreContext,

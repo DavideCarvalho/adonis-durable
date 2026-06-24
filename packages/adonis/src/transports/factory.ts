@@ -26,9 +26,20 @@ export type TransportFactory = (
   ctx: TransportContext,
 ) => Promise<Transport & Partial<ControlPlane>>;
 
-/** Options for the in-memory transport (no peer dependency). */
+/** Options for the in-memory (test-only) transport (no peer dependency). */
 export interface MemoryTransportConfig {
   /* no options — in-process transport */
+}
+
+/** Options for the production in-process EventEmitter transport (no peer dependency). */
+export interface EventEmitterTransportConfig {
+  /**
+   * The worker group this instance serves. Accepted for parity with the broker transports; handlers
+   * are matched by step name in-process, so it does not affect routing.
+   */
+  group?: string;
+  /** Stable id for this process (stamped on control `from` when a publisher leaves it unset). Default random. */
+  instanceId?: string;
 }
 
 /** Options for the `@adonisjs/queue` transport. */
@@ -130,9 +141,29 @@ async function resolveQueueAdapter(
 }
 
 export const transports = {
-  /** In-process transport + control plane (single-process, no extra infra). The default. */
+  /**
+   * The test-only in-process transport + control plane (the engine's default when no `transport` is
+   * named). Drives `dispatch` straight into the handler for deterministic tests — for a real
+   * single-process production app, prefer {@link transports.eventEmitter}.
+   */
   memory(_config: MemoryTransportConfig = {}): TransportFactory {
     return async () => new InMemoryTransport();
+  },
+
+  /**
+   * Production **in-process** transport + control plane backed by a single Node `EventEmitter`. Zero
+   * external infrastructure (no DB, no Redis, no broker) — a single-process app runs real durable
+   * workflows with nothing else to deploy. Decouples dispatch → worker → result over the event loop
+   * (mirroring a real broker), unlike the test-only {@link transports.memory}.
+   */
+  eventEmitter(config: EventEmitterTransportConfig = {}): TransportFactory {
+    return async () => {
+      const { EventEmitterTransport } = await import('./event-emitter.js');
+      return new EventEmitterTransport({
+        ...(config.group !== undefined ? { group: config.group } : {}),
+        ...(config.instanceId !== undefined ? { instanceId: config.instanceId } : {}),
+      });
+    };
   },
 
   /** Run remote steps cross-process over `@adonisjs/queue`, using a connection from `config/queue.ts`. */
