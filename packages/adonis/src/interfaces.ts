@@ -983,6 +983,14 @@ export interface WorkflowCtx {
   random(): Promise<number>;
   /** Deterministic UUID v4: recorded once, then replayed. Use instead of `crypto.randomUUID()`. */
   uuid(): Promise<string>;
+  /**
+   * Merge `attrs` into THIS run's {@link WorkflowRun.searchAttributes} — the indexed metadata the
+   * dashboard and {@link RunQuery} filter on. Shallow merge: keys you don't pass are kept. Durable +
+   * exactly-once — recorded at this position on the first run and SKIPPED on replay, so it does one
+   * write, not one per turn. Use this instead of injecting the {@link StateStore} to mutate the run
+   * you're executing (`store.updateRun(ctx.runId, …)` becomes `ctx.upsertSearchAttributes(…)`).
+   */
+  upsertSearchAttributes(attrs: SearchAttributes): Promise<void>;
 }
 
 /** Result of executing or resuming a workflow run. */

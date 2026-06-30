@@ -1961,6 +1961,14 @@ export class WorkflowEngine {
           () => void this.start(workflow, input, id, { priority }).catch(() => undefined),
         );
       },
+      // Shallow-merge into the run's searchAttributes (the ctx primitive makes this exactly-once).
+      upsertSearchAttributes: async (runId, attrs) => {
+        const run = await this.store.getRun(runId);
+        await this.store.updateRun(runId, {
+          searchAttributes: { ...(run?.searchAttributes ?? {}), ...attrs },
+          updatedAt: new Date(),
+        });
+      },
       signalEntity: (name, key, op, arg, reply) => {
         queueMicrotask(
           () => void this.entities.dispatch(name, key, op, arg, reply).catch(() => undefined),

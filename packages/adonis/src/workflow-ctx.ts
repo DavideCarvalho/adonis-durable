@@ -15,6 +15,7 @@ import type {
   ChildCallOptions,
   DurableWebhook,
   RemoteStepDef,
+  SearchAttributes,
   StateStore,
   StepCheckpoint,
   StepError,
@@ -87,6 +88,8 @@ export interface CtxHost {
   ): Promise<TOutput>;
   /** Start a child run once, deferred so it can't reentrantly resume a still-running parent. */
   startChild(workflow: string, input: unknown, id: string, priority?: number): void;
+  /** Shallow-merge `attrs` into the run's `searchAttributes` (see {@link WorkflowCtx.upsertSearchAttributes}). */
+  upsertSearchAttributes(runId: string, attrs: SearchAttributes): Promise<void>;
   /** Deliver an op to a durable entity (deferred), optionally with a `reply` token for the result. */
   signalEntity?(name: string, key: string, op: string, arg: unknown, reply?: string): void;
   /** Run a local step body through the registered step interceptors (identity if none). */
@@ -650,9 +653,34 @@ export function createWorkflowCtx(
   const random = () => step('random', async () => Math.random());
   const uuid = () => step('uuid', async () => globalThis.crypto.randomUUID());
 
+  // Merge into this run's searchAttributes exactly once: a checkpoint at this position marks it done,
+  // so a replay SKIPS the write (mirrors `transaction` / the instant primitives) instead of re-merging
+  // on every turn. Nondeterminism-guarded by the recorded marker name.
+  const upsertSearchAttributes = async (attrs: SearchAttributes): Promise<void> => {
+    const current = pos.next();
+    const existing = await readCheckpoint(current);
+    if (existing) {
+      if (existing.name !== 'searchAttributes') {
+        throw new NonDeterminismError(runId, current, 'searchAttributes', existing.name);
+      }
+      return;
+    }
+    await host.upsertSearchAttributes(runId, attrs);
+    await writeCheckpoint(
+      instantCheckpoint({
+        runId,
+        seq: current,
+        name: 'searchAttributes',
+        kind: 'local',
+        output: attrs,
+      }),
+    );
+  };
+
   return {
     runId,
     step,
+    upsertSearchAttributes,
     transaction,
     callEntity,
     signalEntity,
