@@ -1,4 +1,10 @@
-import type { StepCheckpoint, StepError, StepEvent, WorkflowRun } from '../interfaces.js';
+import type {
+  SignalWaiter,
+  StepCheckpoint,
+  StepError,
+  StepEvent,
+  WorkflowRun,
+} from '../interfaces.js';
 
 /**
  * Row shapes as they live in the durable tables: snake_case columns, JSON payloads stored as TEXT
@@ -42,6 +48,7 @@ export interface CheckpointRow {
   attempts: number | string;
   worker_group: string | null;
   wake_at: number | string | null;
+  parallel_group: string | null;
   enqueued_at: number | string | null;
   started_at: number | string;
   finished_at: number | string;
@@ -167,6 +174,7 @@ export function checkpointToRow(cp: StepCheckpoint): CheckpointRow {
     attempts: cp.attempts,
     worker_group: cp.workerGroup ?? null,
     wake_at: cp.wakeAt ?? null,
+    parallel_group: cp.parallelGroup ?? null,
     enqueued_at: (cp.enqueuedAt ?? cp.startedAt).getTime(),
     started_at: cp.startedAt.getTime(),
     finished_at: cp.finishedAt.getTime(),
@@ -196,5 +204,20 @@ export function rowToCheckpoint(row: CheckpointRow): StepCheckpoint {
   if (row.worker_group != null) cp.workerGroup = row.worker_group;
   const wakeAt = toNum(row.wake_at);
   if (wakeAt !== undefined) cp.wakeAt = wakeAt;
+  if (row.parallel_group != null) cp.parallelGroup = row.parallel_group;
   return cp;
+}
+
+// --- signal waiters -------------------------------------------------------
+
+/** Map a `durable_signal_waiters` row back to a {@link SignalWaiter}, omitting a null fan group. */
+export function rowToSignalWaiter(row: {
+  token: string;
+  run_id: string;
+  seq: number | string;
+  parallel_group?: unknown;
+}): SignalWaiter {
+  const waiter: SignalWaiter = { token: row.token, runId: row.run_id, seq: toNumOr0(row.seq) };
+  if (row.parallel_group != null) waiter.parallelGroup = String(row.parallel_group);
+  return waiter;
 }

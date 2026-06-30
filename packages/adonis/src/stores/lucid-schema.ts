@@ -73,11 +73,20 @@ export async function createDurableTables(db: Database): Promise<void> {
       table.integer('attempts').notNullable();
       table.string('worker_group');
       table.bigInteger('wake_at');
+      table.string('parallel_group');
       table.bigInteger('enqueued_at');
       table.bigInteger('started_at').notNullable();
       table.bigInteger('finished_at').notNullable();
       table.primary(['run_id', 'seq']);
       table.index(['run_id', 'name'], 'durable_checkpoints_name_idx');
+    });
+  } else if (
+    !(await db.connection().schema.hasColumn(DURABLE_TABLES.checkpoints, 'parallel_group'))
+  ) {
+    // Auto-migrate an older checkpoints table: add the nullable `parallel_group` column in place.
+    // Nullable (no default) so a legacy (non-parallel) checkpoint reads back untagged.
+    await conn().alterTable(DURABLE_TABLES.checkpoints, (table) => {
+      table.string('parallel_group');
     });
   }
 
@@ -98,6 +107,15 @@ export async function createDurableTables(db: Database): Promise<void> {
       table.string('token').primary();
       table.string('run_id').notNullable();
       table.integer('seq').notNullable();
+      table.string('parallel_group');
+    });
+  } else if (
+    !(await db.connection().schema.hasColumn(DURABLE_TABLES.signalWaiters, 'parallel_group'))
+  ) {
+    // Auto-migrate an older signal_waiters table: add the nullable `parallel_group` column in place.
+    // Nullable (no default) so a legacy (non-fan) waiter reads back untagged and the await is unchanged.
+    await conn().alterTable(DURABLE_TABLES.signalWaiters, (table) => {
+      table.string('parallel_group');
     });
   }
 

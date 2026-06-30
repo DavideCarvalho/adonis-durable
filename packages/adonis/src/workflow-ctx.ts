@@ -5,6 +5,7 @@ import { parseDuration } from './duration.js';
 import {
   ContinueAsNew,
   FatalError,
+  GatherError,
   NonDeterminismError,
   SignalTimeoutError,
   WorkflowSuspended,
@@ -426,6 +427,88 @@ export function createWorkflowCtx(
     throw new WorkflowSuspended();
   };
 
+  // Parallel child workflows (wait-all): dispatch N children CONCURRENTLY and wait for ALL their
+  // outputs. Reserves a contiguous position block in list order FIRST (the determinism anchor), then
+  // dispatches every not-yet-completed item and suspends once; on each child completion the parent
+  // resumes and replays — completed items short-circuit, remaining ones re-register and re-suspend.
+  // When all resolve, outputs are returned in INPUT order (waitAll), or a GatherError is thrown
+  // carrying the per-item failures. Parity with the Python SDK's `gather_children`.
+  const all = async <T = unknown>(
+    workflow: WorkflowRef,
+    inputs: unknown[],
+    opts?: { mode?: 'waitAll' | 'failFast' },
+  ): Promise<T[]> => {
+    // Empty: reserve no positions and produce no side effects (degenerate identity).
+    if (inputs.length === 0) return [];
+    const mode = opts?.mode ?? 'waitAll';
+    const name = workflowName(workflow);
+    // Reserve the whole block in list order BEFORE any dispatch — replay re-derives identical seqs.
+    const positions = inputs.map(() => pos.next());
+    const group = `all:${positions[0]}`;
+    const id = (i: number) => `${runId}.all.${positions[0]}.${i}`;
+    const existing = await Promise.all(positions.map((seq) => readCheckpoint(seq)));
+
+    // failFast: bail the moment any already-completed item is a failed Completion.
+    if (mode === 'failFast') {
+      for (let i = 0; i < inputs.length; i += 1) {
+        const cp = existing[i];
+        const c =
+          cp?.status === 'completed' ? (cp.output as { ok?: boolean; error?: string }) : null;
+        if (c && c.ok === false) {
+          throw new GatherError(
+            [{ index: i, id: id(i), error: c.error ?? 'unknown' }],
+            inputs.length,
+          );
+        }
+      }
+    }
+
+    // Dispatch every item not yet completed in history; write its running placeholder once.
+    let pending = false;
+    for (let i = 0; i < inputs.length; i += 1) {
+      const cp = existing[i];
+      if (cp?.status === 'completed') continue;
+      pending = true;
+      const seq = positions[i] as number;
+      const childId = id(i);
+      // Carry the fan `group` onto the waiter too: the child's terminal `signal:child:` checkpoint is
+      // (re)written by engine.signal when the child notifies the parent, OVERWRITING the running
+      // placeholder below at the same seq — so without this the resolved checkpoint would lose the
+      // group and the dashboard would render the resolved fan as a sequential chain.
+      await store.putSignalWaiter({ token: `child:${childId}`, runId, seq, parallelGroup: group });
+      if (!(await store.getRun(childId))) host.startChild(name, inputs[i], childId);
+      if (!cp) {
+        await writeCheckpoint(
+          instantCheckpoint({
+            runId,
+            seq,
+            name: `signal:child:${childId}`,
+            kind: 'signal',
+            status: 'running',
+            parallelGroup: group,
+          }),
+        );
+      }
+    }
+    // Any item still outstanding → suspend once; the resume replays this whole block.
+    if (pending) throw new WorkflowSuspended();
+
+    // All resolved: build outputs in INPUT order, aggregating any failures.
+    const outputs: T[] = [];
+    const failures: { index: number; id: string; error: string }[] = [];
+    for (let i = 0; i < inputs.length; i += 1) {
+      const c = existing[i]?.output as { ok?: boolean; value?: T; error?: string } | null;
+      if (c && typeof c === 'object' && 'ok' in c && c.ok === false) {
+        failures.push({ index: i, id: id(i), error: c.error ?? 'unknown' });
+        outputs.push(undefined as T);
+      } else {
+        outputs.push((c as { value?: T } | null)?.value as T);
+      }
+    }
+    if (failures.length > 0) throw new GatherError(failures, inputs.length);
+    return outputs;
+  };
+
   // Child workflow (fire-and-forget): dispatch it once and return its id WITHOUT suspending. The
   // start is checkpointed at this position so replay returns the same id without re-dispatching, and
   // is idempotent by id, so `child(..., sameId)` later joins the same run rather than starting a new
@@ -580,6 +663,7 @@ export function createWorkflowCtx(
     waitForEvent,
     task,
     child,
+    all,
     startChild,
     breakpoint,
     webhook,

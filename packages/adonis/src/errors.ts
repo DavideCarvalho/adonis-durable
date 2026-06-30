@@ -86,6 +86,23 @@ export class NonDeterminismError extends Error {
   }
 }
 
+/**
+ * Thrown by `ctx.all` when one or more parallel child workflows fail. Carries the per-item failures
+ * (input index, child run id, error message) and presents an aggregate message summarizing the count
+ * and the failing ids — the wait-all/fail-fast counterpart to a single child's FatalError. Mirrors
+ * the Python SDK's `GatherFailed`.
+ */
+export class GatherError extends Error {
+  readonly failures: { index: number; id: string; error: string }[];
+  constructor(failures: { index: number; id: string; error: string }[], total?: number) {
+    const ids = failures.map((f) => f.id).join(', ');
+    const denom = total ?? failures.length;
+    super(`ctx.all: ${failures.length} of ${denom} child(ren) failed: ${ids}`);
+    this.name = 'GatherError';
+    this.failures = failures;
+  }
+}
+
 export class WorkflowSuspended extends Error {
   /** Epoch ms to auto-resume (durable sleep), or undefined when waiting on an external signal. */
   readonly wakeAt?: number | undefined;

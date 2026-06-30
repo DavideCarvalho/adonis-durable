@@ -1078,6 +1078,11 @@ export class WorkflowEngine {
         name: `signal:${token}`,
         kind: 'signal',
         output: payload,
+        // Carry the awaiting command's fan group (set when a `ctx.gather_children`/`ctx.all` fan-out
+        // registered this waiter) onto the resolving `signal:child:<id>` checkpoint, so the dashboard
+        // groups the child fan-out vertically instead of rendering it as a sequential chain. Undefined
+        // for an ordinary (non-fan) signal/child await.
+        parallelGroup: waiter.parallelGroup,
       }),
     );
     return this.resume(waiter.runId);
@@ -1690,6 +1695,14 @@ export class WorkflowEngine {
           error: cmd.error,
         });
       } else if (cmd.kind === 'call') {
+        // Idempotency (load-bearing for `ctx.gather_calls`): a fan-out re-emits its still-pending
+        // `call` commands on every PARTIAL resume (a sibling settled, but not all). Without this guard
+        // each re-emit would re-persist + re-dispatch an already-in-flight (or already-completed) step,
+        // double-dispatching the worker and resetting attempts. So if a checkpoint for (run.id, seq)
+        // already exists — pending OR terminal — skip the save + dispatch entirely; its result lands
+        // independently via the remote-result path (keyed by seq, so concurrent calls never clobber).
+        // Mirrors the `startChild` `getRun(childId)` guard below.
+        if (await this.store.getCheckpoint(run.id, cmd.seq)) continue;
         await this.store.saveCheckpoint(
           stepCheckpoint({
             runId: run.id,
@@ -1703,6 +1716,10 @@ export class WorkflowEngine {
             enqueuedAt: at,
             startedAt: at,
             finishedAt: at,
+            // A `ctx.gather_calls([...])` fan-out stamps every dispatched `call` in the fan with the
+            // same group, so the dashboard renders the remote steps as one parallel fan (parity with
+            // the gathered `recordStep`/`startChild` tags). Undefined for a lone sequential `ctx.call`.
+            parallelGroup: cmd.parallelGroup,
           }),
         );
         await this.pool.dispatch(
@@ -1775,6 +1792,11 @@ export class WorkflowEngine {
           token: `child:${childId}`,
           runId: run.id,
           seq: cmd.seq,
+          // A `ctx.gather_children`/`ctx.all` fan-out stamps every `startChild` in the fan with the same
+          // group. Thread it onto the waiter so the child's terminal `signal:child:<id>` checkpoint
+          // (written by engine.signal when the child notifies the parent) carries the group and the
+          // dashboard renders the fan as one parallel group. Undefined for a lone (non-fan) child.
+          parallelGroup: cmd.parallelGroup,
         });
         if (!(await this.store.getRun(childId))) {
           queueMicrotask(

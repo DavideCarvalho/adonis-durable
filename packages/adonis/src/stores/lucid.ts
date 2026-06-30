@@ -23,6 +23,7 @@ import {
   checkpointToRow,
   rowToCheckpoint,
   rowToRun,
+  rowToSignalWaiter,
   runPatchToRow,
   runToRow,
 } from './lucid-mappers.js';
@@ -231,11 +232,18 @@ export class LucidStateStore implements StateStore {
         await trx
           .from(DURABLE_TABLES.signalWaiters)
           .where('token', waiter.token)
-          .update({ run_id: waiter.runId, seq: waiter.seq });
+          .update({
+            run_id: waiter.runId,
+            seq: waiter.seq,
+            parallel_group: waiter.parallelGroup ?? null,
+          });
       } else {
-        await trx
-          .table(DURABLE_TABLES.signalWaiters)
-          .insert({ token: waiter.token, run_id: waiter.runId, seq: waiter.seq });
+        await trx.table(DURABLE_TABLES.signalWaiters).insert({
+          token: waiter.token,
+          run_id: waiter.runId,
+          seq: waiter.seq,
+          parallel_group: waiter.parallelGroup ?? null,
+        });
       }
     });
   }
@@ -248,8 +256,9 @@ export class LucidStateStore implements StateStore {
       if (!row) return null;
       const deleted = await trx.from(DURABLE_TABLES.signalWaiters).where('token', token).delete();
       if (rowsAffected(deleted) !== 1) return null;
-      const r = row as { token: string; run_id: string; seq: number | string };
-      return { token: r.token, runId: r.run_id, seq: Number(r.seq) };
+      return rowToSignalWaiter(
+        row as { token: string; run_id: string; seq: number | string; parallel_group?: unknown },
+      );
     });
   }
 
@@ -257,11 +266,14 @@ export class LucidStateStore implements StateStore {
     const rows = await this.client()
       .from(DURABLE_TABLES.signalWaiters)
       .where('token', 'like', `${prefix}%`);
-    return (rows as Array<{ token: string; run_id: string; seq: number | string }>).map((r) => ({
-      token: r.token,
-      runId: r.run_id,
-      seq: Number(r.seq),
-    }));
+    return (
+      rows as Array<{
+        token: string;
+        run_id: string;
+        seq: number | string;
+        parallel_group?: unknown;
+      }>
+    ).map(rowToSignalWaiter);
   }
 
   // --- buffered signals (FIFO per token) ----------------------------------

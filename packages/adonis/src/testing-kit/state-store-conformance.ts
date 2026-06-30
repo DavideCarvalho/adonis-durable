@@ -533,6 +533,29 @@ export function runStateStoreContract(name: string, makeStore: StateStoreFactory
       expect(await store.takeSignalWaiter('approve-1')).toBeNull();
     });
 
+    t(
+      'round-trips a signal waiter parallelGroup (child-fan tag) through put → take → list',
+      async () => {
+        // A remote `gather_children` fan threads its group onto each child waiter so the resolving
+        // `signal:child:` checkpoint carries it; the store must persist it on the waiter row.
+        await store.putSignalWaiter({
+          token: 'child:r.child.0',
+          runId: 'r',
+          seq: 0,
+          parallelGroup: 'gather:0',
+        });
+        // A lone (non-fan) child await carries no group.
+        await store.putSignalWaiter({ token: 'child:r.child.9', runId: 'r', seq: 9 });
+
+        const listed = await store.listSignalWaiters('child:');
+        expect(listed.find((w) => w.token === 'child:r.child.0')?.parallelGroup).toBe('gather:0');
+        expect(listed.find((w) => w.token === 'child:r.child.9')?.parallelGroup).toBeUndefined();
+
+        expect((await store.takeSignalWaiter('child:r.child.0'))?.parallelGroup).toBe('gather:0');
+        expect((await store.takeSignalWaiter('child:r.child.9'))?.parallelGroup).toBeUndefined();
+      },
+    );
+
     t('buffers signals and takes them FIFO per token', async () => {
       await store.bufferSignal('sig', { n: 1 });
       await store.bufferSignal('sig', { n: 2 });

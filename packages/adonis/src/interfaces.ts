@@ -97,6 +97,14 @@ export interface StepCheckpoint {
   /** For sleep steps: epoch ms the sleep elapses at. */
   wakeAt?: number | undefined;
   /**
+   * Set on the running placeholder checkpoints of the children dispatched by one `ctx.all` call —
+   * a shared tag (`all:<firstSeq>`) grouping the N siblings so the dashboard can render them as one
+   * parallel fan-out. Also carried onto remote `ctx.gather_calls` step checkpoints and onto the
+   * resolving `signal:child:<id>` await checkpoint of a `gather_children` fan. Optional and additive:
+   * absent on every non-parallel checkpoint. Mirrors the Python SDK's `parallelGroup`.
+   */
+  parallelGroup?: string | undefined;
+  /**
    * When the step entered the system: for a remote step, when the engine dispatched it to the
    * transport; for a local step, when it began. Queue-wait time = `startedAt − enqueuedAt`.
    */
@@ -361,6 +369,15 @@ export interface SignalWaiter {
   token: string;
   runId: string;
   seq: number;
+  /**
+   * The parallel-fan group this waiter belongs to, carried from the awaiting command so the resolving
+   * `signal:<token>` checkpoint (notably `signal:child:<id>` for an awaited child run) can be tagged
+   * with it. A worker's `ctx.gather_children`/`ctx.all` fan-out stamps every `startChild` with the same
+   * group; without threading it through the waiter, the child-await checkpoint comes out untagged and the
+   * dashboard renders the fan as a sequential chain instead of one parallel group. Undefined for an
+   * ordinary (non-fan) signal/child await.
+   */
+  parallelGroup?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -472,8 +489,18 @@ export interface HistoryEvent {
 
 /** A decision the workflow function produced at a `seq` that was not yet in history. */
 export type WorkflowCommand =
-  /** `ctx.call(remoteStep, input)` — dispatch a remote step and await it. */
-  | { kind: 'call'; seq: number; name: string; group: string; input: unknown }
+  /** `ctx.call(remoteStep, input)` — dispatch a remote step and await it. A worker's
+   *  `ctx.gather_calls([...])` fan-out tags every dispatched call with the same `parallelGroup` so the
+   *  dashboard renders the remote steps as one parallel fan (parity with the gathered `recordStep` /
+   *  `startChild` tags). Undefined for a lone sequential `ctx.call`. */
+  | {
+      kind: 'call';
+      seq: number;
+      name: string;
+      group: string;
+      input: unknown;
+      parallelGroup?: string;
+    }
   /** `ctx.step(name, body)` — a LOCAL step the worker already ran this turn; the engine persists its
    *  result so replay returns it instead of re-running (durability for side-effectful work).
    *  `startedAt`/`finishedAt` (epoch ms) carry the step's real wall-clock window so the dashboard
@@ -494,8 +521,17 @@ export type WorkflowCommand =
   | { kind: 'sleep'; seq: number; ms: number }
   /** `ctx.wait_signal(name)` — block until a signal `name` is delivered to the run. */
   | { kind: 'waitSignal'; seq: number; signal: string }
-  /** `ctx.start_child(workflow, input)` — start a child run with its own lifecycle. */
-  | { kind: 'startChild'; seq: number; workflow: string; input: unknown };
+  /** `ctx.start_child(workflow, input)` — start a child run with its own lifecycle. A worker's
+   *  `ctx.gather_children(...)` fan-out tags every started child with the same `parallelGroup`, which
+   *  the engine threads onto the child-await signal waiter and its resolving `signal:child:<id>`
+   *  checkpoint. Undefined for a lone (non-fan) child. */
+  | {
+      kind: 'startChild';
+      seq: number;
+      workflow: string;
+      input: unknown;
+      parallelGroup?: string;
+    };
 
 /** workflow worker → engine: the result of replaying one turn of a remote workflow. */
 export interface WorkflowDecision {
@@ -871,6 +907,28 @@ export interface WorkflowCtx {
     input: unknown,
     options?: string | ChildCallOptions,
   ): Promise<string>;
+  /**
+   * Run N children of the SAME workflow **in parallel** and wait for ALL of them: dispatches one
+   * child per entry in `inputs` (concurrently, each with its own durable lifecycle), suspends — zero
+   * compute — until every child reaches a terminal state, then resumes with their outputs in **input
+   * order**. Child ids are group-scoped and stable (`<runId>.all.<firstSeq>.<i>`), and the running
+   * placeholders share a `parallelGroup` tag so the dashboard renders the fan-out as one group.
+   *
+   * `mode` (default `waitAll`): `waitAll` waits for all then throws an aggregate {@link GatherError}
+   * if any failed; `failFast` throws as soon as a failed child is seen (siblings are not cancelled in
+   * v1 — their eventual results are ignored). Empty `inputs` returns `[]` with no side effects. The
+   * wait-all / fan-out counterpart to {@link child}; parity with the Python SDK's `gather_children`.
+   */
+  all<C extends WorkflowClass>(
+    workflow: C,
+    inputs: WorkflowInputOf<C>[],
+    opts?: { mode?: 'waitAll' | 'failFast' },
+  ): Promise<WorkflowOutputOf<C>[]>;
+  all<TOutput = unknown>(
+    workflow: string,
+    inputs: unknown[],
+    opts?: { mode?: 'waitAll' | 'failFast' },
+  ): Promise<TOutput[]>;
   /**
    * Pause the run at this point until a human resumes it from the dashboard (or
    * `engine.continue(runId)`). Records a visible `pending` checkpoint so the breakpoint shows up
