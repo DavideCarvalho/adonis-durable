@@ -77,6 +77,14 @@ export interface QueueTransportOptions {
   group?: string;
   /** Queue-name prefix so several apps can share one backend without colliding. Default `durable`. */
   prefix?: string;
+  /**
+   * Logical deployment namespace, folded into every queue name so the same backend can host several
+   * worker-pool partitions without their tasks/results crossing. `"default"` (and absent) keeps queue
+   * names BYTE-IDENTICAL to the un-namespaced scheme (production is unchanged); any other value
+   * inserts a `-<namespace>` segment after the prefix. Passing it here is EXPLICIT and wins over a
+   * later {@link QueueTransport.useNamespace} (the engine's propagation).
+   */
+  namespace?: string;
   /** Poll interval (ms) for the result/task/heartbeat/control loops. Default 200ms. */
   pollIntervalMs?: number;
   /** Stable id for this process (stamped on heartbeats / control `from`). Default a random id. */
@@ -106,6 +114,11 @@ export class QueueTransport implements Transport, ControlPlane {
   readonly #adapter: Adapter;
   readonly #group: string | undefined;
   readonly #prefix: string;
+  // Logical deployment namespace folded into every queue name via `#effectivePrefix()`. Mutable so an
+  // engine can push its namespace onto a transport via `useNamespace()` — but only when one wasn't
+  // passed explicitly to the constructor (`#explicitNamespace`), which always wins.
+  #namespace: string | undefined;
+  readonly #explicitNamespace: boolean;
   readonly #pollIntervalMs: number;
   readonly #instanceId: string;
   readonly #handlers = new Map<string, StepHandler>();
@@ -116,6 +129,8 @@ export class QueueTransport implements Transport, ControlPlane {
     this.#adapter = options.adapter();
     this.#group = options.group;
     this.#prefix = options.prefix ?? 'durable';
+    this.#namespace = options.namespace;
+    this.#explicitNamespace = options.namespace !== undefined;
     this.#pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.#instanceId = options.instanceId ?? randomUUID();
     // pop()/popFrom() require a worker id be set on the adapter before consuming.
@@ -128,17 +143,39 @@ export class QueueTransport implements Transport, ControlPlane {
     return this.#instanceId;
   }
 
+  /**
+   * Adopt `namespace` (the engine's, typically), folding it into every queue name — but ONLY if a
+   * namespace wasn't passed explicitly to the constructor (an explicit one always wins). Idempotent.
+   * Satisfies the optional `Transport.useNamespace` hook the engine calls when wiring a transport.
+   */
+  useNamespace(namespace: string): void {
+    if (this.#explicitNamespace) return;
+    this.#namespace = namespace;
+  }
+
+  /**
+   * The prefix every queue name is built from, folding in the namespace: a set, non-`"default"`
+   * namespace appends `-<namespace>`; otherwise the bare prefix (so the un-namespaced and `"default"`
+   * schemes are byte-identical — production names never change). Keep ALL name builders routed through
+   * this; a single direct `this.#prefix` would split an engine from its workers.
+   */
+  #effectivePrefix(): string {
+    return this.#namespace && this.#namespace !== 'default'
+      ? `${this.#prefix}-${this.#namespace}`
+      : this.#prefix;
+  }
+
   #tasksQueue(group: string): string {
-    return `${this.#prefix}:tasks:${group}`;
+    return `${this.#effectivePrefix()}:tasks:${group}`;
   }
   #resultsQueue(): string {
-    return `${this.#prefix}:results`;
+    return `${this.#effectivePrefix()}:results`;
   }
   #heartbeatsQueue(): string {
-    return `${this.#prefix}:heartbeats`;
+    return `${this.#effectivePrefix()}:heartbeats`;
   }
   #controlQueue(): string {
-    return `${this.#prefix}:control`;
+    return `${this.#effectivePrefix()}:control`;
   }
 
   /**

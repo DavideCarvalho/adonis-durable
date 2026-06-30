@@ -84,3 +84,37 @@ Both the engine and the `durable:work` worker resolve the adapter from the `conn
 | `<prefix>:control` | bidirectional | lifecycle events + cancellation (best-effort) |
 
 Because the payload is the documented `RemoteTask` / `StepResult` JSON, multiple worker processes can share the same queues — scale out by running more `durable:work` processes that register the same group's handlers.
+
+## Namespaces — sharing one broker across pools
+
+A worker-pool `namespace` (set on the engine in `config/durable.ts`) partitions a deployment so several non-interchangeable pools can safely share **one** state store **and one** broker without stealing each other's work. The engine stamps the namespace on every run, scopes its poll/recovery/timer paths to it, and **propagates it to the transport** — so the queue transport folds the namespace into every queue name:
+
+```ts title="config/durable.ts"
+import { defineConfig, transports } from '@adonis-agora/durable'
+
+export default defineConfig({
+  namespace: 'tenant-a', // ← partitions the store AND the queue names
+  transport: 'queue',
+  transports: { queue: transports.queue({ connection: 'redis' }) },
+})
+```
+
+| `namespace` | Effective queue names |
+| --- | --- |
+| `'default'` (or unset) | `durable:tasks:<group>`, `durable:results`, … — **byte-identical** to a single-pool deployment |
+| `'tenant-a'` | `durable-tenant-a:tasks:<group>`, `durable-tenant-a:results`, … |
+
+A non-`'default'` namespace inserts a `-<namespace>` segment after the prefix; `'default'` (and unset) keeps the exact un-namespaced names, so **existing deployments are unaffected — zero migration**. An engine and its `durable:work` workers must run the same namespace to share queues.
+
+<Callout type="info">
+The same segmentation applies to the in-process `eventEmitter` transport (it scopes its internal event channels), so two engines on different namespaces sharing one process bus don't cross-process each other's tasks. A `namespace` passed explicitly to a transport's constructor takes precedence over the engine's propagation.
+</Callout>
+
+### Filtering runs by namespace
+
+Read surfaces (the dashboard, `getRun`, the CLI) stay namespace-agnostic by default. To scope a run search to one pool, pass `namespace` to a `RunQuery` — it is ANDed with the other predicates only when provided:
+
+```ts
+// Only runs in the 'tenant-a' pool, ANDed with the other filters.
+await engine.store.listRuns({ namespace: 'tenant-a', status: 'running' })
+```

@@ -354,6 +354,10 @@ export class WorkflowEngine {
     this.admission.onFreed?.((queue) => this.wakeQueueWaiters(queue));
     this.instanceId = deps.instanceId ?? globalThis.crypto.randomUUID();
     this.namespace = deps.namespace ?? 'default';
+    // Propagate the engine's namespace to its transport(s) so the SAME namespace that partitions the
+    // store also partitions the transport's queues/keys — set once on the engine, applied everywhere.
+    // The transport makes "default" a no-op (byte-identical names); an empty pool is a no-op too.
+    this.pool.useNamespace(this.namespace);
     this.leaseMs = deps.leaseMs ?? 30_000;
     this.maxRecoveryAttempts = deps.maxRecoveryAttempts;
     this.webhookUrl = deps.webhookUrl;

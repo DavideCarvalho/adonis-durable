@@ -174,6 +174,103 @@ describe('QueueTransport', () => {
     expect((second?.payload as RemoteTask).stepId).toBe('r1:low');
   });
 
+  describe('namespace queue segmentation', () => {
+    it('default namespace keeps queue names BYTE-IDENTICAL to the un-namespaced scheme', async () => {
+      const adapter = new MockAdapter();
+      const t = new QueueTransport({
+        adapter: () => adapter,
+        namespace: 'default',
+        pollIntervalMs: POLL,
+      });
+      transports.push(t);
+      await t.dispatch(task({ group: 'ext' }));
+      // Exactly the same queue name as a transport with no namespace at all.
+      expect(await adapter.sizeOf('durable:tasks:ext')).toBe(1);
+    });
+
+    it('a non-default namespace folds into the prefix as `-<namespace>`', async () => {
+      const adapter = new MockAdapter();
+      const t = new QueueTransport({
+        adapter: () => adapter,
+        namespace: 'tenant-a',
+        pollIntervalMs: POLL,
+      });
+      transports.push(t);
+      await t.dispatch(task({ group: 'ext' }));
+      expect(await adapter.sizeOf('durable-tenant-a:tasks:ext')).toBe(1);
+      expect(await adapter.sizeOf('durable:tasks:ext')).toBe(0); // never touches the default queue
+    });
+
+    it('useNamespace() adopts a namespace when none was passed explicitly', async () => {
+      const adapter = new MockAdapter();
+      const t = new QueueTransport({ adapter: () => adapter, pollIntervalMs: POLL });
+      transports.push(t);
+      t.useNamespace('tenant-b');
+      await t.dispatch(task({ group: 'ext' }));
+      expect(await adapter.sizeOf('durable-tenant-b:tasks:ext')).toBe(1);
+    });
+
+    it('useNamespace("default") is a no-op (names stay byte-identical)', async () => {
+      const adapter = new MockAdapter();
+      const t = new QueueTransport({ adapter: () => adapter, pollIntervalMs: POLL });
+      transports.push(t);
+      t.useNamespace('default');
+      await t.dispatch(task({ group: 'ext' }));
+      expect(await adapter.sizeOf('durable:tasks:ext')).toBe(1);
+    });
+
+    it('an explicit constructor namespace WINS over a later useNamespace()', async () => {
+      const adapter = new MockAdapter();
+      const t = new QueueTransport({
+        adapter: () => adapter,
+        namespace: 'tenant-a',
+        pollIntervalMs: POLL,
+      });
+      transports.push(t);
+      t.useNamespace('tenant-b'); // ignored — explicit wins
+      await t.dispatch(task({ group: 'ext' }));
+      expect(await adapter.sizeOf('durable-tenant-a:tasks:ext')).toBe(1);
+      expect(await adapter.sizeOf('durable-tenant-b:tasks:ext')).toBe(0);
+    });
+
+    it('two namespaces over ONE backend do not cross-deliver (results stay segmented too)', async () => {
+      const adapter = new MockAdapter();
+      const alphaEngine = new QueueTransport({
+        adapter: () => adapter,
+        namespace: 'alpha',
+        pollIntervalMs: POLL,
+      });
+      const alphaWorker = new QueueTransport({
+        adapter: () => adapter,
+        namespace: 'alpha',
+        group: 'ext',
+        pollIntervalMs: POLL,
+      });
+      const betaWorker = new QueueTransport({
+        adapter: () => adapter,
+        namespace: 'beta',
+        group: 'ext',
+        pollIntervalMs: POLL,
+      });
+      transports.push(alphaEngine, alphaWorker, betaWorker);
+
+      const alphaResults: StepResult[] = [];
+      const betaSeen: string[] = [];
+      alphaEngine.onResult(async (r) => void alphaResults.push(r));
+      alphaWorker.handle('ext.echo', async (input) => ({ from: 'alpha', input }));
+      betaWorker.handle('ext.echo', async () => {
+        betaSeen.push('beta'); // must NEVER run for an alpha-dispatched task
+        return { from: 'beta' };
+      });
+
+      await alphaEngine.dispatch(task({ name: 'ext.echo' }));
+      await until(() => alphaResults.length === 1);
+
+      expect(alphaResults[0]!.output).toEqual({ from: 'alpha', input: { hello: 'world' } });
+      expect(betaSeen).toEqual([]); // beta's worker never saw alpha's task
+    });
+  });
+
   it('serializes payloads as JSON (functions dropped on the wire)', async () => {
     const adapter = new MockAdapter();
     const engine = make(adapter);

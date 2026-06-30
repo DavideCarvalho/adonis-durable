@@ -122,6 +122,78 @@ describe('EventEmitterTransport', () => {
     expect(results[0]?.output).toEqual({ doubled: 20 });
   });
 
+  describe('namespace channel segmentation', () => {
+    it("two namespaces over ONE shared emitter do NOT cross-process each other's tasks", async () => {
+      const bus = new EventEmitter();
+      const alpha = new EventEmitterTransport({ emitter: bus });
+      const beta = new EventEmitterTransport({ emitter: bus });
+      // The engine pushes its namespace onto the transport (before any handler registration).
+      alpha.useNamespace('alpha');
+      beta.useNamespace('beta');
+
+      const alphaSeen: string[] = [];
+      const betaSeen: string[] = [];
+      alpha.handle('payments.charge-card', async () => {
+        alphaSeen.push('alpha');
+        return { from: 'alpha' };
+      });
+      beta.handle('payments.charge-card', async () => {
+        betaSeen.push('beta'); // must NEVER run for an alpha-dispatched task
+        return { from: 'beta' };
+      });
+
+      const alphaResults: StepResult[] = [];
+      alpha.onResult(async (r) => {
+        alphaResults.push(r);
+      });
+
+      await alpha.dispatch(task());
+      await waitFor(() => alphaResults.length > 0);
+
+      expect(alphaSeen).toEqual(['alpha']);
+      expect(betaSeen).toEqual([]); // beta never saw alpha's task over the shared bus
+      expect(alphaResults[0]?.output).toEqual({ from: 'alpha' });
+    });
+
+    it('a "default" namespace keeps the channels byte-identical (interops with an un-namespaced peer)', async () => {
+      const bus = new EventEmitter();
+      const engine = new EventEmitterTransport({ emitter: bus }); // never namespaced
+      const worker = new EventEmitterTransport({ emitter: bus });
+      worker.useNamespace('default'); // byte-identical channels → still interoperates
+
+      worker.handle('payments.charge-card', async () => ({ ok: true }));
+      const results: StepResult[] = [];
+      engine.onResult(async (r) => {
+        results.push(r);
+      });
+
+      await engine.dispatch(task());
+      await waitFor(() => results.length > 0);
+
+      expect(results[0]?.status).toBe('completed');
+      expect(results[0]?.output).toEqual({ ok: true });
+    });
+
+    it('an explicit constructor namespace WINS over a later useNamespace()', async () => {
+      const bus = new EventEmitter();
+      const engine = new EventEmitterTransport({ emitter: bus, namespace: 'alpha' });
+      engine.useNamespace('beta'); // ignored — explicit wins
+      const worker = new EventEmitterTransport({ emitter: bus, namespace: 'alpha' });
+
+      worker.handle('payments.charge-card', async () => ({ ok: true }));
+      const results: StepResult[] = [];
+      engine.onResult(async (r) => {
+        results.push(r);
+      });
+
+      await engine.dispatch(task());
+      await waitFor(() => results.length > 0);
+
+      // engine (alpha) and worker (alpha) interoperate despite engine.useNamespace('beta').
+      expect(results[0]?.output).toEqual({ ok: true });
+    });
+  });
+
   describe('context propagation', () => {
     afterEach(() => {
       delete (globalThis as Record<symbol, unknown>)[CONTEXT_SCOPE];

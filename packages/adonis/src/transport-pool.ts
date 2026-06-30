@@ -81,6 +81,18 @@ export class TransportPool {
     return [...groups];
   }
 
+  /**
+   * Propagate the engine's `namespace` to every transport that partitions by it — so the same
+   * namespace that scopes the store also scopes each transport's queues/keys. A transport that
+   * doesn't partition (no `useNamespace`) is skipped. Idempotent; a transport given an explicit
+   * namespace at construction ignores this (see {@link Transport.useNamespace}).
+   */
+  useNamespace(namespace: string): void {
+    for (const { transport } of this.transports) {
+      transport.useNamespace?.(namespace);
+    }
+  }
+
   /** Pinned `preferId` first, then the rest (failover order). */
   private ordered(preferId?: string): NamedTransport[] {
     if (!preferId) return this.transports;

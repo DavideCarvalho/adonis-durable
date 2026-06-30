@@ -20,6 +20,15 @@ export class InMemoryTransport implements Transport, ControlPlane {
   private resultHandler?: (result: StepResult) => Promise<void>;
   private stepEventHandler?: (event: WorkflowStepEvent) => Promise<void>;
   private readonly controlHandlers = new Set<(msg: ControlMessage) => void>();
+  /** The engine's namespace, recorded for parity. This transport is a single isolated instance (its
+   *  own handlers + result handler), so two engines never share one bus here — namespacing is a safe
+   *  no-op, but the hook lets the engine's `pool.useNamespace(...)` apply uniformly across transports. */
+  private namespace: string | undefined;
+
+  /** Adopt the engine's namespace (no-op isolation — see {@link namespace}). */
+  useNamespace(namespace: string): void {
+    this.namespace = namespace;
+  }
 
   /** Register a fake worker handler for a step name. */
   handle(name: string, fn: StepHandler): void {
