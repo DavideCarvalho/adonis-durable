@@ -159,27 +159,31 @@ export class LucidStateStore implements StateStore {
 
   // --- recovery / dispatch queries ----------------------------------------
 
-  async listIncompleteRuns(): Promise<WorkflowRun[]> {
-    const rows = await this.client().from(DURABLE_TABLES.runs).where('status', 'running');
+  async listIncompleteRuns(namespace?: string): Promise<WorkflowRun[]> {
+    const q = this.client().from(DURABLE_TABLES.runs).where('status', 'running');
+    if (namespace !== undefined) q.andWhere('namespace', namespace);
+    const rows = await q;
     return (rows as RunRow[]).map(rowToRun);
   }
 
-  async listPendingRuns(limit: number): Promise<WorkflowRun[]> {
-    const rows = await this.client()
-      .from(DURABLE_TABLES.runs)
-      .where('status', 'pending')
+  async listPendingRuns(limit: number, namespace?: string): Promise<WorkflowRun[]> {
+    const q = this.client().from(DURABLE_TABLES.runs).where('status', 'pending');
+    if (namespace !== undefined) q.andWhere('namespace', namespace);
+    const rows = await q
       .orderBy('created_at', 'asc') // FIFO dispatch
       .orderBy('id', 'asc') // stable tiebreak, mirrors the in-memory store
       .limit(limit);
     return (rows as RunRow[]).map(rowToRun);
   }
 
-  async listDueTimers(nowMs: number): Promise<WorkflowRun[]> {
-    const rows = await this.client()
+  async listDueTimers(nowMs: number, namespace?: string): Promise<WorkflowRun[]> {
+    const q = this.client()
       .from(DURABLE_TABLES.runs)
       .where('status', 'suspended')
       .whereNotNull('wake_at')
       .andWhere('wake_at', '<=', nowMs);
+    if (namespace !== undefined) q.andWhere('namespace', namespace);
+    const rows = await q;
     return (rows as RunRow[]).map(rowToRun);
   }
 
@@ -337,6 +341,7 @@ export class LucidStateStore implements StateStore {
     const q = this.client().from(DURABLE_TABLES.runs);
 
     if (query.workflow) q.where('workflow', query.workflow);
+    if (query.namespace !== undefined) q.where('namespace', query.namespace);
     if (query.status) q.where('status', query.status);
     if (query.statuses) {
       // `status IN (...)`; an empty set matches nothing (mirrors the in-memory store).

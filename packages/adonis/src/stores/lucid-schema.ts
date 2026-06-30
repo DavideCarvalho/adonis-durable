@@ -35,6 +35,7 @@ export async function createDurableTables(db: Database): Promise<void> {
       table.string('workflow').notNullable();
       table.string('workflow_version').notNullable();
       table.string('status').notNullable();
+      table.string('namespace').notNullable().defaultTo('default');
       table.text('input');
       table.text('output');
       table.text('error');
@@ -49,13 +50,27 @@ export async function createDurableTables(db: Database): Promise<void> {
       table.bigInteger('updated_at').notNullable();
       table.index(['status'], 'durable_runs_status_idx');
       table.index(['status', 'wake_at'], 'durable_runs_due_idx');
+      // Worker-pool partition: scopes the poll/recovery queries (namespace + status + createdAt).
+      table.index(['namespace', 'status', 'created_at'], 'durable_runs_namespace_idx');
     });
-  } else if (!(await db.connection().schema.hasColumn(DURABLE_TABLES.runs, 'priority'))) {
-    // Auto-migrate an older runs table: add the nullable `priority` column in place. Nullable (no
-    // default) so existing rows read back as "unprioritised" and the FIFO path is unchanged.
-    await conn().alterTable(DURABLE_TABLES.runs, (table) => {
-      table.integer('priority');
-    });
+  } else {
+    // Auto-migrate an older runs table by adding any columns introduced after its creation. Each is
+    // applied independently so a table missing several catches up. Mirrors the in-place pattern other
+    // adapters use; new columns are nullable / carry a DEFAULT so existing rows read back unchanged.
+    if (!(await db.connection().schema.hasColumn(DURABLE_TABLES.runs, 'priority'))) {
+      // Nullable (no default) so existing rows read back as "unprioritised" and the FIFO path is unchanged.
+      await conn().alterTable(DURABLE_TABLES.runs, (table) => {
+        table.integer('priority');
+      });
+    }
+    if (!(await db.connection().schema.hasColumn(DURABLE_TABLES.runs, 'namespace'))) {
+      // DEFAULT 'default' so every pre-namespace row reads back in the reserved 'default' partition —
+      // byte-identical behavior for a single-pool deploy that adds the column.
+      await conn().alterTable(DURABLE_TABLES.runs, (table) => {
+        table.string('namespace').notNullable().defaultTo('default');
+        table.index(['namespace', 'status', 'created_at'], 'durable_runs_namespace_idx');
+      });
+    }
   }
 
   if (!(await conn().hasTable(DURABLE_TABLES.checkpoints))) {

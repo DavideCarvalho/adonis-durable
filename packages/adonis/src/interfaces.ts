@@ -31,6 +31,15 @@ export interface WorkflowRun {
   /** Code version at start; old runs must resume on the version they began on. */
   workflowVersion: string;
   status: RunStatus;
+  /**
+   * Worker-pool partition this run belongs to (default `'default'`). A worker only picks up /
+   * recovers / resumes-timers-for / times-out runs in its OWN namespace, so one shared state store
+   * can host non-interchangeable pools (e.g. local dev vs a cluster) without them stealing each
+   * other's runs. `undefined` on a run created before this field existed — treated as "belongs to
+   * everyone" for back-compat (no namespace guard skips it). Read paths (dashboard, `getRun`) are
+   * NOT namespace-scoped.
+   */
+  namespace?: string | undefined;
   /** Serialized workflow input (the args the run was started with). */
   input: unknown;
   /** Serialized workflow output, once `completed`. */
@@ -241,14 +250,23 @@ export interface StateStore {
    */
   saveCheckpoint(checkpoint: StepCheckpoint): Promise<void>;
 
-  /** Used by recovery on boot to find runs to resume (crashed, left `running`). */
-  listIncompleteRuns(): Promise<WorkflowRun[]>;
+  /**
+   * Used by recovery on boot to find runs to resume (crashed, left `running`). When `namespace` is
+   * given, restrict to runs in that worker-pool partition (ANDed); omit it to return all (back-compat).
+   */
+  listIncompleteRuns(namespace?: string): Promise<WorkflowRun[]>;
 
-  /** The oldest `pending` runs awaiting dispatch (FIFO, by `createdAt`), capped at `limit`. */
-  listPendingRuns(limit: number): Promise<WorkflowRun[]>;
+  /**
+   * The oldest `pending` runs awaiting dispatch (FIFO, by `createdAt`), capped at `limit`. When
+   * `namespace` is given, restrict to runs in that worker-pool partition (ANDed); omit it for all.
+   */
+  listPendingRuns(limit: number, namespace?: string): Promise<WorkflowRun[]>;
 
-  /** Suspended runs whose durable timer is due (`wakeAt <= nowMs`), ready to resume. */
-  listDueTimers(nowMs: number): Promise<WorkflowRun[]>;
+  /**
+   * Suspended runs whose durable timer is due (`wakeAt <= nowMs`), ready to resume. When `namespace`
+   * is given, restrict to runs in that worker-pool partition (ANDed); omit it to return all.
+   */
+  listDueTimers(nowMs: number, namespace?: string): Promise<WorkflowRun[]>;
 
   /**
    * Atomically acquire the recovery lease on a run for `owner` until `leaseUntilMs`, but only if
@@ -335,6 +353,12 @@ export interface AttributeFilter {
 export interface RunQuery {
   workflow?: string | undefined;
   status?: RunStatus | undefined;
+  /**
+   * Restrict to runs in this worker-pool partition (exact match against {@link WorkflowRun.namespace}),
+   * ANDed with the other predicates. Omit to span all namespaces — read surfaces (dashboard, CLI) stay
+   * namespace-agnostic by default; the engine passes its own namespace here on the poll paths it scopes.
+   */
+  namespace?: string | undefined;
   /**
    * Match any of these statuses (a `status IN (...)` filter). ORed together, and ANDed with the other
    * predicates. Use this instead of issuing one {@link listRuns} call per status — e.g. the singleton

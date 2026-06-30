@@ -20,6 +20,7 @@ export interface RunRow {
   workflow: string;
   workflow_version: string;
   status: string;
+  namespace: string | null;
   input: string | null;
   output: string | null;
   error: string | null;
@@ -86,6 +87,9 @@ export function runToRow(run: WorkflowRun): RunRow {
     workflow: run.workflow,
     workflow_version: run.workflowVersion,
     status: run.status,
+    // Persist the partition, defaulting an absent one to 'default' (matches the column DEFAULT) so
+    // every row is reachable by a namespace='default' filter.
+    namespace: run.namespace ?? 'default',
     input: toJson(run.input),
     output: toJson(run.output),
     error: toJson(run.error),
@@ -112,6 +116,7 @@ export function runPatchToRow(patch: Partial<WorkflowRun>): Partial<RunRow> {
   if ('workflow' in patch) row.workflow = patch.workflow;
   if ('workflowVersion' in patch) row.workflow_version = patch.workflowVersion;
   if ('status' in patch) row.status = patch.status;
+  if ('namespace' in patch) row.namespace = patch.namespace ?? 'default';
   if ('input' in patch) row.input = toJson(patch.input);
   if ('output' in patch) row.output = toJson(patch.output);
   if ('error' in patch) row.error = toJson(patch.error);
@@ -134,6 +139,7 @@ export function rowToRun(row: RunRow): WorkflowRun {
     workflowVersion: row.workflow_version,
     status: row.status as WorkflowRun['status'],
     input: fromJson(row.input),
+    namespace: row.namespace ?? 'default',
     createdAt: new Date(toNumOr0(row.created_at)),
     updatedAt: new Date(toNumOr0(row.updated_at)),
   };

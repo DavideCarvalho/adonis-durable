@@ -16,6 +16,7 @@ export default class extends BaseSchema {
       table.string('workflow').notNullable()
       table.string('workflow_version').notNullable()
       table.string('status').notNullable()
+      table.string('namespace').notNullable().defaultTo('default')
       table.text('input')
       table.text('output')
       table.text('error')
@@ -30,6 +31,7 @@ export default class extends BaseSchema {
       table.bigInteger('updated_at').notNullable()
       table.index(['status'], 'durable_runs_status_idx')
       table.index(['status', 'wake_at'], 'durable_runs_due_idx')
+      table.index(['namespace', 'status', 'created_at'], 'durable_runs_namespace_idx')
     })
 
     this.schema.createTable('durable_step_checkpoints', (table) => {

@@ -86,6 +86,7 @@ export default class DurableProvider {
         ...(controlPlane ? { controlPlane } : {}),
         ...(config.leaseMs !== undefined ? { leaseMs: config.leaseMs } : {}),
         ...(config.instanceId ? { instanceId: config.instanceId } : {}),
+        ...(config.namespace !== undefined ? { namespace: config.namespace } : {}),
         ...(config.maxRecoveryAttempts !== undefined
           ? { maxRecoveryAttempts: config.maxRecoveryAttempts }
           : {}),

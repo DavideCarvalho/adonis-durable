@@ -70,6 +70,13 @@ export interface DurableConfig {
   leaseMs?: number;
   /** Unique id for this engine instance. Defaults to a random id. */
   instanceId?: string;
+  /**
+   * Worker-pool partition for this engine. Stamped on every run it creates; the poll/recovery paths
+   * only act on runs in this namespace, and a non-`'default'` namespace also segments the transport's
+   * queue names. Default `'default'` — byte-identical to a single-pool deployment. Set distinct values
+   * to safely share ONE state store + broker across non-interchangeable pools (e.g. local dev vs a cluster).
+   */
+  namespace?: string;
   /** Cap crash-recovery pickups before dead-lettering a poison run. Omit for unlimited. */
   maxRecoveryAttempts?: number;
   /** Attempts per saga compensation on run failure. Default 1. */

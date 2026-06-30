@@ -326,6 +326,43 @@ export function runStateStoreContract(name: string, makeStore: StateStoreFactory
       expect(await store.listDueTimers(1_000)).toHaveLength(0);
     });
 
+    t('scopes recovery/dispatch/timer scans by namespace (and no-arg spans all)', async () => {
+      await store.createRun(run({ id: 'r-alpha', status: 'running', namespace: 'alpha' }));
+      await store.createRun(run({ id: 'r-beta', status: 'running', namespace: 'beta' }));
+      await store.createRun(run({ id: 'p-alpha', status: 'pending', namespace: 'alpha' }));
+      await store.createRun(run({ id: 'p-beta', status: 'pending', namespace: 'beta' }));
+      await store.createRun(
+        run({ id: 't-alpha', status: 'suspended', wakeAt: 5_000, namespace: 'alpha' }),
+      );
+      await store.createRun(
+        run({ id: 't-beta', status: 'suspended', wakeAt: 5_000, namespace: 'beta' }),
+      );
+
+      // Filtered by namespace — a worker only sees its own pool's runs.
+      expect((await store.listIncompleteRuns('alpha')).map((r) => r.id)).toEqual(['r-alpha']);
+      expect((await store.listPendingRuns(10, 'alpha')).map((r) => r.id)).toEqual(['p-alpha']);
+      expect((await store.listDueTimers(10_000, 'alpha')).map((r) => r.id)).toEqual(['t-alpha']);
+
+      // No-arg spans every namespace (back-compat with single-pool callers).
+      expect((await store.listIncompleteRuns()).map((r) => r.id).sort()).toEqual([
+        'r-alpha',
+        'r-beta',
+      ]);
+      expect((await store.listPendingRuns(10)).map((r) => r.id).sort()).toEqual([
+        'p-alpha',
+        'p-beta',
+      ]);
+      expect((await store.listDueTimers(10_000)).map((r) => r.id).sort()).toEqual([
+        't-alpha',
+        't-beta',
+      ]);
+
+      // A run created without a namespace normalizes to 'default' (the column DEFAULT).
+      await store.createRun(run({ id: 'legacy', status: 'running' }));
+      expect((await store.getRun('legacy'))?.namespace).toBe('default');
+      expect((await store.listIncompleteRuns('default')).map((r) => r.id)).toEqual(['legacy']);
+    });
+
     // ---- lease / lock -----------------------------------------------------------------------
 
     t('tryLockRun is atomic and respects lease expiry', async () => {

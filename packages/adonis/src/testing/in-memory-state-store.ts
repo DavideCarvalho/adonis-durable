@@ -52,7 +52,10 @@ export class InMemoryStateStore implements StateStore {
   }
 
   async createRun(run: WorkflowRun): Promise<void> {
-    this.runs.set(run.id, { ...run });
+    // Normalize an undefined namespace to 'default', matching the SQL stores' column DEFAULT 'default'
+    // — so a run created directly against this store (bypassing the engine, e.g. in tests) is still
+    // reachable via a namespace='default' filter and partitions consistently.
+    this.runs.set(run.id, { ...run, namespace: run.namespace ?? 'default' });
     this.reindexAttributes(run.id, run.searchAttributes);
   }
 
@@ -90,21 +93,33 @@ export class InMemoryStateStore implements StateStore {
     this.checkpoints.set(this.key(checkpoint.runId, checkpoint.seq), { ...checkpoint });
   }
 
-  async listIncompleteRuns(): Promise<WorkflowRun[]> {
-    return [...this.runs.values()].filter((r) => r.status === 'running').map((r) => ({ ...r }));
+  async listIncompleteRuns(namespace?: string): Promise<WorkflowRun[]> {
+    return [...this.runs.values()]
+      .filter(
+        (r) => r.status === 'running' && (namespace === undefined || r.namespace === namespace),
+      )
+      .map((r) => ({ ...r }));
   }
 
-  async listPendingRuns(limit: number): Promise<WorkflowRun[]> {
+  async listPendingRuns(limit: number, namespace?: string): Promise<WorkflowRun[]> {
     return [...this.runs.values()]
-      .filter((r) => r.status === 'pending')
+      .filter(
+        (r) => r.status === 'pending' && (namespace === undefined || r.namespace === namespace),
+      )
       .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id))
       .slice(0, limit)
       .map((r) => ({ ...r }));
   }
 
-  async listDueTimers(nowMs: number): Promise<WorkflowRun[]> {
+  async listDueTimers(nowMs: number, namespace?: string): Promise<WorkflowRun[]> {
     return [...this.runs.values()]
-      .filter((r) => r.status === 'suspended' && r.wakeAt !== undefined && r.wakeAt <= nowMs)
+      .filter(
+        (r) =>
+          r.status === 'suspended' &&
+          r.wakeAt !== undefined &&
+          r.wakeAt <= nowMs &&
+          (namespace === undefined || r.namespace === namespace),
+      )
       .map((r) => ({ ...r }));
   }
 
@@ -222,6 +237,7 @@ export class InMemoryStateStore implements StateStore {
   async listRuns(query: RunQuery): Promise<WorkflowRun[]> {
     let runs = [...this.runs.values()];
     if (query.workflow) runs = runs.filter((r) => r.workflow === query.workflow);
+    if (query.namespace !== undefined) runs = runs.filter((r) => r.namespace === query.namespace);
     if (query.status) runs = runs.filter((r) => r.status === query.status);
     if (query.statuses) runs = runs.filter((r) => query.statuses?.includes(r.status));
     if (query.tag) runs = runs.filter((r) => r.tags?.includes(query.tag as string));

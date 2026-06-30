@@ -91,14 +91,14 @@ export class CodecStateStore implements StateStore {
       work({ raw: tx.raw, saveCheckpoint: (cp) => tx.saveCheckpoint(this.encCp(cp)) }),
     );
   }
-  async listIncompleteRuns(): Promise<WorkflowRun[]> {
-    return (await this.inner.listIncompleteRuns()).map((r) => this.decRun(r));
+  async listIncompleteRuns(namespace?: string): Promise<WorkflowRun[]> {
+    return (await this.inner.listIncompleteRuns(namespace)).map((r) => this.decRun(r));
   }
-  async listPendingRuns(limit: number): Promise<WorkflowRun[]> {
-    return (await this.inner.listPendingRuns(limit)).map((r) => this.decRun(r));
+  async listPendingRuns(limit: number, namespace?: string): Promise<WorkflowRun[]> {
+    return (await this.inner.listPendingRuns(limit, namespace)).map((r) => this.decRun(r));
   }
-  async listDueTimers(nowMs: number): Promise<WorkflowRun[]> {
-    return (await this.inner.listDueTimers(nowMs)).map((r) => this.decRun(r));
+  async listDueTimers(nowMs: number, namespace?: string): Promise<WorkflowRun[]> {
+    return (await this.inner.listDueTimers(nowMs, namespace)).map((r) => this.decRun(r));
   }
   tryLockRun(runId: string, owner: string, leaseUntilMs: number, nowMs: number): Promise<boolean> {
     return this.inner.tryLockRun(runId, owner, leaseUntilMs, nowMs);
