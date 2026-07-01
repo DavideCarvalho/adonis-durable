@@ -94,6 +94,15 @@ export interface DbTransportOptions {
    * dispatches + consumes results/heartbeats.
    */
   group?: string;
+  /**
+   * Logical deployment namespace, stamped on every row this instance writes and required on every row
+   * it claims, so the same backend tables can host several worker-pool partitions without their
+   * tasks/results/heartbeats/control crossing. `"default"` (and absent) stamps/claims `'default'` —
+   * every row (incl. legacy rows back-filled by the migration) carries `'default'`, so a default
+   * engine's result set is UNCHANGED from the un-namespaced scheme. Passing it here is EXPLICIT and
+   * wins over a later {@link DbTransport.useNamespace} (the engine's propagation).
+   */
+  namespace?: string;
   /** Lucid connection name to use. Defaults to the `Database` default connection. */
   connectionName?: string;
   /** Poll interval (ms) for the result/task/heartbeat/control loops. Default 200ms. */
@@ -129,12 +138,23 @@ export interface DbTransportOptions {
  * its group). Call {@link start} to begin the engine-side pollers; `handle()` auto-starts the task
  * loop. The wire payloads are the documented `RemoteTask`/`StepResult` JSON.
  *
+ * Partitions by {@link DbTransportOptions.namespace} like the broker transports do: every row is
+ * stamped with the instance's namespace and every claim is scoped to it, so several worker-pool
+ * partitions can share ONE table set without cross-processing each other's work. `"default"` (and
+ * absent) is byte-compatible with the pre-namespace scheme (all rows carry `'default'`).
+ *
  * Usually you don't construct this directly: `config/durable.ts` selects it via
  * `transports.db({ ... })` and the provider builds it for you.
  */
 export class DbTransport implements Transport, ControlPlane {
   readonly #db: Database;
   readonly #group: string | undefined;
+  // Logical deployment namespace stamped on every write and required on every claim. Mutable so an
+  // engine can push its namespace via `useNamespace()` — but only when one wasn't passed explicitly to
+  // the constructor (`#explicitNamespace`), which always wins. Resolved to a concrete column value
+  // (`'default'` for absent/default) by `#namespaceValue()`.
+  #namespace: string | undefined;
+  readonly #explicitNamespace: boolean;
   readonly #connectionName: string | undefined;
   readonly #pollIntervalMs: number;
   readonly #leaseMs: number;
@@ -149,6 +169,8 @@ export class DbTransport implements Transport, ControlPlane {
   constructor(options: DbTransportOptions) {
     this.#db = options.db;
     this.#group = options.group;
+    this.#namespace = options.namespace;
+    this.#explicitNamespace = options.namespace !== undefined;
     this.#connectionName = options.connectionName;
     this.#pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.#leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
@@ -161,6 +183,22 @@ export class DbTransport implements Transport, ControlPlane {
   /** Stable id stamped on heartbeats, control `from`, and `claimed_by`. */
   get instanceId(): string {
     return this.#instanceId;
+  }
+
+  /**
+   * Adopt `namespace` (the engine's, typically), scoping every write/claim to it — but ONLY if a
+   * namespace wasn't passed explicitly to the constructor (an explicit one always wins). Idempotent.
+   * Satisfies the optional `Transport.useNamespace` hook the engine calls when wiring a transport.
+   */
+  useNamespace(namespace: string): void {
+    if (this.#explicitNamespace) return;
+    this.#namespace = namespace;
+  }
+
+  /** The concrete `namespace` column value this instance stamps/claims: the set namespace, or
+   *  `'default'` when absent — so the un-namespaced and `"default"` schemes claim the same rows. */
+  #namespaceValue(): string {
+    return this.#namespace ?? 'default';
   }
 
   #client(): Client {
@@ -195,6 +233,7 @@ export class DbTransport implements Transport, ControlPlane {
         seq: task.seq,
         name: task.name,
         grp: task.group,
+        namespace: this.#namespaceValue(),
         input: toJson(task.input),
         traceparent: task.traceparent ?? null,
         context: toJson(task.context),
@@ -235,6 +274,7 @@ export class DbTransport implements Transport, ControlPlane {
       seq: beat.seq,
       step_id: beat.stepId,
       grp: beat.group,
+      namespace: this.#namespaceValue(),
       claimed_by: null,
       claimed_at: null,
       created_at: this.#now(),
@@ -272,6 +312,7 @@ export class DbTransport implements Transport, ControlPlane {
         run_id: result.runId,
         seq: result.seq,
         status: result.status,
+        namespace: this.#namespaceValue(),
         output: toJson(result.output),
         error: toJson(result.error),
         started_at: result.startedAt ?? null,
@@ -340,6 +381,7 @@ export class DbTransport implements Transport, ControlPlane {
       .table(TRANSPORT_TABLES.control)
       .insert({
         payload: JSON.stringify(stamped),
+        namespace: this.#namespaceValue(),
         claimed_by: null,
         claimed_at: null,
         created_at: this.#now(),
@@ -385,6 +427,10 @@ export class DbTransport implements Transport, ControlPlane {
     // than through Lucid's stricter query-builder typings, and we only need plain SQL here.
     const knex = this.#client().knexQuery();
     const stale = this.#now() - this.#leaseMs;
+    // Every claim is namespace-scoped: this instance only ever sees rows stamped with its own
+    // namespace, so two engines/workers on different namespaces sharing one table set never
+    // cross-claim each other's tasks/results/heartbeats/control.
+    const namespace = this.#namespaceValue();
     // Unique claim token for THIS round: instance id + a nanosecond stamp. Stored in `claimed_by` so
     // the SELECT-back returns only the rows this exact round won (never another round's, even from
     // the same instance).
@@ -395,6 +441,7 @@ export class DbTransport implements Transport, ControlPlane {
     const candidates = (await knex
       .from(table)
       .select(idCol)
+      .where('namespace', namespace)
       .modify((q) => {
         if (group !== undefined) q.where('grp', group);
       })
@@ -409,6 +456,7 @@ export class DbTransport implements Transport, ControlPlane {
     await this.#client()
       .knexQuery()
       .from(table)
+      .where('namespace', namespace)
       .whereIn(idCol, ids)
       .where((q) => q.whereNull('claimed_at').orWhere('claimed_at', '<', stale))
       .update({ claimed_by: token, claimed_at: at });

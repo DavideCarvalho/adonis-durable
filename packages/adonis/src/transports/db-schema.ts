@@ -37,6 +37,7 @@ export async function createDurableTransportTables(db: Database): Promise<void> 
       table.integer('seq').notNullable();
       table.string('name').notNullable();
       table.string('grp').notNullable();
+      table.string('namespace').notNullable().defaultTo('default');
       table.text('input');
       table.string('traceparent');
       table.text('context');
@@ -45,7 +46,10 @@ export async function createDurableTransportTables(db: Database): Promise<void> 
       table.string('claimed_by');
       table.bigInteger('claimed_at');
       table.bigInteger('created_at').notNullable();
-      table.index(['grp', 'claimed_at', 'created_at'], 'durable_transport_tasks_grp_idx');
+      table.index(
+        ['namespace', 'grp', 'claimed_at', 'created_at'],
+        'durable_transport_tasks_grp_idx',
+      );
     });
   }
 
@@ -56,6 +60,7 @@ export async function createDurableTransportTables(db: Database): Promise<void> 
       table.string('run_id').notNullable();
       table.integer('seq').notNullable();
       table.string('status').notNullable();
+      table.string('namespace').notNullable().defaultTo('default');
       table.text('output');
       table.text('error');
       table.bigInteger('started_at');
@@ -63,7 +68,7 @@ export async function createDurableTransportTables(db: Database): Promise<void> 
       table.string('claimed_by');
       table.bigInteger('claimed_at');
       table.bigInteger('created_at').notNullable();
-      table.index(['claimed_at', 'created_at'], 'durable_transport_results_idx');
+      table.index(['namespace', 'claimed_at', 'created_at'], 'durable_transport_results_idx');
     });
   }
 
@@ -75,10 +80,11 @@ export async function createDurableTransportTables(db: Database): Promise<void> 
       table.integer('seq').notNullable();
       table.string('step_id').notNullable();
       table.string('grp').notNullable();
+      table.string('namespace').notNullable().defaultTo('default');
       table.string('claimed_by');
       table.bigInteger('claimed_at');
       table.bigInteger('created_at').notNullable();
-      table.index(['claimed_at', 'created_at'], 'durable_transport_heartbeats_idx');
+      table.index(['namespace', 'claimed_at', 'created_at'], 'durable_transport_heartbeats_idx');
     });
   }
 
@@ -87,11 +93,30 @@ export async function createDurableTransportTables(db: Database): Promise<void> 
     await conn().createTable(TRANSPORT_TABLES.control, (table) => {
       table.increments('id').primary();
       table.text('payload').notNullable();
+      table.string('namespace').notNullable().defaultTo('default');
       table.string('claimed_by');
       table.bigInteger('claimed_at');
       table.bigInteger('created_at').notNullable();
-      table.index(['claimed_at', 'created_at'], 'durable_transport_control_idx');
+      table.index(['namespace', 'claimed_at', 'created_at'], 'durable_transport_control_idx');
     });
+  }
+
+  // Upgrade path: a deployment created before namespaces existed already has these tables (so the
+  // guards above skipped them) but lacks the `namespace` column. Back-fill it — `notNullable` +
+  // `defaultTo('default')` stamps every legacy in-flight row `'default'`, so a default engine's
+  // `WHERE namespace='default'` claims exactly the rows it did before. Idempotent via `hasColumn`.
+  await ensureNamespaceColumn(db);
+}
+
+/** Add the `namespace` column (default `'default'`) to any transport table created before namespaces. */
+async function ensureNamespaceColumn(db: Database): Promise<void> {
+  for (const table of Object.values(TRANSPORT_TABLES)) {
+    const schema = db.connection().schema;
+    if (!(await schema.hasColumn(table, 'namespace'))) {
+      await db.connection().schema.alterTable(table, (t) => {
+        t.string('namespace').notNullable().defaultTo('default');
+      });
+    }
   }
 }
 
