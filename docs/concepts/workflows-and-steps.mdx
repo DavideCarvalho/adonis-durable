@@ -10,10 +10,8 @@ import { Callout } from 'fumadocs-ui/components/callout';
 A workflow is registered on the engine by **name** and **version**; its body is the deterministic async function `(ctx, input) => …` the engine executes and replays.
 
 ```ts
-import app from '@adonisjs/core/services/app'
-import { WorkflowEngine, type WorkflowCtx } from '@adonis-agora/durable'
-
-const engine = await app.container.make(WorkflowEngine)
+import engine from '@adonis-agora/durable/services/main'
+import type { WorkflowCtx } from '@adonis-agora/durable'
 
 engine.register('checkout', '1', async (ctx: WorkflowCtx, order: Order) => {
   /* ... deterministic orchestration ... */

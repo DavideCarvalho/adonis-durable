@@ -55,7 +55,7 @@ export default defineConfig({
 ```
 
 <Callout type="info">
-The provider binds a singleton [`WorkflowEngine`](/docs/durable/concepts/workflows-and-steps) built from this config. Resolve it from the container anywhere — a controller, a service, a start file.
+The provider binds a singleton [`WorkflowEngine`](/docs/durable/concepts/workflows-and-steps) built from this config. Import it anywhere — a controller, a service, a start file — with `import engine from '@adonis-agora/durable/services/main'`. (The container binding, `app.container.make(WorkflowEngine)`, is the lower-level path.)
 </Callout>
 
 ## 2. Define a step (optional)
@@ -82,11 +82,8 @@ export const chargeCard = defineStep(
 Workflows are registered on the engine by **name** and **version** — the body is a deterministic async function. A good place to do this once at boot is a [preload file](https://docs.adonisjs.com/guides/concepts/adonisrc-file#preloads):
 
 ```ts title="start/durable.ts"
-import app from '@adonisjs/core/services/app'
-import { WorkflowEngine } from '@adonis-agora/durable'
+import engine from '@adonis-agora/durable/services/main'
 import { chargeCard } from '#steps/charge'
-
-const engine = await app.container.make(WorkflowEngine)
 
 engine.register('checkout', '1', async (ctx, order: { id: string; total: number }) => {
   await ctx.localStep('reserveStock', async () => ({ reserved: true }))

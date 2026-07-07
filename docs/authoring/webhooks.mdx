@@ -87,8 +87,9 @@ When the payment provider POSTs to the callback URL, deliver the body as `engine
 
 ```ts
 // start/routes.ts
+import engine from '@adonis-agora/durable/services/main'
+
 router.post('/durable/webhooks/:token', async ({ params, request }) => {
-  const engine = await app.container.make(WorkflowEngine)
   await engine.signal(params.token, request.body())
   return { ok: true }
 })

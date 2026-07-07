@@ -43,10 +43,7 @@ This registers the provider in `adonisrc.ts` and publishes `config/durable.ts`.
 Register a workflow on the engine. Every `ctx.step` is checkpointed; `ctx.waitForSignal` suspends the run until a signal arrives:
 
 ```ts title="start/durable.ts"
-import app from '@adonisjs/core/services/app'
-import { WorkflowEngine } from '@adonis-agora/durable'
-
-const engine = await app.container.make(WorkflowEngine)
+import engine from '@adonis-agora/durable/services/main'
 
 engine.register('checkout', '1', async (ctx, order: { id: string; total: number }) => {
   await ctx.localStep('reserveStock', async () => ({ reserved: true }))

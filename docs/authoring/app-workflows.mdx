@@ -46,7 +46,8 @@ registers every exported `@Workflow` class — including the version, `tags`, `e
 from the decorator options. Start a run by the registered **name** or the **class**:
 
 ```ts
-const engine = await app.container.make(WorkflowEngine)
+import engine from '@adonis-agora/durable/services/main'
+
 await engine.start('order', input, runId)      // by name
 await engine.start(OrderWorkflow, input, runId) // by class (typed)
 ```

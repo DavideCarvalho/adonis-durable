@@ -14,11 +14,9 @@ npm i @opentelemetry/api
 `attachDurableOtel(engine, options?)` subscribes to the engine's lifecycle events and bridges them onto OpenTelemetry. Call it once at boot with the engine in hand; it returns a detach function:
 
 ```ts title="start/durable.ts"
-import app from '@adonisjs/core/services/app'
-import { WorkflowEngine } from '@adonis-agora/durable'
+import engine from '@adonis-agora/durable/services/main'
 import { attachDurableOtel } from '@adonis-agora/durable/otel'
 
-const engine = await app.container.make(WorkflowEngine)
 const detach = attachDurableOtel(engine) // uses the global tracer provider
 ```
 
