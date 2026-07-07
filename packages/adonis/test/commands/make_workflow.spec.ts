@@ -20,7 +20,7 @@ describe('make:workflow', () => {
     await rm(appRoot, { recursive: true, force: true });
   });
 
-  it('emits a valid @Workflow stub at app/workflows/<name>_workflow.ts', async () => {
+  it('emits a valid BaseWorkflow stub at app/workflows/<name>_workflow.ts', async () => {
     const ace = await new AceFactory().make(pathToFileURL(`${appRoot}/`), {
       importer: (filePath) => import(filePath),
     });
@@ -34,9 +34,10 @@ describe('make:workflow', () => {
 
     const file = join(appRoot, 'app/workflows/order_workflow.ts');
     const contents = await readFile(file, 'utf8');
-    expect(contents).toContain('@Workflow(');
+    expect(contents).toContain('import { BaseWorkflow }');
+    expect(contents).toContain('export default class OrderWorkflow extends BaseWorkflow');
+    expect(contents).toContain('static workflow = {');
     expect(contents).toContain("name: 'order'");
-    expect(contents).toContain('export default class OrderWorkflow');
     expect(contents).toContain('async run(ctx: WorkflowCtx');
     expect(contents).toContain("from '@adonis-agora/durable'");
   });

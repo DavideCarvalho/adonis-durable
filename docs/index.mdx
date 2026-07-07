@@ -24,7 +24,7 @@ Multi-step processes are usually scattered: a queued job here, a cron there, a m
 
 ## Quickstart
 
-The minimal loop — install, configure, register a workflow, start a run — with zero infrastructure: the in-memory store and an in-process transport. Swap those for a [Lucid store](/docs/durable/stores/lucid) and a [queue transport](/docs/durable/transports/queue) when you go to production. For the full walkthrough, see [Getting Started](/docs/durable/getting-started).
+The minimal loop — install, configure, define a workflow, start a run — with zero infrastructure: the in-memory store and an in-process transport. Swap those for a [Lucid store](/docs/durable/stores/lucid) and a [queue transport](/docs/durable/transports/queue) when you go to production. For the full walkthrough, see [Getting Started](/docs/durable/getting-started).
 
 <Steps>
 <Step>
@@ -40,40 +40,38 @@ This registers the provider in `adonisrc.ts` and publishes `config/durable.ts`.
 </Step>
 <Step>
 
-Register a workflow on the engine. Every `ctx.step` is checkpointed; `ctx.waitForSignal` suspends the run until a signal arrives:
+Define a workflow as a class under `app/workflows/` — it is auto-registered at boot. Every `ctx.step` is checkpointed; `ctx.waitForSignal` suspends the run until a signal arrives:
 
-```ts title="start/durable.ts"
-import app from '@adonisjs/core/services/app'
-import { WorkflowEngine } from '@adonis-agora/durable'
+```ts title="app/workflows/checkout_workflow.ts"
+import { BaseWorkflow } from '@adonis-agora/durable'
+import type { WorkflowCtx } from '@adonis-agora/durable'
 
-const engine = await app.container.make(WorkflowEngine)
+export default class CheckoutWorkflow extends BaseWorkflow {
+  static workflow = { name: 'checkout', version: '1' }
 
-engine.register('checkout', '1', async (ctx, order: { id: string; total: number }) => {
-  await ctx.localStep('reserveStock', async () => ({ reserved: true }))
-  const approval = await ctx.waitForSignal<{ approved: boolean }>(`approve:${order.id}`)
-  if (!approval.approved) return { status: 'rejected' }
-  await ctx.localStep('ship', async () => ({ shipped: true }))
-  return { status: 'shipped' }
-})
+  async run(ctx: WorkflowCtx, order: { id: string; total: number }) {
+    await ctx.localStep('reserveStock', async () => ({ reserved: true }))
+    const approval = await ctx.waitForSignal<{ approved: boolean }>(`approve:${order.id}`)
+    if (!approval.approved) return { status: 'rejected' }
+    await ctx.localStep('ship', async () => ({ shipped: true }))
+    return { status: 'shipped' }
+  }
+}
 ```
 
 </Step>
 <Step>
 
-Start a run from a controller. `start` **enqueues** the run and returns immediately — the HTTP handler never blocks on workflow logic:
+Start a run from a controller. `dispatch` **enqueues** the run and returns `{ runId }` immediately — the HTTP handler never blocks on workflow logic:
 
 ```ts
-import { WorkflowEngine } from '@adonis-agora/durable'
-import { inject } from '@adonisjs/core'
+import CheckoutWorkflow from '#workflows/checkout_workflow'
 
-@inject()
 export default class CheckoutController {
-  constructor(private engine: WorkflowEngine) {}
-
   async store({ request }: HttpContext) {
     const order = request.body() as { id: string; total: number }
-    await this.engine.start('checkout', order, `checkout:${order.id}`)
-    return { runId: `checkout:${order.id}` }
+    const { runId } = await CheckoutWorkflow.dispatch(order, { runId: `checkout:${order.id}` })
+    return { runId }
   }
 }
 ```

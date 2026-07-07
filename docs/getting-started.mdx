@@ -77,35 +77,43 @@ export const chargeCard = defineStep(
 )
 ```
 
-## 3. Register the workflow
+## 3. Define the workflow
 
-Workflows are registered on the engine by **name** and **version** — the body is a deterministic async function. A good place to do this once at boot is a [preload file](https://docs.adonisjs.com/guides/concepts/adonisrc-file#preloads):
+A workflow is a class under `app/workflows/` that extends `BaseWorkflow` and declares its identity with a
+`static workflow = { name, version }`. Its `run(ctx, input)` method **is** the deterministic body. The durable
+provider scans `app/workflows/` at boot and registers every exported workflow class automatically — no manual
+`engine.register(...)`, no preload to wire:
 
-```ts title="start/durable.ts"
-import app from '@adonisjs/core/services/app'
-import { WorkflowEngine } from '@adonis-agora/durable'
+```ts title="app/workflows/checkout_workflow.ts"
+import { BaseWorkflow } from '@adonis-agora/durable'
+import type { WorkflowCtx } from '@adonis-agora/durable'
 import { chargeCard } from '#steps/charge'
 
-const engine = await app.container.make(WorkflowEngine)
+export default class CheckoutWorkflow extends BaseWorkflow {
+  static workflow = { name: 'checkout', version: '1' }
 
-engine.register('checkout', '1', async (ctx, order: { id: string; total: number }) => {
-  await ctx.localStep('reserveStock', async () => ({ reserved: true }))
-  const charge = await ctx.step(chargeCard, { orderId: order.id, amountCents: order.total })
-  const approval = await ctx.waitForSignal<{ approved: boolean }>(`approve:${order.id}`)
-  if (!approval.approved) return { status: 'rejected', chargeId: charge.chargeId }
-  await ctx.localStep('ship', async () => ({ shipped: true }))
-  return { status: 'shipped', chargeId: charge.chargeId }
-})
+  async run(ctx: WorkflowCtx, order: { id: string; total: number }) {
+    await ctx.localStep('reserveStock', async () => ({ reserved: true }))
+    const charge = await ctx.step(chargeCard, { orderId: order.id, amountCents: order.total })
+    const approval = await ctx.waitForSignal<{ approved: boolean }>(`approve:${order.id}`)
+    if (!approval.approved) return { status: 'rejected', chargeId: charge.chargeId }
+    await ctx.localStep('ship', async () => ({ shipped: true }))
+    return { status: 'shipped', chargeId: charge.chargeId }
+  }
+}
 ```
 
-Register the preload in `adonisrc.ts`:
+<Callout type="info" title="@Workflow still works">
+Prefer the decorator? `@Workflow({ name: 'checkout', version: '1' })` on the class is a supported **alias** for
+`static workflow` — same metadata, same discovery. It remains fully supported (no breaking change).
+</Callout>
 
-```ts title="adonisrc.ts"
-preloads: [
-  // ...
-  () => import('#start/durable'),
-],
-```
+<Callout type="info">
+**Lower-level alternative.** You can still register by hand from a [preload file](https://docs.adonisjs.com/guides/concepts/adonisrc-file#preloads) with
+`engine.register('checkout', '1', async (ctx, order) => { … })` — the body is the same deterministic
+`(ctx, input) => …`. Auto-discovery is the recommended path for same-runtime TypeScript workflows; see
+[app/workflows](/docs/durable/authoring/app-workflows).
+</Callout>
 
 ## 4. Serve the step handler
 
@@ -128,21 +136,26 @@ For real cross-process handlers, configure the [queue transport](/docs/durable/t
 
 ## 5. Start a run
 
-Inject the `WorkflowEngine` and start the workflow. `start` **enqueues** the run and returns immediately — the HTTP handler never blocks on workflow logic. A worker executes the body (by default, the same instance, asynchronously), runs the steps, then suspends on the approval signal; a webhook resumes it:
+Call the workflow class's `dispatch` static from your controller — no engine to inject. `dispatch` **enqueues**
+a top-level run and returns `{ runId }` immediately, so the HTTP handler never blocks on workflow logic. A
+worker executes the body (by default, the same instance, asynchronously), runs the steps, then suspends on the
+approval signal; a webhook resumes it:
 
 ```ts title="app/controllers/checkout_controller.ts"
 import type { HttpContext } from '@adonisjs/core/http'
 import { WorkflowEngine } from '@adonis-agora/durable'
 import { inject } from '@adonisjs/core'
+import CheckoutWorkflow from '#workflows/checkout_workflow'
 
 @inject()
 export default class CheckoutController {
+  // the engine is only needed to signal the run; dispatch resolves it for you
   constructor(private engine: WorkflowEngine) {}
 
   async store({ request }: HttpContext) {
     const order = request.body() as { id: string; total: number }
-    await this.engine.start('checkout', order, `checkout:${order.id}`)
-    return { runId: `checkout:${order.id}` } // respond now; a worker runs the body
+    const { runId } = await CheckoutWorkflow.dispatch(order, { runId: `checkout:${order.id}` })
+    return { runId } // respond now; a worker runs the body
   }
 
   // later, from your approval webhook:
@@ -152,12 +165,26 @@ export default class CheckoutController {
 }
 ```
 
-Need the outcome inline? `await this.engine.waitForRun(runId)` resolves once the run **settles** — a terminal state (completed/failed/cancelled/dead) or `suspended`:
+<Callout type="info">
+`CheckoutWorkflow.dispatch(order, { runId })` is the ergonomic equivalent of resolving the engine and calling
+`engine.start('checkout', order, runId)` — the `runId` acts as the idempotency key, so dispatching the same one
+twice is a no-op. Prefer injecting the engine directly? `engine.start(CheckoutWorkflow, order, runId)` is the
+lower-level form.
+</Callout>
+
+Need the outcome inline? `CheckoutWorkflow.start(order)` **blocks the caller** until the run **settles** — a
+terminal state (completed/failed/cancelled/dead) or `suspended` — and returns the run's result:
 
 ```ts
-await this.engine.start('checkout', order, runId)
-const result = await this.engine.waitForRun(runId) // resolves when the run settles
+const result = await CheckoutWorkflow.start(order) // resolves when the run settles
 ```
+
+<Callout type="warn">
+`.start` blocks the calling context until the run settles — great for scripts and short runs, but avoid it on a
+hot HTTP path for a long-running workflow. There, `.dispatch` and respond immediately, then read the outcome
+later (a webhook, a poll, or `engine.waitForRun(runId)`). `.start` is the ergonomic equivalent of
+`engine.start(...)` followed by `await engine.waitForRun(runId)`.
+</Callout>
 
 That's it — a durable workflow whose dispatched step runs in-process, that pauses for human approval and survives restarts. Next:
 

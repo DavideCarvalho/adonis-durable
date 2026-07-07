@@ -68,6 +68,24 @@ describe('app/workflows auto-discovery', () => {
     expect(res.output).toBe('hi davi');
   });
 
+  it('discovers + registers a BaseWorkflow `static workflow` class (no decorator), runnable', async () => {
+    await writeFile(
+      join(dir, 'checkout_workflow.ts'),
+      `import { BaseWorkflow } from '${SRC}/base-workflow.js'
+       export default class CheckoutWorkflow extends BaseWorkflow {
+         static workflow = { name: 'checkout', version: '1' }
+         async run(_ctx, input) { return 'checkout:' + input.id }
+       }`,
+    );
+
+    const engine = new WorkflowEngine({ store: new InMemoryStateStore() });
+    const registered = await registerWorkflowsFromDir(engine, dir);
+    expect(registered).toEqual([{ name: 'checkout', version: '1' }]);
+
+    const res = await startRun(engine, 'checkout', { id: 'x' }, 'co1');
+    expect(res.output).toBe('checkout:x');
+  });
+
   it('discovers @Workflow classes in NESTED directories (matches make:workflow nested paths)', async () => {
     await mkdir(join(dir, 'billing'), { recursive: true });
     await writeFile(

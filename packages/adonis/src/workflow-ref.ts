@@ -60,10 +60,24 @@ export function Workflow(options: WorkflowOptions) {
   };
 }
 
-/** Read the {@link WorkflowMeta} a `@Workflow` decorator stamped on a class, or `undefined`. */
+/**
+ * Read a class's {@link WorkflowMeta} — its name/version/tags/… — resolved from EITHER the symbol a
+ * `@Workflow` decorator stamped OR a plain `static workflow = { name, version, … }` config on the
+ * class (the decorator-free {@link BaseWorkflow} form). The decorator wins if both are present. Any
+ * absent `version` is normalized to `'1'`. Returns `undefined` for a class carrying neither (an
+ * undecorated, config-less class is not a registrable workflow).
+ */
 export function workflowMeta(target: unknown): WorkflowMeta | undefined {
   if (typeof target !== 'function') return undefined;
-  return (target as { [WORKFLOW_META_KEY]?: WorkflowMeta })[WORKFLOW_META_KEY];
+  const stamped = (target as { [WORKFLOW_META_KEY]?: WorkflowMeta })[WORKFLOW_META_KEY];
+  if (stamped) return stamped;
+  // Fallback: a `static workflow` object (BaseWorkflow authoring form). Alias for the decorator —
+  // same normalization (default version '1'), so both forms resolve identically downstream.
+  const config = (target as { workflow?: WorkflowOptions }).workflow;
+  if (config && typeof config === 'object' && typeof config.name === 'string') {
+    return { ...config, version: config.version ?? '1' };
+  }
+  return undefined;
 }
 
 /** Structural shape of a `@Workflow` class — its `run(ctx, input)` carries the input/output types. */
