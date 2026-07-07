@@ -7,6 +7,8 @@ import { Callout } from 'fumadocs-ui/components/callout';
 
 Real workflows wait — for a delay, or for the outside world. Both kinds of pause are **durable**: the run is suspended (no compute consumed) and resumes on its own, even across restarts.
 
+<CodeFlow scene="sleep-signals" />
+
 ## Durable sleep
 
 `ctx.sleep(duration)` suspends the run until the timer is due. Accepts a duration string (`'30s'`, `'2h'`, `'7 days'`, `'7d'`, `'1w'`) or milliseconds:

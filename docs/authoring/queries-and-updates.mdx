@@ -61,6 +61,8 @@ export default class JobsController {
 
 `getEvent` works against a live run *and* a finished one — the published values live in the run's checkpoints, so they remain queryable after the run completes. The read is typed: pass the value type as the generic (`getEvent<TValue>`), and the engine returns `TValue | undefined`.
 
+<CodeFlow scene="queries" />
+
 ## Updates
 
 A query reads; an **update** steers. An update point inside the run suspends until an external caller delivers an argument — and, unlike a raw signal, an update can be **validated and rejected before it ever touches the run**. That validator runs in the caller's request, so a rejected update returns a reason synchronously and leaves the run exactly as it was.
@@ -95,6 +97,8 @@ engine.register('expense-approval', '1', async (ctx, expense: Expense) => {
   return { reimbursed: true }
 })
 ```
+
+<CodeFlow scene="update-timeout" />
 
 ### The validator — `engine.registerUpdateValidator(workflow, name, validate)`
 
@@ -136,6 +140,8 @@ export default class ExpensesController {
   }
 }
 ```
+
+<CodeFlow scene="update-happy" />
 
 ### Why a validator beats a raw signal
 

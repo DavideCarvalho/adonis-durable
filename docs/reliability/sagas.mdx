@@ -64,6 +64,8 @@ Both kinds of compensation live in the same reverse-order stack: whether a step 
 
 > A dispatched step is already deduplicated by its deterministic `stepId` (`runId:seq`), which workers can use as an idempotency key — so there's no separate idempotency-key option.
 
+<CodeFlow scene="saga" />
+
 ## Retrying a transient undo
 
 A compensation can itself fail transiently — the refund API might be momentarily unreachable. The engine retries each compensation up to `compensationRetries` times. This is an engine-level option (it applies to every compensation), set in `config/durable.ts`, and it defaults to 1, i.e. a single attempt with no retry:

@@ -26,6 +26,8 @@ Only a **`completed`** checkpoint short-circuits replay. A non-terminal checkpoi
 
 You write ordinary linear code; the engine guarantees each step runs **exactly once**, logically, even across crashes and deploys.
 
+<ReplayDiagram />
+
 ## The execution model: start enqueues, a worker runs the body
 
 `start` does **not** run the workflow inline. `engine.start(workflow, input, runId, opts?)` **creates the run as `'pending'` and returns immediately**. The caller — an HTTP handler, say — never blocks on workflow logic; the body is dispatched to a worker.
@@ -45,6 +47,8 @@ start('checkout', order, runId)  → run created, status: 'pending', returns now
   await engine.start('checkout', order, runId)
   const result = await engine.waitForRun(runId) // resolves when the run settles
   ```
+
+<CodeFlow scene="execution-model" />
 
 ### Workers: a process that drains pending runs
 

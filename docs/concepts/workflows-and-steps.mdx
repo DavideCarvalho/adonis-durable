@@ -26,11 +26,15 @@ engine.register('checkout', '1', async (ctx: WorkflowCtx, order: Order) => {
 Need dependency injection in a step? Resolve services from the container, or close over them at registration time. The workflow body must stay deterministic — do the I/O inside a step, not in the orchestration prefix.
 </Callout>
 
+<CodeFlow scene="checkout" />
+
 ## Steps
 
 `ctx.step(refOrName, input, opts?)` is the one durable step primitive. It is **always dispatched**: the engine routes it to a handler registered under the step's **name**, suspends the run (zero compute) until the result lands, then resumes with it — checkpointed and replay-safe. The handler runs on whatever worker serves that name, in this process or another; the workflow code is the same either way.
 
 There are three ways to author the handler a `ctx.step` routes to.
+
+<CodeFlow scene="dispatched-step" />
 
 ### 1. By string name
 

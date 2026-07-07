@@ -5,6 +5,8 @@ description: Cap crash-recovery with maxRecoveryAttempts so a poison-pill run mo
 
 Most failures are transient and recover cleanly. But occasionally a run is a **poison pill**: it crashes the process every time recovery picks it up — a deserialization bug, a non-deterministic change, an infinite loop in a step. Left alone, crash-recovery would resume it, crash, resume it again on the next boot, and loop forever, taking the whole instance down with it each time. The dead-letter queue breaks that loop.
 
+<DlqSim />
+
 ## Capping recovery: `maxRecoveryAttempts`
 
 Crash-recovery is **self-healing and periodic**: while a run executes its worker renews a recovery lease, so a crashed worker's lease expires and recovery (`engine.recoverIncomplete()`, called every tick by the [`durable:work`](/docs/durable/cli) loop) reclaims the orphaned run within ~`leaseMs` — on any instance, not just on the next boot. That's what makes a genuine poison pill visible: it gets picked up again and again. Every time crash-recovery picks up a still-`running` run, the engine increments that run's `recoveryAttempts` *before* resuming it (so a crash mid-resume still advances the counter).
@@ -72,6 +74,8 @@ engine.onDead((run) => {
 ```
 
 Because every start is idempotent by `dlq:<runId>`, a run that gets dead-lettered (and re-detected) more than once still triggers exactly one DLQ run. The DLQ run is a normal durable run — it shows up in the dashboard with its own history, so you can confirm it did its job (alerted, opened a ticket, compensated), then retry the original once it's fixed.
+
+<CodeFlow scene="dead-letter" />
 
 ## Retrying a dead run with corrected input
 

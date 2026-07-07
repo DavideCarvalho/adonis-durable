@@ -79,6 +79,8 @@ engine.register('checkout', '1', async (ctx, order: Order) => {
 })
 ```
 
+<CodeFlow scene="webhook" />
+
 ## Delivering the callback
 
 When the payment provider POSTs to the callback URL, deliver the body as `engine.signal(token, body)` from your own controller — the token is in the URL, and it already encodes the run and position, so there's nothing else to look up:

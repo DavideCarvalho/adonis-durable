@@ -5,6 +5,8 @@ description: In-process localStep retries with fixed/exponential backoff and jit
 
 Transient failures are the normal case for anything that crosses a network boundary, so every step is retryable. The mechanics differ between an **in-process** `ctx.localStep` — work that runs inside the engine — and a **dispatched** `ctx.step` routed to a worker, because the engine can re-run a local function in place but a dispatched step has to survive the worker (and even the orchestrator) disappearing mid-flight.
 
+<RetrySim />
+
 ## Local-step retries
 
 `ctx.localStep(name, fn, opts?)` runs a unit of work in-process and checkpoints its result. If `fn` throws, the engine retries it up to `retries` attempts, spacing the attempts with the step's backoff configuration:
@@ -74,6 +76,8 @@ const charge = await ctx.step(chargeCard, { orderId: order.id, amountCents: orde
 ```
 
 When a worker reports a **failed** result for a durable step, the engine consults `retries`. If the budget remains, it re-dispatches — but durably, not in a loop. It computes the next retry deadline as `now + backoffDelay(attempt)` and stamps it on the failed checkpoint's `wakeAt`, then suspends. Because that deadline is **persisted on the checkpoint** rather than living in a timer in memory, it is replay-stable and crash-safe (a process that dies before the retry fires picks it back up when the timer poller sees the `wakeAt` come due). Once the deadline passes, the poller resumes the run, the call re-dispatches with an incremented `attempt`, and the cycle continues until the result lands or `retries` is exhausted.
+
+<CodeFlow scene="retries" />
 
 ### Opting out: `retryable: false`
 

@@ -65,6 +65,8 @@ engine.register('daily-report', '1', async (ctx) => {
 })
 ```
 
+<CodeFlow scene="scheduling" />
+
 ## Fixed intervals — `everyMs`
 
 `everyMs` starts one run every interval. The current window is identified by the time bucket `floor(now / everyMs)`, which becomes part of the run id (`sched:<key>:<bucket>`). Every tick inside the same window resolves to the same run id, so re-firing the schedule within a window is a no-op.

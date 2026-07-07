@@ -33,6 +33,8 @@ const shipment = await ctx.child(ShippingWorkflow, { orderId: order.id })
 
 Both forms take an optional third `childId` argument; it defaults to a deterministic id derived from the parent run and the call position, so it's stable across replay.
 
+<CodeFlow scene="child-workflow" />
+
 ## `ctx.startChild` — fire-and-forget
 
 `ctx.startChild(workflow, input, childId?)` dispatches a child and returns its **run id immediately** — the parent keeps running instead of suspending. Use it for side work the parent doesn't need to wait on:
@@ -48,6 +50,8 @@ engine.register('publish-post', '1', async (ctx, post: Post) => {
 ```
 
 The dispatch is checkpointed (replay-safe — it won't re-fire on resume) and idempotent by child id.
+
+<CodeFlow scene="start-child" />
 
 ### Scatter-gather: start many, then join
 
@@ -69,6 +73,8 @@ engine.register('batch', '1', async (ctx, batch: Batch) => {
   return results
 })
 ```
+
+<FanoutSim />
 
 ## When to use which
 

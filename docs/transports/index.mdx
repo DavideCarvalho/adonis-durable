@@ -50,6 +50,8 @@ transport.handle('payments:charge-card', async (input) => ({ chargeId: await cha
 
 Great for splitting a workflow across modules in one app, and for [tests](/docs/durable/testing). When you need the step to run elsewhere, select the `queue` or `db` driver in `config/durable.ts`.
 
+<CodeFlow scene="transport-dispatch" />
+
 ## Pinning a transport per step (failover pools)
 
 At the **engine** level a single instance can dispatch over an ordered pool of named transports and fail over between them; a step pins one with `ctx.step(step, input, { transport: id })`:

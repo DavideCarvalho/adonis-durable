@@ -83,6 +83,8 @@ The marker is **position-transparent** for old runs: because it rewinds rather t
 
 `ctx.patched` and workflow versions solve the same problem at different grain: a version is a whole second body for a structural change, a patch is a one-line guard for a surgical one.
 
+<CodeFlow scene="versioning" />
+
 ## Tooling
 
 Spotting a raw `Date.now()`, `Math.random()`, or `crypto.randomUUID()` in a workflow body is exactly the kind of mistake a linter should catch before it ships. The companion lint plugin flags non-deterministic calls inside workflow bodies and steers you to the deterministic sources. See [Linting](/docs/durable/tooling/linting).

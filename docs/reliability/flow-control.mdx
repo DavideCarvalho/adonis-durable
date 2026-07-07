@@ -7,6 +7,10 @@ import { Callout } from 'fumadocs-ui/components/callout';
 
 Dispatched steps fan out work to workers, and sometimes you need to *throttle* that fan-out: a third-party API allows only N requests per minute, or a downstream service falls over above some concurrency. Flow-control queues cap how much work `ctx.step` admits at once — a concurrency limit, a fixed-window rate limit, or both — and, crucially, they do it **durably**: a call that can't be admitted doesn't busy-wait or hold the run in memory, it re-suspends and is retried by the timer poller, so the limit survives a crash.
 
+<QueueSim />
+
+<RateLimitSim />
+
 ## Registering a queue
 
 Register a queue on the engine with `engine.registerQueue`. A `QueueConfig` has:
@@ -52,6 +56,8 @@ const sent = await ctx.step(
 ```
 
 A higher `priority` is admitted first; `fairnessKey` round-robins between keys when the queue's `fairness` is `'key'`, so one noisy tenant can't starve the rest.
+
+<CodeFlow scene="flow-control" />
 
 ## How admission works (and why it's durable)
 
