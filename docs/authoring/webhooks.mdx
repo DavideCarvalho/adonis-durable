@@ -46,7 +46,7 @@ The shape matters: minting the handle and **waiting** on it are separate steps. 
 ## Full example — a payment that calls back
 
 ```ts
-import { remoteStep, FatalError } from '@adonis-agora/durable'
+import { FatalError } from '@adonis-agora/durable'
 
 interface PaymentResult {
   status: 'paid' | 'failed'
@@ -59,7 +59,7 @@ engine.register('checkout', '1', async (ctx, order: Order) => {
 
   // 2. Hand the url to the third party INSIDE a step, so the handoff is checkpointed and
   //    happens exactly once — even across replay/recovery.
-  await ctx.step('start-payment', async () => {
+  await ctx.localStep('start-payment', async () => {
     await psp.createPayment({
       orderId: order.id,
       amountCents: order.total,
@@ -74,7 +74,7 @@ engine.register('checkout', '1', async (ctx, order: Order) => {
     throw new FatalError(`payment ${result.providerRef} failed`, 'payment_failed')
   }
 
-  await ctx.step('fulfill', () => fulfil(order, result.providerRef))
+  await ctx.localStep('fulfill', () => fulfil(order, result.providerRef))
   return { orderId: order.id, providerRef: result.providerRef }
 })
 ```

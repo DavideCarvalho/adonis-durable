@@ -5,7 +5,7 @@ description: A broker-less, DBOS-style transport driver — remote steps are row
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-The `db` driver needs **no broker**. A remote step is a **row** in the same database your durable store already uses: `ctx.call` inserts a task row, a worker claims it with an atomic lease, runs the handler, writes a result row, and the engine polls that row to resume the run. The database you already operate *is* the queue.
+The `db` driver needs **no broker**. A dispatched step is a **row** in the same database your durable store already uses: `ctx.step` inserts a task row, a worker claims it with an atomic lease, runs the handler, writes a result row, and the engine polls that row to resume the run. The database you already operate *is* the queue.
 
 It ships **inside `@adonis-agora/durable`** — `@adonisjs/lucid` is an optional peer, imported lazily only when you select the `db` transport. The transport tables come from a migration published when you configure the package:
 
@@ -31,14 +31,14 @@ export default defineConfig({
 })
 ```
 
-A worker process constructs the transport pinned to the group it serves and registers handlers:
+A worker process constructs the transport and registers handlers — served by name, one claim loop per handler name:
 
 ```ts title="start/worker.ts (a separate worker process)"
 import db from '@adonisjs/lucid/services/db'
 import { DbTransport } from '@adonis-agora/durable'
 
-const transport = new DbTransport({ db, group: 'pipeline' })
-transport.handle('pipeline.extract', async (input) => extract(input))
+const transport = new DbTransport({ db }) // pass { partition } to isolate this pool
+transport.handle('pipeline:extract', async (input) => extract(input))
 ```
 
 Trade-off vs a real broker: throughput is bounded by polling + row contention — great for workflow/pipeline scale (modest rate, long steps), not for high-fanout firehoses. But it adds **zero new infrastructure** — no Redis, no SQS — which is often the right trade.
@@ -47,7 +47,8 @@ Trade-off vs a real broker: throughput is bounded by polling + row contention �
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `group` | — | The worker group this instance serves — required to register `handle()`s. |
+| `group` | — | **Deprecated.** Steps route by handler name, so an instance serves whatever names it registers — no group to declare. Accepted for back-compat and otherwise ignored; use `partition` for isolation. |
+| `partition` | — | Optional isolation partition suffixing every per-handler routing token (`<name>@<partition>`) this worker serves, matching a dispatch's `partition`. |
 | `connection` | Lucid default | The Lucid connection to use. |
 | `pollIntervalMs` | `200` | Poll interval in ms. |
 | `leaseMs` | `30000` | Claim lease duration for crash recovery — a row whose worker died is reclaimed after this. |

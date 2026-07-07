@@ -20,8 +20,8 @@ import { createTestEngine, assertRunStatus, assertOutput } from '@adonis-agora/d
 test('checkout completes', async () => {
   const t = createTestEngine()
   t.engine.register('checkout', '1', async (ctx) => {
-    await ctx.step('reserve', () => reserve())
-    return ctx.step('ship', () => ship())
+    await ctx.localStep('reserve', () => reserve())
+    return ctx.localStep('ship', () => ship())
   })
 
   await t.run('checkout', order, 'run1') // enqueue + wait for the run to settle
@@ -37,9 +37,9 @@ test('checkout completes', async () => {
 
 ```ts
 t.engine.register('digest', '1', async (ctx) => {
-  await ctx.step('draft', () => draft())
+  await ctx.localStep('draft', () => draft())
   await ctx.sleep('7 days')
-  await ctx.step('send', () => send())
+  await ctx.localStep('send', () => send())
 })
 
 await t.run('digest', {}, 'run1')   // settles on the durable sleep → suspended
@@ -57,7 +57,7 @@ The clock itself (`t.clock`, a `MutableClock`) has `set(ms)` and `advance(ms)` i
 import { failOnce, assertStepAttempts } from '@adonis-agora/durable/testing'
 
 t.engine.register('wf', '1', async (ctx) =>
-  ctx.step('charge', failOnce({ ok: true }), { retries: 3 }),
+  ctx.localStep('charge', failOnce({ ok: true }), { retries: 3 }),
 )
 await t.run('wf', {}, 'run1')
 await assertStepAttempts(t.store, 'run1', 'charge', 2) // failed once, then succeeded

@@ -1,17 +1,17 @@
 ---
 title: Flow control
-description: "Durable queues for remote steps — cap concurrency and enforce fixed-window rate limits with engine.registerQueue and ctx.call(step, input, { queue }). A blocked call re-suspends and the timer poller retries admission. Scale the cap across processes with @adonis-agora/durable/admission-redis."
+description: "Durable queues for dispatched steps — cap concurrency and enforce fixed-window rate limits with engine.registerQueue and ctx.step(step, input, { queue }). A blocked call re-suspends and the timer poller retries admission. Scale the cap across processes with @adonis-agora/durable/admission-redis."
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-Remote steps fan out work to workers, and sometimes you need to *throttle* that fan-out: a third-party API allows only N requests per minute, or a downstream service falls over above some concurrency. Flow-control queues cap how much work `ctx.call` admits at once — a concurrency limit, a fixed-window rate limit, or both — and, crucially, they do it **durably**: a call that can't be admitted doesn't busy-wait or hold the run in memory, it re-suspends and is retried by the timer poller, so the limit survives a crash.
+Dispatched steps fan out work to workers, and sometimes you need to *throttle* that fan-out: a third-party API allows only N requests per minute, or a downstream service falls over above some concurrency. Flow-control queues cap how much work `ctx.step` admits at once — a concurrency limit, a fixed-window rate limit, or both — and, crucially, they do it **durably**: a call that can't be admitted doesn't busy-wait or hold the run in memory, it re-suspends and is retried by the timer poller, so the limit survives a crash.
 
 ## Registering a queue
 
 Register a queue on the engine with `engine.registerQueue`. A `QueueConfig` has:
 
-- `name` — the queue's name, referenced from `ctx.call(step, input, { queue: name })`.
+- `name` — the queue's name, referenced from `ctx.step(step, input, { queue: name })`.
 - `concurrency` — the maximum number of steps in flight at once for this queue. Omit for unlimited.
 - `rateLimit` — a fixed-window rate limit of `{ limit, periodMs }`: at most `limit` admissions per `periodMs`. Omit for unlimited.
 - `retryMs` — how long (ms) a concurrency-blocked call waits before re-checking for a free slot. Defaults to 1000.
@@ -31,18 +31,20 @@ engine.registerQueue({ name: 'emails', concurrency: 10, rateLimit: { limit: 1000
 
 ## Using a queue from a workflow
 
-Subject a remote-step dispatch to a queue by naming it in the call options:
+Subject a dispatched step to a queue by naming it in the call options:
 
 ```ts
-export const sendEmail = remoteStep({
-  name: 'notify.email',
-  group: 'notify',
-  input: z.object({ to: z.string().email(), template: z.string() }),
-  output: z.object({ messageId: z.string() }),
-})
+export const sendEmail = defineStep(
+  'notify:email',
+  async (input: { to: string; template: string }) => ({ messageId: await mailer.send(input) }),
+  {
+    input: z.object({ to: z.string().email(), template: z.string() }),
+    output: z.object({ messageId: z.string() }),
+  },
+)
 
 // in the workflow — admitted through the `emails` queue, with a priority and fairness key:
-const sent = await ctx.call(
+const sent = await ctx.step(
   sendEmail,
   { to: order.email, template: 'receipt' },
   { queue: 'emails', priority: 10, fairnessKey: order.tenantId },

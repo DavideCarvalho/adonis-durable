@@ -12,9 +12,9 @@ Real workflows wait — for a delay, or for the outside world. Both kinds of pau
 `ctx.sleep(duration)` suspends the run until the timer is due. Accepts a duration string (`'30s'`, `'2h'`, `'7 days'`, `'7d'`, `'1w'`) or milliseconds:
 
 ```ts
-await ctx.step('draft', () => generate(topic))
+await ctx.localStep('draft', () => generate(topic))
 await ctx.sleep('7 days') // gather signals for a week — nothing running
-await ctx.step('refine', () => refine(topic))
+await ctx.localStep('refine', () => refine(topic))
 ```
 
 Under the hood the run becomes `suspended` with a `wakeAt`; a poller (the [`durable:work`](/docs/durable/cli) loop, via `engine.resumeDueTimers()`) resumes runs whose timer has come due. On resume, the steps before the sleep replay from their checkpoints.

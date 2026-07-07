@@ -16,7 +16,7 @@ interface {{ workflowName }}Input {
 @Workflow({ name: '{{ registeredName }}', version: '1' })
 export default class {{ workflowName }}Workflow {
   async run(ctx: WorkflowCtx, input: {{ workflowName }}Input) {
-    // Your workflow logic here — compose ctx.step / ctx.call / ctx.child / ctx.sleep …
+    // Your workflow logic here — compose ctx.step / ctx.localStep / ctx.child / ctx.sleep …
     return input
   }
 }

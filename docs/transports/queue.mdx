@@ -29,14 +29,14 @@ export default defineConfig({
 
 ## How it works
 
-- `ctx.call` dispatches a task to a **per-group** queue: `<prefix>:tasks:<group>`.
-- A worker for that group consumes it, runs the handler, and adds the result to the shared `<prefix>:results` queue.
+- A dispatched `ctx.step` goes to a **per-name** task queue: `<prefix>:tasks:<token>`, where the routing token is `tenantGroup(sanitizeQueueToken(name), partition)` — a dedicated queue per handler name (with an optional `partition` suffix), never a single shared group queue.
+- A worker that serves that name consumes it, runs the handler, and adds the result to the shared `<prefix>:results` queue.
 - The engine-side instance consumes results and checkpoints them.
 - Liveness flows on `<prefix>:heartbeats`; cross-instance control on `<prefix>:control`.
 
 The default `prefix` is `durable` and the default `pollIntervalMs` is `200`.
 
-Run **one instance engine-side** (consumes results) and **one per worker process** (registers handlers for its group):
+Run **one instance engine-side** (consumes results) and **one or more worker processes** that serve the step handlers (each subscribes to a task queue per handler name it serves):
 
 ```ts title="config/durable.ts (engine side)"
 import { defineConfig, transports } from '@adonis-agora/durable'
@@ -51,10 +51,10 @@ export default defineConfig({
 })
 ```
 
-Run **one instance engine-side** (consumes results) and **one per worker process** (registers handlers for its group). The idiomatic worker is the bundled ace command, which boots the app and reads the same `config/durable.ts` — no adapter wiring to repeat:
+The idiomatic worker is the bundled ace command, which boots the app and reads the same `config/durable.ts` — no adapter wiring to repeat. It serves whatever step handlers the app registers (the `app/steps` [`@Step`/`defineStep` convention](/docs/durable/concepts/workflows-and-steps#serving-a-step-handler) is auto-discovered), subscribing to a task queue per served name:
 
 ```bash title="a separate worker process"
-node ace durable:work --group=payments
+node ace durable:work
 ```
 
 <Callout type="info">
@@ -67,8 +67,9 @@ Both the engine and the `durable:work` worker resolve the adapter from the `conn
 | --- | --- | --- |
 | `connection` | `config/queue.ts` `default` | Name of the `@adonisjs/queue` connection (a key of that file's `adapters`) whose adapter this transport uses. |
 | `adapter` | — | Escape hatch: a raw `@adonisjs/queue` adapter factory, used instead of resolving from `config/queue.ts`. Takes precedence over `connection`. |
-| `group` | — | The worker group this instance serves — required to register `handle()`s. |
-| `prefix` | `'durable'` | Namespaces the queues (`<prefix>:tasks:<group>`, `<prefix>:results`, …). |
+| `group` | — | **Deprecated.** Steps route by handler name, so an instance serves whatever names it registers — no group to declare. Accepted for back-compat and otherwise ignored; use `partition` for isolation. |
+| `partition` | — | Optional isolation partition suffixing every per-handler task queue this worker subscribes to (`<name>@<partition>`), matching a dispatch's `partition` — so one backend can host several pools serving the same handler name without their tasks crossing. |
+| `prefix` | `'durable'` | Namespaces the queues (`<prefix>:tasks:<token>`, `<prefix>:results`, …). |
 | `pollIntervalMs` | `200` | Poll interval in ms between queue reads. |
 | `instanceId` | random uuid | Stable process id stamped on heartbeats and control messages. |
 
@@ -78,12 +79,12 @@ Both the engine and the `durable:work` worker resolve the adapter from the `conn
 
 | Queue | Direction | Purpose |
 | --- | --- | --- |
-| `<prefix>:tasks:<group>` | engine → workers | step dispatch, per group |
+| `<prefix>:tasks:<token>` | engine → workers | step dispatch, one queue per handler name (`tenantGroup(sanitizeQueueToken(name), partition)`) |
 | `<prefix>:results` | workers → engine | step results |
 | `<prefix>:heartbeats` | workers → engine | liveness for `timeoutMs` steps |
 | `<prefix>:control` | bidirectional | lifecycle events + cancellation (best-effort) |
 
-Because the payload is the documented `RemoteTask` / `StepResult` JSON, multiple worker processes can share the same queues — scale out by running more `durable:work` processes that register the same group's handlers.
+Because the payload is the documented `RemoteTask` / `StepResult` JSON, multiple worker processes can share the same queues — scale out by running more `durable:work` processes that serve the same step names.
 
 ## Namespaces — sharing one broker across pools
 
@@ -101,8 +102,8 @@ export default defineConfig({
 
 | `namespace` | Effective queue names |
 | --- | --- |
-| `'default'` (or unset) | `durable:tasks:<group>`, `durable:results`, … — **byte-identical** to a single-pool deployment |
-| `'tenant-a'` | `durable-tenant-a:tasks:<group>`, `durable-tenant-a:results`, … |
+| `'default'` (or unset) | `durable:tasks:<token>`, `durable:results`, … — **byte-identical** to a single-pool deployment |
+| `'tenant-a'` | `durable-tenant-a:tasks:<token>`, `durable-tenant-a:results`, … |
 
 A non-`'default'` namespace inserts a `-<namespace>` segment after the prefix; `'default'` (and unset) keeps the exact un-namespaced names, so **existing deployments are unaffected — zero migration**. An engine and its `durable:work` workers must run the same namespace to share queues.
 

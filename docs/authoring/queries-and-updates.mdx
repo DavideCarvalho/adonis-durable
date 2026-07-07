@@ -20,10 +20,10 @@ Inside the workflow body, call `ctx.setEvent(key, value)` to publish a named, qu
 engine.register('video-encode', '1', async (ctx, job: EncodeJob) => {
   await ctx.setEvent('progress', { phase: 'probing', pct: 0 })
 
-  const segments = await ctx.step('probe', () => encoder.probe(job.src))
+  const segments = await ctx.localStep('probe', () => encoder.probe(job.src))
 
   for (let i = 0; i < segments.length; i++) {
-    await ctx.call(encodeSegment, { jobId: job.id, segment: segments[i] })
+    await ctx.step(encodeSegment, { jobId: job.id, segment: segments[i] })
     // Publish progress after each segment — readers see the latest snapshot.
     await ctx.setEvent('progress', {
       phase: 'encoding',
@@ -90,7 +90,7 @@ engine.register('expense-approval', '1', async (ctx, expense: Expense) => {
     return { reimbursed: false }
   }
 
-  await ctx.step('reimburse', () => ledger.reimburse(expense, decision.approver))
+  await ctx.localStep('reimburse', () => ledger.reimburse(expense, decision.approver))
   await ctx.setEvent('status', { state: 'reimbursed', by: decision.approver })
   return { reimbursed: true }
 })

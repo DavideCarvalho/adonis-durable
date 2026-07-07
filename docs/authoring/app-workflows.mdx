@@ -29,7 +29,7 @@ interface OrderInput {
 @Workflow({ name: 'order', version: '1' })
 export default class OrderWorkflow {
   async run(ctx: WorkflowCtx, input: OrderInput) {
-    // Compose ctx.step / ctx.call / ctx.child / ctx.sleep …
+    // Compose ctx.step / ctx.localStep / ctx.child / ctx.sleep …
     return input
   }
 }

@@ -49,10 +49,10 @@ import { WorkflowEngine } from '@adonis-agora/durable'
 const engine = await app.container.make(WorkflowEngine)
 
 engine.register('checkout', '1', async (ctx, order: { id: string; total: number }) => {
-  await ctx.step('reserveStock', async () => ({ reserved: true }))
+  await ctx.localStep('reserveStock', async () => ({ reserved: true }))
   const approval = await ctx.waitForSignal<{ approved: boolean }>(`approve:${order.id}`)
   if (!approval.approved) return { status: 'rejected' }
-  await ctx.step('ship', async () => ({ shipped: true }))
+  await ctx.localStep('ship', async () => ({ shipped: true }))
   return { status: 'shipped' }
 })
 ```
@@ -95,22 +95,27 @@ Need the outcome inline instead? `await engine.waitForRun(runId)` resolves once 
 
 ## Steps across processes
 
-A step does not have to run in the same process. Declare a **remote step** with a typed, validated contract and call it with `ctx.call` — the engine dispatches it over a pluggable [transport](/docs/durable/transports) to wherever its handler lives:
+A step does not have to run in the same process. `ctx.step(refOrName, input)` is **always dispatched**, routed to a handler by **name** over a pluggable [transport](/docs/durable/transports) to wherever it lives. Author the handler as a `@Step` class under `app/steps`, or with `defineStep` for a typed ref:
 
-```ts title="app/durable/steps.ts"
-import { remoteStep } from '@adonis-agora/durable'
+```ts title="app/steps/charge.ts"
+import { defineStep } from '@adonis-agora/durable'
 import { z } from 'zod'
 
-export const chargeCard = remoteStep({
-  name: 'payments.charge-card',
-  group: 'payments',
-  input: z.object({ orderId: z.string(), amountCents: z.number().int() }),
-  output: z.object({ chargeId: z.string() }),
-  retries: 3,
-})
+export const chargeCard = defineStep(
+  'payments:charge-card',
+  async (input: { orderId: string; amountCents: number }) => ({ chargeId: await charge(input) }),
+  {
+    input: z.object({ orderId: z.string(), amountCents: z.number().int() }),
+    output: z.object({ chargeId: z.string() }),
+    retries: 3,
+  },
+)
+
+// in the workflow:
+const charge = await ctx.step(chargeCard, { orderId: order.id, amountCents: order.total })
 ```
 
-The handler is registered on a worker-side transport with `transport.handle(name, fn)`, decoupled from the workflow. With the in-process transport it runs in the same process; swap the transport for the [queue transport](/docs/durable/transports/queue) to move it to a separate worker — without changing the workflow code.
+Steps under `app/steps` are served by name automatically; the escape hatch is `transport.handle(name, fn)`. With the in-process transport a step runs in the same process; swap the transport for the [queue transport](/docs/durable/transports/queue) to move it to a separate worker — without changing the workflow code.
 
 ## What you get
 

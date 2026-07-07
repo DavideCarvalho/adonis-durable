@@ -20,8 +20,8 @@ Inside a workflow body, these are banned, and the fix is the engine's checkpoint
 | `Date.now()` | wall clock, different every replay | `await ctx.now()` |
 | `performance.now()` | monotonic clock, different every replay | `await ctx.now()` |
 | `new Date()` (no args) | wraps `Date.now()` | `new Date(await ctx.now())` |
-| `Math.random()` | fresh entropy every replay | `await ctx.random()` |
-| `crypto.randomUUID()` | fresh entropy every replay | `await ctx.uuid()` |
+| `Math.random()` | fresh entropy every replay | `await ctx.sideEffect(() => Math.random())` |
+| `crypto.randomUUID()` | fresh entropy every replay | `await ctx.sideEffect(() => crypto.randomUUID())` |
 
 ```ts
 // ✗ corrupts the run on replay
@@ -35,11 +35,13 @@ engine.register('checkout', '1', async (ctx, order) => {
 // ✓ deterministic — recorded once, then replayed
 engine.register('checkout', '1', async (ctx, order) => {
   const startedAt = await ctx.now()
-  const idempotencyKey = await ctx.uuid()
-  const jitter = await ctx.random()
+  const idempotencyKey = await ctx.sideEffect(() => crypto.randomUUID())
+  const jitter = await ctx.sideEffect(() => Math.random())
   const at = new Date(await ctx.now())
 })
 ```
+
+`ctx.now()` covers timestamps; `ctx.sideEffect(fn)` captures any other generated value once and replays it verbatim (it replaces the removed `ctx.random()`/`ctx.uuid()` — pass your own generator).
 
 ## What it knows about a workflow body
 
@@ -48,7 +50,7 @@ The `no-nondeterminism` rule is **AST-scoped** — it only fires *inside a workf
 - **The function form** — the function passed to `engine.register(name, version, fn)` (and `registerRemote` / `registerEntity`), where the receiver reads as a workflow engine (`engine`, `workflowEngine`, `this.engine`, …). An unrelated `someRegistry.register(...)` is left alone.
 - **The class form** — the `run` method of a class decorated with `@Workflow` (whether written `@Workflow` or `@Workflow({ ... })`).
 
-Crucially, the rule **stops at a `ctx.step(...)` or `ctx.task(...)` callback boundary**: code inside a checkpointed step runs once and its whole result is recorded, so a `Date.now()` there is fine. Only the deterministic orchestration prefix is checked, so you can enable the rule across your whole `**/*.ts` glob without false positives.
+Crucially, the rule **stops at a `ctx.localStep(...)`, `ctx.task(...)`, or `ctx.sideEffect(...)` callback boundary**: those are the checkpoint-callback primitives whose body runs once and whose whole result is recorded, so a `Date.now()` inside one is fine. (`ctx.step` is **not** a boundary — it is the always-dispatched step whose second argument is data, not a callback.) Only the deterministic orchestration prefix is checked, so you can enable the rule across your whole `**/*.ts` glob without false positives.
 
 ## ESLint (flat config)
 

@@ -13,7 +13,7 @@ There are two ways to call one, depending on whether the parent needs the result
 
 ```ts
 engine.register('checkout', '1', async (ctx, order: Order) => {
-  const payment = await ctx.step('charge', () => payments.charge(order))
+  const payment = await ctx.localStep('charge', () => payments.charge(order))
   // Hand shipping to its own workflow and wait for the tracking number.
   const shipment = await ctx.child<{ tracking: string }>('shipping', { orderId: order.id })
   return { paymentId: payment.id, tracking: shipment.tracking }
@@ -39,7 +39,7 @@ Both forms take an optional third `childId` argument; it defaults to a determini
 
 ```ts
 engine.register('publish-post', '1', async (ctx, post: Post) => {
-  await ctx.step('publish', () => posts.publish(post))
+  await ctx.localStep('publish', () => posts.publish(post))
   // Kick off indexing + notifications; don't make publishing wait on them.
   await ctx.startChild('reindex-search', { postId: post.id })
   await ctx.startChild('notify-followers', { postId: post.id })
@@ -86,7 +86,7 @@ A workflow that would otherwise loop forever (a long-lived entity, a poll loop) 
 
 ```ts
 engine.register('counter', '1', async (ctx, input: { n: number }) => {
-  await ctx.step(`work-${input.n}`, async () => input.n)
+  await ctx.localStep(`work-${input.n}`, async () => input.n)
   if (input.n < 3) await ctx.continueAsNew({ n: input.n + 1 }) // → runId~1, runId~2, …
   return `done at ${input.n}`
 })

@@ -1,6 +1,6 @@
 ---
 title: Versioning & determinism
-description: Keeping in-flight runs replay-safe across code changes — workflow versions for breaking changes, the NonDeterminismError guard, the deterministic now/random/uuid sources, and ctx.patched for guarding an in-place change without a new version.
+description: Keeping in-flight runs replay-safe across code changes — workflow versions for breaking changes, the NonDeterminismError guard, the deterministic ctx.now and ctx.sideEffect capture sources, and ctx.patched for guarding an in-place change without a new version.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
@@ -18,21 +18,21 @@ The engine pairs each replayed step with the checkpoint recorded at that logical
 
 This is a guard, not a fix. It tells you a code change is incompatible with runs that started under the old code. The two tools below let you make the change *anyway* — safely.
 
-## Deterministic sources — `now`, `random`, `uuid`
+## Deterministic sources — `now` & `sideEffect`
 
 The most common way to break replay is reading a value that changes every time the body runs. A raw `Date.now()`, `Math.random()`, or `crypto.randomUUID()` returns a different value on each replay, which silently corrupts a durable run. Use the context's deterministic sources instead; each records its value on the first run and **replays the same value** afterwards:
 
 ```ts
 engine.register('invoice', '1', async (ctx, order: Order) => {
-  const issuedAt = await ctx.now()           // epoch ms — captured once, replayed verbatim
-  const nonce = await ctx.uuid()             // deterministic UUID
-  const sampled = (await ctx.random()) < 0.1 // deterministic [0, 1)
+  const issuedAt = await ctx.now()                              // epoch ms — captured once, replayed verbatim
+  const nonce = await ctx.sideEffect(() => crypto.randomUUID()) // any generated value, captured once
+  const sampled = (await ctx.sideEffect(() => Math.random())) < 0.1
 
-  await ctx.step('issue', () => issue(order, { issuedAt, nonce, sampled }))
+  await ctx.localStep('issue', () => issue(order, { issuedAt, nonce, sampled }))
 })
 ```
 
-Each of these is itself a checkpointed step, so the value is captured the first time and returned from the checkpoint on every replay. Reach for `Date.now()`/`Math.random()`/`crypto.randomUUID()` only *inside* a `ctx.step` body (whose whole result is checkpointed) — never in the deterministic prefix of the workflow body.
+`ctx.now()` is the deterministic wall-clock; `ctx.sideEffect(fn)` runs `fn` once, checkpoints its result, and replays that same value without re-running `fn` — wrap **any** non-determinism you control (a UUID/ULID, `Math.random()`, a config/env read) in it. (It replaces the removed `ctx.random()` and `ctx.uuid()`.) Each is captured the first time and returned from the checkpoint on every replay. Reach for a raw `Date.now()`/`Math.random()`/`crypto.randomUUID()` only *inside* a step body (whose whole result is checkpointed) — never in the deterministic prefix of the workflow body.
 
 <Callout type="warn">
 Enable the [`@adonis-agora/durable-eslint-plugin`](/docs/durable/tooling/linting) so these mistakes are caught at author time, in your editor and CI, rather than at replay time.
@@ -62,15 +62,15 @@ Versioning is the right tool when the change is structural and you're prepared t
 
 ```ts
 engine.register('checkout', '1', async (ctx, order: Order) => {
-  const quote = await ctx.step('quote', () => price(order))
+  const quote = await ctx.localStep('quote', () => price(order))
 
   if (await ctx.patched('add-fraud-check')) {
     // New behaviour: runs that started AFTER this code shipped take this branch.
-    const risk = await ctx.call(scoreFraud, { orderId: order.id })
+    const risk = await ctx.step(scoreFraud, { orderId: order.id })
     if (risk.score > 0.9) throw new FatalError('high fraud risk', 'fraud')
   }
 
-  await ctx.call(chargeCard, { orderId: order.id, amountCents: quote.total })
+  await ctx.step(chargeCard, { orderId: order.id, amountCents: quote.total })
 })
 ```
 

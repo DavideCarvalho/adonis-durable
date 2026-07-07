@@ -3,21 +3,21 @@ title: Sagas & compensation
 description: "Undo the side effects of a partially-completed run with per-step compensate callbacks that run in reverse on failure, compensationRetries for transient undos, compensate:<step> events, and compensating cancellation via engine.cancel(runId, { compensate: true })."
 ---
 
-A durable run often performs several irreversible side effects in sequence — reserve inventory, charge a card, allocate a shipment. If a later step fails, the earlier effects are still out there in the world, and "the run failed" is not an acceptable end state when money has moved. The saga pattern handles this: alongside each step that *does* something, you register how to *undo* it, and when the run fails the engine runs those undos in reverse order. `@adonis-agora/durable` builds this in via a `compensate` option on `ctx.step`.
+A durable run often performs several irreversible side effects in sequence — reserve inventory, charge a card, allocate a shipment. If a later step fails, the earlier effects are still out there in the world, and "the run failed" is not an acceptable end state when money has moved. The saga pattern handles this: alongside each step that *does* something, you register how to *undo* it, and when the run fails the engine runs those undos in reverse order. `@adonis-agora/durable` builds this in via a `compensate` option — a **closure** on `ctx.localStep` for in-process work, or a **step ref** on the dispatched `ctx.step`.
 
-## Registering a compensation
+## Local compensation — a closure on `ctx.localStep`
 
-Attach a `compensate` callback to a local step. The callback is registered when the step completes; if the run later fails, the engine runs every registered compensation in **reverse order** (last completed step undone first), restoring the world before failing the run.
+Attach a `compensate` callback to an in-process [`ctx.localStep`](/docs/durable/concepts/workflows-and-steps#local-in-process-steps). The callback is registered when the step completes; if the run later fails, the engine runs every registered compensation in **reverse order** (last completed step undone first), restoring the world before failing the run.
 
 ```ts
 engine.register('checkout', '1', async (ctx, order: Order) => {
-  const reservation = await ctx.step(
+  const reservation = await ctx.localStep(
     'reserve-inventory',
     () => inventory.reserve(order.items),
     { compensate: () => inventory.release(order.items) },
   )
 
-  const charge = await ctx.step(
+  const charge = await ctx.localStep(
     'charge-card',
     () => payments.charge(order.customerId, order.totalCents),
     { compensate: () => payments.refund(order.customerId, order.totalCents) },
@@ -25,7 +25,7 @@ engine.register('checkout', '1', async (ctx, order: Order) => {
 
   // If this step throws, the engine runs the two compensations above in reverse:
   // refund the card, then release the inventory — then fails the run.
-  const label = await ctx.step('allocate-shipment', () => shipping.allocate(order, reservation.id))
+  const label = await ctx.localStep('allocate-shipment', () => shipping.allocate(order, reservation.id))
 
   return { chargeId: charge.id, tracking: label.tracking }
 })
@@ -33,7 +33,36 @@ engine.register('checkout', '1', async (ctx, order: Order) => {
 
 If `allocate-shipment` throws (and exhausts its retries, or throws a `FatalError`), the run fails — but before it does, the engine refunds the card and releases the inventory. The saga is reconstructed from the run's history on replay, so it works correctly even after a crash: the steps that completed are the ones whose compensations get registered.
 
-> Compensations are for **local** steps. A remote step is already deduplicated by its deterministic `stepId` (`runId:seq`), which workers can use as an idempotency key, so to compensate remote work, wrap the orchestration in a local step (or model the undo as its own remote step invoked from a compensating local step).
+## Dispatched compensation — a step ref on `ctx.step`
+
+A dispatched [`ctx.step`](/docs/durable/concepts/workflows-and-steps#steps) undoes itself with a `compensate` **step ref** — a `@Step`/`defineStep` handler (or its name) that runs as its own dispatched step at unwind time. The undo handler receives a `StepUndo` envelope — `{ input, output }` — of the step it compensates, so it can reverse exactly what ran:
+
+```ts title="app/steps/booking_steps.ts"
+import { Step } from '@adonis-agora/durable'
+import type { UndoOf } from '@adonis-agora/durable'
+
+export default class BookingSteps {
+  @Step('flights:book')
+  async book(input: { flightId: string; pax: number }) {
+    return { bookingRef: await airline.book(input) }
+  }
+
+  // The undo — typed to the step it compensates via UndoOf<...>.
+  @Step('flights:cancel')
+  async cancel(undo: UndoOf<BookingSteps['book']>) {
+    await airline.cancel(undo.output.bookingRef)
+  }
+}
+
+// in the workflow (step class injected as `this.booking`):
+const booking = await ctx.step(this.booking.book, { flightId, pax }, {
+  compensate: this.booking.cancel, // dispatched in reverse if the run later fails
+})
+```
+
+Both kinds of compensation live in the same reverse-order stack: whether a step registered a local closure or a dispatched undo ref, the engine unwinds them last-completed-first when the run fails.
+
+> A dispatched step is already deduplicated by its deterministic `stepId` (`runId:seq`), which workers can use as an idempotency key — so there's no separate idempotency-key option.
 
 ## Retrying a transient undo
 

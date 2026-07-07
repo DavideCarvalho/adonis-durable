@@ -48,10 +48,10 @@ interface DeadLetter {
 }
 
 engine.register('dlq', '1', async (ctx, dl: DeadLetter) => {
-  await ctx.step('alert', () =>
+  await ctx.localStep('alert', () =>
     alerts.page('durable-dead-letter', { runId: dl.deadRunId, workflow: dl.workflow, error: dl.error?.message }),
   )
-  const ticket = await ctx.step('open-ticket', () =>
+  const ticket = await ctx.localStep('open-ticket', () =>
     tickets.create({
       title: `Dead-lettered run ${dl.deadRunId} (${dl.workflow})`,
       body: dl.error?.message ?? 'unknown error',

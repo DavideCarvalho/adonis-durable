@@ -59,8 +59,8 @@ The referenced workflows are ordinary registered workflows:
 
 ```ts
 engine.register('daily-report', '1', async (ctx) => {
-  const rows = await ctx.step('gather', () => reports.gatherYesterday())
-  await ctx.step('email', () => reports.email(rows))
+  const rows = await ctx.localStep('gather', () => reports.gatherYesterday())
+  await ctx.localStep('email', () => reports.email(rows))
   return { rows: rows.length }
 })
 ```

@@ -5,7 +5,7 @@ description: How remote steps travel to workers. Transports are config-driven dr
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-A **transport** is how `ctx.call` reaches a step handler and how the result comes back. It's a pluggable driver (`dispatch`, `onResult`, `onHeartbeat`), independent of the [state store](/docs/durable/stores) — mix any transport with any store.
+A **transport** is how a dispatched `ctx.step` reaches a step handler and how the result comes back. It's a pluggable driver (`dispatch`, `onResult`, `onHeartbeat`), independent of the [state store](/docs/durable/stores) — mix any transport with any store.
 
 Transports are **config-driven drivers**: list the ones you use under `transports` in `config/durable.ts`, built with the `transports` factory, and pick the active one by name with `transport`. Each driver lazily imports its optional peer (`@adonisjs/queue`, `@adonisjs/lucid`) **only when selected**, so nothing extra is loaded for the drivers you don't use.
 
@@ -29,7 +29,7 @@ export default defineConfig({
   transports: {
     memory: transports.memory(),
     // `connection` names an adapter from config/queue.ts; `db` uses a Lucid connection.
-    queue: transports.queue({ connection: 'redis', group: 'workers' }),
+    queue: transports.queue({ connection: 'redis' }),
     db: transports.db(),
   },
 })
@@ -45,18 +45,18 @@ Switching transports is a one-line change to `transport` — the workflow code n
 import { InMemoryTransport } from '@adonis-agora/durable'
 
 const transport = new InMemoryTransport()
-transport.handle('payments.charge-card', async (input) => ({ chargeId: await charge(input) }))
+transport.handle('payments:charge-card', async (input) => ({ chargeId: await charge(input) }))
 ```
 
 Great for splitting a workflow across modules in one app, and for [tests](/docs/durable/testing). When you need the step to run elsewhere, select the `queue` or `db` driver in `config/durable.ts`.
 
 ## Pinning a transport per step (failover pools)
 
-At the **engine** level a single instance can dispatch over an ordered pool of named transports and fail over between them; a step pins one with `ctx.call(step, input, { transport: id })`:
+At the **engine** level a single instance can dispatch over an ordered pool of named transports and fail over between them; a step pins one with `ctx.step(step, input, { transport: id })`:
 
 ```ts
 // force this dispatch onto the 'db' transport:
-const result = await ctx.call(heavyStep, input, { transport: 'db' })
+const result = await ctx.step(heavyStep, input, { transport: 'db' })
 ```
 
 The id of the transport that accepted the dispatch is stamped on the task as `task.transport`, so a worker consuming several transports replies on the **matching** one — failover is symmetric.
