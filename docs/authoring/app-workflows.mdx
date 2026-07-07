@@ -1,14 +1,16 @@
 ---
 title: app/workflows & make:workflow
-description: The class-based authoring convention — a @Workflow class per file under app/workflows, auto-registered at boot, scaffolded by make:workflow. The parallel to @adonisjs/queue's app/jobs and make:job.
+description: The class-based authoring convention — a BaseWorkflow subclass per file under app/workflows with a static workflow config, auto-registered at boot, scaffolded by make:workflow. The @Workflow decorator remains a supported alias. The parallel to @adonisjs/queue's app/jobs and make:job.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-The **recommended** way to author a workflow is a `@Workflow` class under `app/workflows/`, mirroring how
+The **recommended** way to author a workflow is a class under `app/workflows/` that extends `BaseWorkflow` and
+declares its identity with a `static workflow = { name, version }`, mirroring how
 [`@adonisjs/queue`](https://docs.adonisjs.com/guides/digging-deeper/queues) authors a job per file under
-`app/jobs/`. The durable provider scans `app/workflows/` at boot and registers every exported `@Workflow`
-class on the engine automatically — you never call `engine.register(...)` by hand.
+`app/jobs/`. The durable provider scans `app/workflows/` at boot and registers every exported workflow class on
+the engine automatically — you never call `engine.register(...)` by hand.
 
 ## Scaffold a workflow
 
@@ -19,15 +21,16 @@ node ace make:workflow order
 This emits `app/workflows/order_workflow.ts`:
 
 ```ts
-import { Workflow } from '@adonis-agora/durable'
+import { BaseWorkflow } from '@adonis-agora/durable'
 import type { WorkflowCtx } from '@adonis-agora/durable'
 
 interface OrderInput {
   // Define your workflow input here
 }
 
-@Workflow({ name: 'order', version: '1' })
-export default class OrderWorkflow {
+export default class OrderWorkflow extends BaseWorkflow {
+  static workflow = { name: 'order', version: '1' }
+
   async run(ctx: WorkflowCtx, input: OrderInput) {
     // Compose ctx.step / ctx.localStep / ctx.child / ctx.sleep …
     return input
@@ -37,20 +40,85 @@ export default class OrderWorkflow {
 
 The class's `run(ctx, input)` **is** the workflow body — the same deterministic `(ctx, input) => …` that
 [`engine.register`](/docs/durable/concepts/workflows-and-steps) takes, just attached to a class so a class
-ref (`engine.start(OrderWorkflow)`, `ctx.child(OrderWorkflow)`) carries its input/output types.
+ref (`OrderWorkflow.dispatch(input)`, `ctx.child(OrderWorkflow)`) carries its input/output types. The
+`static workflow` object accepts the same options as the decorator and `register` — `name`, `version`, and
+optional `tags` / `onEvent` / `executionTimeout`.
+
+## The `@Workflow` decorator (alias)
+
+`@Workflow({ name, version })` remains fully supported — it is an **alias** that writes the same metadata as
+`static workflow`. Both forms resolve through `workflowName()` and `app/workflows` discovery identically, so
+you can mix them freely and migrate at your own pace.
+
+<Tabs items={['static workflow (recommended)', '@Workflow (alias)']}>
+
+<Tab value="static workflow (recommended)">
+
+```ts title="app/workflows/order_workflow.ts"
+import { BaseWorkflow } from '@adonis-agora/durable'
+import type { WorkflowCtx } from '@adonis-agora/durable'
+
+export default class OrderWorkflow extends BaseWorkflow {
+  static workflow = { name: 'order', version: '1' }
+
+  async run(ctx: WorkflowCtx, input: OrderInput) {
+    return input
+  }
+}
+```
+
+</Tab>
+
+<Tab value="@Workflow (alias)">
+
+```ts title="app/workflows/order_workflow.ts"
+import { Workflow } from '@adonis-agora/durable'
+import type { WorkflowCtx } from '@adonis-agora/durable'
+
+@Workflow({ name: 'order', version: '1' })
+export default class OrderWorkflow {
+  async run(ctx: WorkflowCtx, input: OrderInput) {
+    return input
+  }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+<Callout type="info" title="No breaking change">
+The `@Workflow` decorator continues to work exactly as before. `BaseWorkflow` + `static workflow` is simply the
+new primary idiom — decorator-free, queue-style — and both compile to the same registered metadata.
+</Callout>
 
 ## Auto-registration
 
 At boot the provider scans the configured directory (default `app/workflows`), imports each module, and
-registers every exported `@Workflow` class — including the version, `tags`, `executionTimeout` and `onEvent`
-from the decorator options. Start a run by the registered **name** or the **class**:
+registers every exported workflow class — decorator or `static workflow`, either way — including the version,
+`tags`, `executionTimeout` and `onEvent` from its options.
+
+## Running a workflow
+
+The ergonomic way to run or compose a registered class is its context-aware statics, `Wf.dispatch` and
+`Wf.start`:
 
 ```ts
-import engine from '@adonis-agora/durable/services/main'
+// fire-and-forget a top-level run from a controller/service — returns { runId }
+const { runId } = await OrderWorkflow.dispatch(input)
 
-await engine.start('order', input, runId)      // by name
-await engine.start(OrderWorkflow, input, runId) // by class (typed)
+// block until the run settles and return its result (scripts / short runs)
+const result = await OrderWorkflow.start(input)
 ```
+
+Both are **context-aware**: called inside a running workflow body they route to a child instead of the engine.
+See [Child workflows](/docs/durable/authoring/child-workflows) for the full semantics table.
+
+<Callout type="info">
+`engine.start(OrderWorkflow, input, runId)` remains the lower-level equivalent — resolve the engine from the
+container and start by class (typed) or by registered **name** (`engine.start('order', input, runId)`).
+`Wf.dispatch` / `Wf.start` resolve the engine for you.
+</Callout>
 
 Configure or disable discovery in `config/durable.ts`:
 
@@ -62,7 +130,7 @@ export default defineConfig({
 
 <Callout type="info">
 `engine.register(name, version, fn)` remains the low-level escape hatch (cross-runtime workflows, dynamic
-registration). The `@Workflow` class + `app/workflows` convention is the preferred authoring path for
+registration). The `BaseWorkflow` class + `app/workflows` convention is the preferred authoring path for
 same-runtime TypeScript workflows.
 </Callout>
 
@@ -70,5 +138,5 @@ same-runtime TypeScript workflows.
 
 The convention is a deliberate parallel, so switching a `@adonisjs/queue` job to a durable workflow is a
 mechanical move — `app/jobs/<name>.ts` → `app/workflows/<name>_workflow.ts`, `make:job` → `make:workflow`,
-`Job.execute()` → `Workflow.run(ctx, input)` — and you gain durable checkpoints, replay, timers, signals and
-saga compensation on top.
+`Job.execute()` → `Workflow.run(ctx, input)`, `Job.dispatch()` → `Workflow.dispatch(input)` — and you gain
+durable checkpoints, replay, timers, signals and saga compensation on top.

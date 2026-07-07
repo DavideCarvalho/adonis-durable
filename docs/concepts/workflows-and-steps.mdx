@@ -20,6 +20,14 @@ engine.register('checkout', '1', async (ctx: WorkflowCtx, order: Order) => {
 
 `register(name, version, fn, opts?)` takes an options object for `tags`, an `executionTimeout` (`'30s'` or ms), a `singleton` config, input validation, and event triggers. Start runs with `engine.start('checkout', input, runId)` — pass the registered **name** and a stable `runId`. (Starting the same `runId` twice is a no-op, which is what makes [scheduling](/docs/durable/authoring/scheduling) and webhooks idempotent.)
 
+<Callout type="info" title="The idiomatic form">
+`engine.register` is the low-level primitive. The recommended way to author is a `BaseWorkflow` class under
+`app/workflows/` with a `static workflow = { name, version }` (auto-registered at boot), run with the
+context-aware statics `Wf.dispatch(input)` (fire-and-forget → `{ runId }`) and `Wf.start(input)` (blocks until
+the run settles → result). The `@Workflow` decorator remains a supported alias. See
+[app/workflows](/docs/durable/authoring/app-workflows).
+</Callout>
+
 <Callout type="info">
 Need dependency injection in a step? Resolve services from the container, or close over them at registration time. The workflow body must stay deterministic — do the I/O inside a step, not in the orchestration prefix.
 </Callout>

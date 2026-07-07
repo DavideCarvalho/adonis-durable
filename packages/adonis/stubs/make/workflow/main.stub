@@ -6,15 +6,16 @@
     to: app.makePath('app/workflows', entity.path, workflowFileName + '.ts')
   })
 }}}
-import { Workflow } from '@adonis-agora/durable'
+import { BaseWorkflow } from '@adonis-agora/durable'
 import type { WorkflowCtx } from '@adonis-agora/durable'
 
 interface {{ workflowName }}Input {
   // Define your workflow input here
 }
 
-@Workflow({ name: '{{ registeredName }}', version: '1' })
-export default class {{ workflowName }}Workflow {
+export default class {{ workflowName }}Workflow extends BaseWorkflow {
+  static workflow = { name: '{{ registeredName }}', version: '1' }
+
   async run(ctx: WorkflowCtx, input: {{ workflowName }}Input) {
     // Your workflow logic here — compose ctx.step / ctx.localStep / ctx.child / ctx.sleep …
     return input

@@ -1,11 +1,64 @@
 ---
 title: Child workflows
-description: Compose workflows by calling other workflows — await a child's result with ctx.child, or kick one off fire-and-forget with ctx.startChild. Pass a registered name (or a typed workflow class) and an optional stable child id.
+description: Compose workflows by calling other workflows — await a child's result with Inner.start (or ctx.child), or kick one off fire-and-forget with Inner.dispatch (or ctx.startChild). The same statics work at the top level, context-aware.
 ---
+
+import { Callout } from 'fumadocs-ui/components/callout';
 
 A workflow can run **another workflow** as a child — to break a big process into reusable pieces, to fan out work, or to hand part of the job to a workflow that runs elsewhere. Children are durable runs in their own right: their own history, retries, and dashboard entry.
 
 There are two ways to call one, depending on whether the parent needs the result.
+
+## `Inner.start` / `Inner.dispatch` — the ergonomic form
+
+When the child is a [`BaseWorkflow` class](/docs/durable/authoring/app-workflows) you can import, its statics are
+the shortest way to compose — and they are **context-aware**, so the same call does the right thing inside a
+workflow versus outside one:
+
+```ts
+export default class CheckoutWorkflow extends BaseWorkflow {
+  static workflow = { name: 'checkout', version: '1' }
+
+  async run(ctx: WorkflowCtx, order: Order) {
+    const kyc = await KycWorkflow.start({ userId: order.userId }) // linked child — awaits the result
+    await AuditWorkflow.dispatch({ orderId: order.id })           // fire-and-forget child
+    return { verified: kyc.passed }
+  }
+}
+```
+
+- **`Inner.start(input, opts?)`** = "I want the result." Inside a running workflow it creates a **linked child**
+  (the parent suspends until the child settles, then resumes with its result) — exactly `ctx.child(Inner, input)`.
+- **`Inner.dispatch(input, opts?)`** = fire-and-forget. Inside a running workflow it kicks off a child and
+  returns `{ runId }` while the parent keeps going — exactly `ctx.startChild(Inner, input)`.
+
+The same two statics also run a **top-level** run from a controller/service (`Wf.dispatch` returns `{ runId }`;
+`Wf.start` blocks until the run settles and returns its result). One consistent rule — `.start` = "give me the
+result", `.dispatch` = "fire and forget" — in both contexts:
+
+| Static call | OUTSIDE a workflow (controller / service / script) | INSIDE a running workflow body |
+| --- | --- | --- |
+| `Wf.start(input, opts?)` | `engine.start` + waits for the run to settle → **returns the result** | **linked child** (`ctx.child`) — parent suspends until it settles, returns the child's result |
+| `Wf.dispatch(input, opts?)` | enqueues a top-level run → **fire-and-forget**, returns `{ runId }` | fire-and-forget child (`ctx.startChild`) → returns `{ runId }`, parent keeps going |
+
+<Callout type="info" title="Why the same call is context-aware">
+Inside a running body it is **required** to route through the child path — calling the engine directly from a
+workflow would break determinism. The static detects the ambient run and does this for you, so `Inner.start` /
+`Inner.dispatch` are always safe to call from either place. `ctx.child` / `ctx.startChild` are the underlying
+primitives and stay available.
+</Callout>
+
+<Callout type="warn" title="opts.runId — outside vs inside">
+`opts` is `{ runId? }` plus the usual start options (priority, namespace, …). **Outside** a workflow, `runId`
+is auto-generated when omitted, and acts as an idempotency key when you provide one. **Inside** a workflow the
+child id is derived deterministically from the call position (replay-stable) when omitted — do **not** pass a
+random one, as that would break replay. Pass an explicit stable id only when you deliberately want to join a
+specific child (see [scatter-gather](#scatter-gather-start-many-then-join)).
+</Callout>
+
+The rest of this page documents `ctx.child` / `ctx.startChild` — the primitives the statics delegate to. Use
+them directly when you only have the child's **name** string (no class to import), or when the calling code is
+already an `engine.register(...)` body.
 
 ## `ctx.child` — run a child and await its result
 
@@ -83,6 +136,9 @@ engine.register('batch', '1', async (ctx, batch: Batch) => {
 | Parent waits for the result | ✅ suspends until the child finishes | ❌ returns the id immediately |
 | Child failure affects the parent | ✅ throws in the parent | ❌ independent (inspect/retry the child run) |
 | Typical use | a sub-task whose output you need | side work; scatter-gather (then join with `child`) |
+
+`Inner.start(input)` and `Inner.dispatch(input)` are the ergonomic equivalents of `ctx.child(Inner, input)` and
+`ctx.startChild(Inner, input)` — same behavior, they just resolve the ambient `ctx` for you.
 
 Both establish the same durable parent→child relationship, so a child started either way is a normal run you can inspect, retry, or cancel from the [dashboard](/docs/durable/observability/dashboard). Read the children of a run programmatically with `engine.getRunChildren(parentRunId)`.
 

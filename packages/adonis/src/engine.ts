@@ -58,6 +58,7 @@ import {
   type StepRecord,
   createWorkflowCtx,
 } from './workflow-ctx.js';
+import { workflowAls } from './workflow-als.js';
 import {
   type WorkflowClass,
   type WorkflowInputOf,
@@ -1955,7 +1956,10 @@ export class WorkflowEngine {
     for (const cp of snapshot) replay.set(cp.seq, cp);
     const ctx = createWorkflowCtx(this.ctxHostFor(replay), run.id, compensations, run.workflow);
     try {
-      const output = await fn(ctx, run.input);
+      // Establish the ambient ctx for the duration of this body turn so context-aware statics
+      // (`BaseWorkflow.start`/`dispatch`) reachable from `fn` route through this run's `ctx.child`/
+      // `ctx.startChild`. Re-set on every replay turn (each is its own async scope) — correct.
+      const output = await workflowAls.run(ctx, () => fn(ctx, run.input));
       return this.settleRun(run, { kind: 'completed', output });
     } catch (err) {
       if (err instanceof ContinueAsNew) {
