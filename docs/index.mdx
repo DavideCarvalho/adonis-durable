@@ -45,7 +45,7 @@ Register a workflow on the engine. Every `ctx.step` is checkpointed; `ctx.waitFo
 ```ts title="start/durable.ts"
 import engine from '@adonis-agora/durable/services/main'
 
-engine.register('checkout', '1', async (ctx, order: { id: string; total: number }) => {
+engine.register('checkout', '1', async (ctx, order: { id: number; total: number }) => {
   await ctx.localStep('reserveStock', async () => ({ reserved: true }))
   const approval = await ctx.waitForSignal<{ approved: boolean }>(`approve:${order.id}`)
   if (!approval.approved) return { status: 'rejected' }
@@ -59,18 +59,21 @@ engine.register('checkout', '1', async (ctx, order: { id: string; total: number 
 
 Start a run from a controller. `start` **enqueues** the run and returns immediately — the HTTP handler never blocks on workflow logic:
 
-```ts
-import { WorkflowEngine } from '@adonis-agora/durable'
+```ts title="app/controllers/checkout_controller.ts"
 import { inject } from '@adonisjs/core'
+import type { HttpContext } from '@adonisjs/core/http'
+import { WorkflowEngine } from '@adonis-agora/durable'
+import Order from '#models/order'
 
 @inject()
 export default class CheckoutController {
   constructor(private engine: WorkflowEngine) {}
 
-  async store({ request }: HttpContext) {
-    const order = request.body() as { id: string; total: number }
-    await this.engine.start('checkout', order, `checkout:${order.id}`)
-    return { runId: `checkout:${order.id}` }
+  async store({ request, response }: HttpContext) {
+    const order = await Order.create(request.only(['total']))
+    const runId = `checkout:${order.id}`
+    await this.engine.start('checkout', { id: order.id, total: order.total }, runId)
+    return response.accepted({ runId })
   }
 }
 ```

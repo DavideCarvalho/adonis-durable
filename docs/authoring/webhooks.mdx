@@ -85,13 +85,13 @@ engine.register('checkout', '1', async (ctx, order: Order) => {
 
 When the payment provider POSTs to the callback URL, deliver the body as `engine.signal(token, body)` from your own controller — the token is in the URL, and it already encodes the run and position, so there's nothing else to look up:
 
-```ts
-// start/routes.ts
+```ts title="start/routes.ts"
+import router from '@adonisjs/core/services/router'
 import engine from '@adonis-agora/durable/services/main'
 
-router.post('/durable/webhooks/:token', async ({ params, request }) => {
+router.post('/durable/webhooks/:token', async ({ params, request, response }) => {
   await engine.signal(params.token, request.body())
-  return { ok: true }
+  return response.noContent()
 })
 ```
 

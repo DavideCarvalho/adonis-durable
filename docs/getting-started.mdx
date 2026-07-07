@@ -85,7 +85,7 @@ Workflows are registered on the engine by **name** and **version** — the body 
 import engine from '@adonis-agora/durable/services/main'
 import { chargeCard } from '#steps/charge'
 
-engine.register('checkout', '1', async (ctx, order: { id: string; total: number }) => {
+engine.register('checkout', '1', async (ctx, order: { id: number; total: number }) => {
   await ctx.localStep('reserveStock', async () => ({ reserved: true }))
   const charge = await ctx.step(chargeCard, { orderId: order.id, amountCents: order.total })
   const approval = await ctx.waitForSignal<{ approved: boolean }>(`approve:${order.id}`)
@@ -125,34 +125,63 @@ For real cross-process handlers, configure the [queue transport](/docs/durable/t
 
 ## 5. Start a run
 
-Inject the `WorkflowEngine` and start the workflow. `start` **enqueues** the run and returns immediately — the HTTP handler never blocks on workflow logic. A worker executes the body (by default, the same instance, asynchronously), runs the steps, then suspends on the approval signal; a webhook resumes it:
+A controller kicks off the workflow. `start` **enqueues** the run and returns immediately — the HTTP handler never blocks on workflow logic. Validate the request with [VineJS](https://docs.adonisjs.com/guides/basics/validation), persist the order, then start the run keyed by a stable `runId`. A worker executes the body (by default, the same instance, asynchronously), runs the steps, then suspends on the approval signal; an approval webhook resumes it:
+
+```ts title="app/validators/checkout.ts"
+import vine from '@vinejs/vine'
+
+export const createCheckoutValidator = vine.compile(
+  vine.object({
+    total: vine.number().positive(),
+  })
+)
+```
 
 ```ts title="app/controllers/checkout_controller.ts"
+import { inject } from '@adonisjs/core'
 import type { HttpContext } from '@adonisjs/core/http'
 import { WorkflowEngine } from '@adonis-agora/durable'
-import { inject } from '@adonisjs/core'
+import Order from '#models/order'
+import { createCheckoutValidator } from '#validators/checkout'
 
 @inject()
 export default class CheckoutController {
   constructor(private engine: WorkflowEngine) {}
 
-  async store({ request }: HttpContext) {
-    const order = request.body() as { id: string; total: number }
-    await this.engine.start('checkout', order, `checkout:${order.id}`)
-    return { runId: `checkout:${order.id}` } // respond now; a worker runs the body
+  async store({ request, response }: HttpContext) {
+    const { total } = await request.validateUsing(createCheckoutValidator)
+    const order = await Order.create({ total, status: 'pending' })
+
+    // Enqueue the run and respond now — a worker runs the body.
+    const runId = `checkout:${order.id}`
+    await this.engine.start('checkout', { id: order.id, total: order.total }, runId)
+
+    return response.accepted({ runId })
   }
 
-  // later, from your approval webhook:
-  async approve({ params }: HttpContext) {
-    await this.engine.signal(`approve:${params.id}`, { approved: true }) // completes & ships
+  // Later, from your approval webhook — this completes & ships the run.
+  async approve({ params, response }: HttpContext) {
+    await this.engine.signal(`approve:${params.id}`, { approved: true })
+    return response.noContent()
   }
 }
+```
+
+Wire the routes in `start/routes.ts`:
+
+```ts title="start/routes.ts"
+import router from '@adonisjs/core/services/router'
+
+const CheckoutController = () => import('#controllers/checkout_controller')
+
+router.post('checkout', [CheckoutController, 'store'])
+router.post('checkout/:id/approve', [CheckoutController, 'approve'])
 ```
 
 Need the outcome inline? `await this.engine.waitForRun(runId)` resolves once the run **settles** — a terminal state (completed/failed/cancelled/dead) or `suspended`:
 
 ```ts
-await this.engine.start('checkout', order, runId)
+await this.engine.start('checkout', { id: order.id, total: order.total }, runId)
 const result = await this.engine.waitForRun(runId) // resolves when the run settles
 ```
 

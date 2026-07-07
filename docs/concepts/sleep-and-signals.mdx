@@ -42,9 +42,10 @@ if (!decision.approved) return { status: 'rejected' }
 
 Deliver the signal from anywhere — typically a controller — via `engine.signal`:
 
-```ts
-async approve({ params, request }: HttpContext) {
-  return this.engine.signal(`approve:${params.id}`, request.body()) // resumes the run with the payload
+```ts title="app/controllers/approvals_controller.ts"
+async approve({ params, request, response }: HttpContext) {
+  await this.engine.signal(`approve:${params.id}`, request.body()) // resumes the run with the payload
+  return response.noContent()
 }
 ```
 

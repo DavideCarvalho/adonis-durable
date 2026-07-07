@@ -52,9 +52,9 @@ import { inject } from '@adonisjs/core'
 export default class JobsController {
   constructor(private engine: WorkflowEngine) {}
 
-  async progress({ params }: HttpContext) {
+  async progress({ params, response }: HttpContext) {
     const progress = await this.engine.getEvent<{ phase: string; pct: number }>(params.runId, 'progress')
-    return progress ?? { phase: 'pending', pct: 0 }
+    return response.ok(progress ?? { phase: 'pending', pct: 0 })
   }
 }
 ```
@@ -136,7 +136,7 @@ export default class ExpensesController {
   async decide({ params, request, response }: HttpContext) {
     const result = await this.engine.update(params.runId, 'decision', request.body())
     if (!result.accepted) return response.badRequest({ error: result.reason })
-    return { ok: true, status: result.run?.status ?? 'pending' }
+    return response.ok({ status: result.run?.status ?? 'pending' })
   }
 }
 ```
