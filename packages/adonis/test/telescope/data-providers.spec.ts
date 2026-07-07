@@ -32,7 +32,7 @@ async function engineWith(): Promise<WorkflowEngine> {
   const engine = new WorkflowEngine({ store: new InMemoryStateStore() });
   engine.register('ok', '1', async () => 'done');
   engine.register('boom', '1', async (ctx) =>
-    ctx.step('x', async () => {
+    ctx.localStep('x', async () => {
       throw new Error('kaboom');
     }),
   );

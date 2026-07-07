@@ -98,6 +98,14 @@ export interface DurableConfig {
    * hand with `engine.register(...)`). A missing directory is fine — nothing to register.
    */
   workflowsPath?: string | false;
+  /**
+   * Directory (relative to the app root) the provider scans at boot for `@Step`-decorated classes and
+   * `defineStep(...)` handlers to auto-register on the app's transport — the `app/steps` convention,
+   * mirroring `app/workflows`. Each discovered handler is served by name so `ctx.step('name', input)`
+   * (or a typed ref) routes to it with zero manual `transport.handle(...)`. Default `'app/steps'`. Set
+   * `false` to disable (register by hand). A missing directory is fine — nothing to register.
+   */
+  stepsPath?: string | false;
 }
 
 /** Identity helper giving `config/durable.ts` full type-checking. */

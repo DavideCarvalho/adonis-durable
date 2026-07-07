@@ -40,7 +40,7 @@ describe('CodecStateStore', () => {
     const inner = new InMemoryStateStore();
     const engine = new WorkflowEngine({ store: new CodecStateStore(inner, wrapCodec) });
     engine.register('wf', '1', async (ctx, input) => {
-      const a = await ctx.step('a', async () => ({ doubled: (input as { n: number }).n * 2 }));
+      const a = await ctx.localStep('a', async () => ({ doubled: (input as { n: number }).n * 2 }));
       return a;
     });
 

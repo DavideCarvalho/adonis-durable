@@ -31,7 +31,7 @@ describe('singleton (serialize runs by key)', () => {
       '1',
       async (ctx, input) => {
         const { id } = input as { id: string };
-        await ctx.step('enter', async () => void ran.push(id)); // once-only (checkpointed)
+        await ctx.localStep('enter', async () => void ran.push(id)); // once-only (checkpointed)
         await ctx.waitForSignal(`go:${id}`); // hold the slot until signalled
         return 'done';
       },

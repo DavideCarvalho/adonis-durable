@@ -24,7 +24,7 @@ describe('signal buffering + signalWithStart', () => {
     engine.register('counter', '1', async (ctx) => {
       for (let i = 0; i < 3; i += 1) {
         const n = await ctx.waitForSignal<number>('add:k1');
-        await ctx.step(`record-${i}`, async () => void seen.push(n));
+        await ctx.localStep(`record-${i}`, async () => void seen.push(n));
       }
       return seen.reduce((a, b) => a + b, 0);
     });

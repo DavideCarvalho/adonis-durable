@@ -1,5 +1,5 @@
 /** Keep in sync with this package's `version` in package.json. */
-export const VERSION = '0.6.0';
+export const VERSION = '0.7.0';
 
 // --- engine + core primitives -----------------------------------------------
 export * from './admission.js';
@@ -11,8 +11,18 @@ export * from './event-accumulators.js';
 export * from './interfaces.js';
 export * from './protocol.js';
 export * from './queue.js';
-export * from './remote-step-factory.js';
 export * from './remote-workflow-executor.js';
+export * from './tenant-group.js';
+export {
+  DURABLE_STEP_CONFIG,
+  DURABLE_STEP_NAME,
+  type StepConfig,
+  type StepRef,
+  stepConfigOf,
+  stepNameOf,
+} from './step-name-symbol.js';
+export * from './step-ref.js';
+export * from './step-discovery.js';
 export * from './codec-state-store.js';
 export * from './diagnostics-bridge.js';
 export * from './events.js';

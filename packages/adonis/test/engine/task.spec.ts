@@ -40,7 +40,7 @@ describe('ctx.task (async completion)', () => {
     const engine = new WorkflowEngine({ store });
     let attempts = 0;
     engine.register('flaky', '1', async (ctx) =>
-      ctx.step('once', async () => {
+      ctx.localStep('once', async () => {
         attempts += 1;
         if (attempts === 1) throw new Error('transient');
         return 'ok';

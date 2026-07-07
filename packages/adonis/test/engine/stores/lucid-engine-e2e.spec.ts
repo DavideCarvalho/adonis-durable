@@ -26,7 +26,7 @@ describe('WorkflowEngine over LucidStateStore', () => {
   it('runs a single-step workflow to completion', async () => {
     const engine = new WorkflowEngine({ store });
     engine.register('greet', '1', async (ctx) => {
-      const a = await ctx.step('a', async () => 21);
+      const a = await ctx.localStep('a', async () => 21);
       return a * 2;
     });
     await engine.start('greet', {}, 'run-1');
@@ -42,9 +42,9 @@ describe('WorkflowEngine over LucidStateStore', () => {
   it('runs a multi-step workflow, persisting each checkpoint', async () => {
     const engine = new WorkflowEngine({ store });
     engine.register('pipe', '1', async (ctx) => {
-      const a = await ctx.step('a', async () => 10);
-      const b = await ctx.step('b', async () => a + 5);
-      const c = await ctx.step('c', async () => b * 2);
+      const a = await ctx.localStep('a', async () => 10);
+      const b = await ctx.localStep('b', async () => a + 5);
+      const c = await ctx.localStep('c', async () => b * 2);
       return c;
     });
     await engine.start('pipe', {}, 'run-2');
@@ -61,11 +61,11 @@ describe('WorkflowEngine over LucidStateStore', () => {
     let aRuns = 0;
     let failOnce = true;
     engine.register('wf', '1', async (c) => {
-      const a = await c.step('a', async () => {
+      const a = await c.localStep('a', async () => {
         aRuns += 1;
         return 10;
       });
-      return c.step('b', async () => {
+      return c.localStep('b', async () => {
         if (failOnce) {
           failOnce = false;
           throw new Error('boom');
@@ -88,11 +88,11 @@ describe('WorkflowEngine over LucidStateStore', () => {
     const engine = new WorkflowEngine({ store, clock: () => now });
     const order: string[] = [];
     engine.register('wf', '1', async (ctx) => {
-      await ctx.step('before', async () => {
+      await ctx.localStep('before', async () => {
         order.push('before');
       });
       await ctx.sleep('10s');
-      await ctx.step('after', async () => {
+      await ctx.localStep('after', async () => {
         order.push('after');
       });
       return 'done';

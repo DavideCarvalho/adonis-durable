@@ -1,3 +1,4 @@
+import { describe, expect, it } from 'vitest';
 import { WorkflowEngine } from '../../src/engine.js';
 import type {
   HistoryEvent,
@@ -20,7 +21,7 @@ async function settle(store: InMemoryStateStore, runId: string) {
 
 /** A hand-scripted stand-in for the Python `WorkflowWorker.process_task` — it produces the same
  *  decisions the replay of this pipeline would, from the history the engine feeds it:
- *    ctx.step("setup")  ·  ctx.call("ingestion")  ·  ctx.sleep  ·  return { rows }
+ *    ctx.localStep("setup")  ·  ctx.step("ingestion")  ·  ctx.sleep  ·  return { rows }
  *  (the Python replay runtime itself is unit-tested separately; here we exercise the ENGINE's drive
  *  + apply of the protocol.) */
 function pipelineExecutor(opts: { withSleep?: boolean } = {}): WorkflowExecutor {
@@ -120,7 +121,9 @@ describe('WorkflowEngine — remote (polyglot) workflows', () => {
     expect(setup?.output).toBe('/b1/data.csv');
     expect(call?.kind).toBe('remote');
     expect(call?.status).toBe('completed');
-    expect(call?.workerGroup).toBe('pipeline');
+    // Routing is now by NAME: a `call` command's checkpoint workerGroup is the name-based token
+    // (the command's `group: 'pipeline'` is ignored for routing), so it matches the step name.
+    expect(call?.workerGroup).toBe('ingestion');
   });
 
   it('suspends a remote workflow on ctx.sleep and resumes it when the timer fires', async () => {

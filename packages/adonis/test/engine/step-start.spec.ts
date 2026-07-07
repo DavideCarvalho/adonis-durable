@@ -21,7 +21,7 @@ describe('WorkflowEngine — local step start visibility', () => {
     });
 
     engine.register('wf', '1', async (ctx) => {
-      await ctx.step('slow', async () => {
+      await ctx.localStep('slow', async () => {
         await gate;
         return 1;
       });
@@ -57,7 +57,7 @@ describe('WorkflowEngine — local step start visibility', () => {
     });
 
     engine.register('wf', '1', async (ctx) => {
-      await ctx.step('slow', async () => {
+      await ctx.localStep('slow', async () => {
         await gate;
         return 1;
       });

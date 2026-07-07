@@ -14,32 +14,73 @@ import { eventToken } from './events.js';
 import type {
   ChildCallOptions,
   DurableWebhook,
-  RemoteStepDef,
   SearchAttributes,
   StateStore,
   StepCheckpoint,
+  StepDef,
+  StepDispatchOpts,
   StepError,
   StepEvent,
   StepInvocation,
   StepKind,
   StepLogger,
   StepOptions,
+  StepUndo,
   WorkflowCtx,
 } from './interfaces.js';
 import { breakpointToken } from './protocol.js';
+import { type StepConfig, type StepRef, stepConfigOf, stepNameOf } from './step-name-symbol.js';
 import { createStepLogger } from './step-logger.js';
 import { type WorkflowRef, workflowName } from './workflow-ref.js';
+
+/**
+ * Merge a `@Step`-declared {@link StepConfig} with a per-call {@link StepDispatchOpts} override into
+ * the dispatch-relevant `StepOptions` subset of a {@link StepDef} (`retries`/`backoff`/`backoffMs`/
+ * `backoffMaxMs`/`jitter`/`timeoutMs`), `opts` winning field-by-field. Omits every field neither side
+ * set — required under `exactOptionalPropertyTypes` (an explicit `undefined` value is a type error).
+ */
+function resolveStepPolicy(
+  config: StepConfig | undefined,
+  opts: StepDispatchOpts | undefined,
+): StepOptions {
+  const policy: StepOptions = {};
+  const retries = opts?.retries ?? config?.retries;
+  if (retries !== undefined) policy.retries = retries;
+  const backoff = opts?.backoff ?? config?.backoff;
+  if (backoff !== undefined) policy.backoff = backoff;
+  const backoffMs = opts?.backoffMs ?? config?.backoffMs;
+  if (backoffMs !== undefined) policy.backoffMs = backoffMs;
+  const backoffMaxMs = opts?.backoffMaxMs ?? config?.backoffMaxMs;
+  if (backoffMaxMs !== undefined) policy.backoffMaxMs = backoffMaxMs;
+  const jitter = opts?.jitter ?? config?.jitter;
+  if (jitter !== undefined) policy.jitter = jitter;
+  const timeoutMs = opts?.timeoutMs ?? config?.timeoutMs;
+  if (timeoutMs !== undefined) policy.timeoutMs = timeoutMs;
+  return policy;
+}
 
 /** Normalize the `ctx.child`/`ctx.startChild` 3rd arg: a bare string is shorthand for `{ childId }`. */
 function normalizeChildOptions(options?: string | ChildCallOptions): ChildCallOptions {
   return typeof options === 'string' ? { childId: options } : (options ?? {});
 }
 
-/** A saga undo registered by a completed step, kept with its step name for visibility on failure. */
-export interface Compensation {
-  name: string;
-  fn: () => Promise<void>;
-}
+/**
+ * A saga undo registered by a completed step, kept with its step name for visibility on failure.
+ * Two shapes, pushed onto the SAME `compensations` stack so the engine unwinds them together in one
+ * strict reverse-completion order, regardless of which kind each one is:
+ * - `fn`: a LOCAL undo (`ctx.localStep`'s `compensate` closure) — run in-process at unwind time.
+ * - `dispatch`: a DISPATCHED undo (`ctx.step`'s `compensate` ref/string) — an ordinary step def the
+ *   engine dispatches to a worker at unwind time, called with the {@link StepUndo} envelope (`args`).
+ */
+export type Compensation =
+  | { name: string; fn: () => Promise<void> }
+  | {
+      name: string;
+      dispatch: {
+        def: StepDef<StepUndo<unknown, unknown>, unknown>;
+        args: StepUndo<unknown, unknown>;
+      };
+    };
 
 /** A finished local step the host should checkpoint and announce (completed or failed). */
 export interface StepRecord {
@@ -80,7 +121,7 @@ export interface CtxHost {
   callRemote<TInput, TOutput>(
     runId: string,
     seq: number,
-    step: RemoteStepDef<TInput, TOutput>,
+    step: StepDef<TInput, TOutput>,
     input: TInput,
     queue?: string,
     transport?: string,
@@ -109,17 +150,24 @@ class Position {
 }
 
 /**
+ * {@link WorkflowCtx} plus the in-process `localStep` primitive. `localStep` is public on
+ * `WorkflowCtx` too, so this is just a documentary alias for the library's own built-in workflows
+ * (the durable-entity runner) that lean on the in-process step directly.
+ */
+export type InternalWorkflowCtx = WorkflowCtx;
+
+/**
  * Build the {@link WorkflowCtx} handed to a workflow body. Every primitive is a closure over the
  * position counter (the per-run logical position) and the saga `compensations` stack, so `task`/
- * `child` compose `step`/`waitForSignal` directly. All durability goes through {@link CtxHost}, so
- * the workflow body stays deterministic.
+ * `child` compose `localStep`/`waitForSignal` directly. All durability goes through {@link CtxHost},
+ * so the workflow body stays deterministic.
  */
 export function createWorkflowCtx(
   host: CtxHost,
   runId: string,
   compensations: Compensation[],
   workflow = '',
-): WorkflowCtx {
+): InternalWorkflowCtx {
   const { store, replay } = host;
   const pos = new Position();
 
@@ -140,7 +188,11 @@ export function createWorkflowCtx(
     replay?.set(cp.seq, cp);
   };
 
-  const step = async <T>(
+  // The in-process local-step runner: checkpointed, replayed, retried. Public as `ctx.localStep`; also
+  // backs the library's own primitives that need a checkpointed in-process body — `ctx.task`'s
+  // dispatch step and the deterministic capture helpers `ctx.now`/`ctx.sideEffect`. Distinct from the
+  // always-dispatched `ctx.step` below.
+  const localStep = async <T>(
     name: string,
     fn: (log: StepLogger) => Promise<T>,
     options?: StepOptions,
@@ -391,7 +443,7 @@ export function createWorkflowCtx(
     dispatch: () => Promise<void>,
     options?: StepOptions,
   ): Promise<T> => {
-    await step(`task:dispatch:${name}`, dispatch, options);
+    await localStep(`task:dispatch:${name}`, dispatch, options);
     return unwrapCompletion<T>(await waitForSignal(`task:${runId}:${name}`), `task "${name}"`);
   };
 
@@ -646,12 +698,16 @@ export function createWorkflowCtx(
     return { token, url: host.webhookUrl?.(token), wait };
   };
 
-  // Deterministic non-deterministic sources: each is a checkpointed local step, so the value is
-  // captured on the first run and replayed verbatim (a raw Date.now()/Math.random() inside a
-  // workflow would differ across replays and corrupt the run).
-  const now = () => step('now', async () => host.clock());
-  const random = () => step('random', async () => Math.random());
-  const uuid = () => step('uuid', async () => globalThis.crypto.randomUUID());
+  // Deterministic capture: run `fn` once, checkpoint its output, and replay the SAME value verbatim
+  // afterwards (fn is NOT re-run on replay). The general primitive for any non-deterministic value the
+  // author controls the generator for — `ctx.sideEffect(() => uuidv7())`, `() => Math.random()`, a
+  // config/env read. A raw `Date.now()`/`Math.random()` in a workflow body differs across replays and
+  // corrupts the run; this captures it deterministically. Replaces the removed `ctx.random`/`ctx.uuid`.
+  const sideEffect = <T>(fn: () => T | Promise<T>): Promise<T> =>
+    localStep('sideEffect', async () => fn());
+  // `now` is the one ubiquitous convenience (a single obvious implementation, epoch ms like
+  // `Date.now()`); everything else uses `sideEffect` so the author picks the generator.
+  const now = () => localStep('now', async () => host.clock());
 
   // Merge into this run's searchAttributes exactly once: a checkpoint at this position marks it done,
   // so a replay SKIPS the write (mirrors `transaction` / the instant primitives) instead of re-merging
@@ -677,9 +733,73 @@ export function createWorkflowCtx(
     );
   };
 
+  // Resolve a `ctx.step(..., { compensate })` ref/string into the undo's own dispatchable StepDef —
+  // same routing-name resolution as the step it's attached to, but its dispatch policy comes ONLY from
+  // its own `@Step`-stamped config (stepConfigOf), never the compensated call's per-call `opts`: the
+  // undo is a separately-declared handler with its own retry/backoff, not an extension of the step it
+  // undoes. The string form (cross-runtime) has no stamped config, so it dispatches with engine
+  // defaults. Takes `unknown` (like `stepNameOf`/`stepConfigOf`) — the caller's TInput/TOutput are
+  // call-site type params with no runtime shape to check here; the compile-time contract is already
+  // enforced by `WorkflowCtx.step`'s overload signature.
+  function resolveCompensateDef(compensate: unknown): StepDef<StepUndo<unknown, unknown>, unknown> {
+    const undoName = typeof compensate === 'string' ? compensate : stepNameOf(compensate);
+    if (undoName === undefined) {
+      throw new Error(
+        'ctx.step: compensate handler is not a @Step reference (no stamped step name) — pass a @Step/defineStep handler or a step name string',
+      );
+    }
+    const config = typeof compensate === 'string' ? undefined : stepConfigOf(compensate);
+    return { name: undoName, ...resolveStepPolicy(config, undefined) };
+  }
+
+  // ONE durable step primitive: always dispatched, always engine-scheduled — no local/remote
+  // placement choice for the workflow author (see `WorkflowCtx.step`). Resolve the routing name off a
+  // `@Step`-stamped handler reference, or take it literally for the cross-runtime string form; the
+  // reference itself is NEVER invoked here — only its stamped name (and dispatch policy) is read. The
+  // effective durable-retry/liveness policy is `{ ...stepConfigOf(handlerOrName), ...opts }`, a per-
+  // call `opts` field winning wherever set; the string form has no stamped config, so it uses `opts`
+  // only. Carrying this onto the `StepDef` re-enables `callRemote`'s durable retry/backoff and
+  // liveness-timeout branches (see `engine.ts`).
+  function step<TInput, TOutput>(
+    handlerOrName: StepRef<TInput, TOutput> | string,
+    input: TInput,
+    opts?: StepDispatchOpts & { compensate?: StepRef<StepUndo<TInput, TOutput>, unknown> | string },
+  ): Promise<TOutput> {
+    const name = typeof handlerOrName === 'string' ? handlerOrName : stepNameOf(handlerOrName);
+    if (name === undefined) {
+      throw new Error(
+        'ctx.step: handler is not a @Step reference (no stamped step name) — pass a @Step/defineStep handler or a step name string',
+      );
+    }
+    const config = typeof handlerOrName === 'string' ? undefined : stepConfigOf(handlerOrName);
+    const def: StepDef<TInput, TOutput> = { name, ...resolveStepPolicy(config, opts) };
+    return host
+      .callRemote(runId, pos.next(), def, input, opts?.queue, opts?.transport, {
+        priority: opts?.priority,
+        fairnessKey: opts?.fairnessKey,
+      })
+      .then((output) => {
+        // `callRemote` resolves ONLY once this step is durably complete (the replay-completed branch,
+        // or the in-memory `timeoutMs` liveness path once the live result lands). Register the
+        // dispatched compensation HERE, after resolution, so a saga only undoes steps that actually
+        // finished — `input`/`output` come straight from this call (the checkpointed ones on replay).
+        if (opts?.compensate) {
+          compensations.push({
+            name,
+            dispatch: {
+              def: resolveCompensateDef(opts.compensate),
+              args: { input, output },
+            },
+          });
+        }
+        return output;
+      });
+  }
+
   return {
     runId,
     step,
+    localStep,
     upsertSearchAttributes,
     transaction,
     callEntity,
@@ -699,12 +819,6 @@ export function createWorkflowCtx(
     onUpdate,
     patched,
     now,
-    random,
-    uuid,
-    call: (remote, input, opts) =>
-      host.callRemote(runId, pos.next(), remote, input, opts?.queue, opts?.transport, {
-        priority: opts?.priority,
-        fairnessKey: opts?.fairnessKey,
-      }),
+    sideEffect,
   };
 }

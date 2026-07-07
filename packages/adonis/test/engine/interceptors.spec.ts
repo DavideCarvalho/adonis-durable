@@ -15,7 +15,7 @@ describe('step interceptors (engine.use)', () => {
     });
 
     engine.register('greet', '1', async (ctx, input) => {
-      const name = await ctx.step('upper', async () => (input as { n: string }).n.toUpperCase());
+      const name = await ctx.localStep('upper', async () => (input as { n: string }).n.toUpperCase());
       return `hi ${name}`;
     });
     const res = await startRun(engine, 'greet', { n: 'ada' }, 'r1');
@@ -40,7 +40,7 @@ describe('step interceptors (engine.use)', () => {
       order.push('B:after');
       return r;
     });
-    engine.register('w', '1', async (ctx) => ctx.step('s', async () => 1));
+    engine.register('w', '1', async (ctx) => ctx.localStep('s', async () => 1));
     await startRun(engine, 'w', {}, 'r1');
 
     expect(order).toEqual(['A:before', 'B:before', 'B:after', 'A:after']);
@@ -55,9 +55,9 @@ describe('step interceptors (engine.use)', () => {
       return next();
     });
     engine.register('w', '1', async (ctx) => {
-      await ctx.step('a', async () => 'a');
+      await ctx.localStep('a', async () => 'a');
       await ctx.waitForSignal('go');
-      await ctx.step('b', async () => 'b');
+      await ctx.localStep('b', async () => 'b');
       return 'done';
     });
 
@@ -77,7 +77,7 @@ describe('step interceptors (engine.use)', () => {
       count += 1;
       return next();
     });
-    engine.register('w', '1', async (ctx) => ctx.step('s', async () => 1));
+    engine.register('w', '1', async (ctx) => ctx.localStep('s', async () => 1));
 
     await startRun(engine, 'w', {}, 'r1');
     expect(count).toBe(1);

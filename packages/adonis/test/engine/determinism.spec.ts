@@ -10,18 +10,18 @@ describe('WorkflowEngine — determinism', () => {
     // v1: two steps, suspend between them so step "a" is checkpointed but "b" isn't yet.
     const v1 = new WorkflowEngine({ store });
     v1.register('wf', '1', async (ctx) => {
-      await ctx.step('a', async () => 1);
+      await ctx.localStep('a', async () => 1);
       await ctx.waitForSignal('go');
-      await ctx.step('b', async () => 2);
+      await ctx.localStep('b', async () => 2);
     });
     await startRun(v1, 'wf', {}, 'run1'); // suspends after "a"
 
     // Code changed under the in-flight run (step renamed a→A at seq 0) WITHOUT a new version.
     const v2 = new WorkflowEngine({ store });
     v2.register('wf', '1', async (ctx) => {
-      await ctx.step('A', async () => 1);
+      await ctx.localStep('A', async () => 1);
       await ctx.waitForSignal('go');
-      await ctx.step('b', async () => 2);
+      await ctx.localStep('b', async () => 2);
     });
 
     const resumed = await v2.signal('go', null);
@@ -35,16 +35,21 @@ describe('WorkflowEngine — determinism', () => {
     expect(e.seq).toBe(3);
   });
 
-  it('ctx.now/random/uuid record once and replay the same value', async () => {
+  it('ctx.now/sideEffect record once and replay the same value', async () => {
     const store = new InMemoryStateStore();
     let clockValue = 1000;
     const engine = new WorkflowEngine({ store, clock: () => clockValue });
 
-    // The body runs once on start, then again on resume (replay). Each time it re-reads now/random/
-    // uuid — which must return the value captured on the FIRST run, not a fresh one.
+    // The body runs once on start, then again on resume (replay). Each time it re-reads now +
+    // sideEffect-captured random/uuid — which must return the value captured on the FIRST run, not
+    // a fresh one.
     const observed: Array<{ now: number; rand: number; id: string }> = [];
     engine.register('wf', '1', async (ctx) => {
-      const snapshot = { now: await ctx.now(), rand: await ctx.random(), id: await ctx.uuid() };
+      const snapshot = {
+        now: await ctx.now(),
+        rand: await ctx.sideEffect(() => Math.random()),
+        id: await ctx.sideEffect(() => globalThis.crypto.randomUUID()),
+      };
       observed.push(snapshot);
       await ctx.waitForSignal('go'); // suspend → forces a replay on resume
       return snapshot;

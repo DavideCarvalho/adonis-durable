@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { z } from 'zod';
 import { WorkflowEngine } from '../../src/engine.js';
 import type {
   HistoryEvent,
@@ -10,25 +9,8 @@ import type {
   WorkflowExecutor,
   WorkflowRun,
 } from '../../src/interfaces.js';
-import { remoteStep } from '../../src/remote-step-factory.js';
 import { startRun } from '../../src/test-helpers.js';
 import { InMemoryStateStore } from '../../src/testing/in-memory-state-store.js';
-
-const ping = remoteStep({
-  name: 'ext.ping',
-  group: 'ext',
-  input: z.object({}),
-  output: z.object({ pong: z.boolean() }),
-});
-
-/** Same step, but with a liveness `timeoutMs` — routes through the in-memory heartbeat path. */
-const pingWithTimeout = remoteStep({
-  name: 'ext.ping',
-  group: 'ext',
-  input: z.object({}),
-  output: z.object({ pong: z.boolean() }),
-  timeoutMs: 1_000,
-});
 
 /** A recording transport that captures every dispatched task and immediately delivers a completed
  *  result for it — so both the durable suspend path and the in-memory heartbeat path settle. */
@@ -55,7 +37,7 @@ function recordingTransport(dispatched: RemoteTask[]): Transport {
 }
 
 /** Stand-in for a polyglot (e.g. Python) workflow that issues a single remote `call` command —
- *  this is the executor-driven dispatch site (`cmd.kind === 'call'`), distinct from `ctx.call`. */
+ *  this is the executor-driven dispatch site (`cmd.kind === 'call'`), distinct from `ctx.step`. */
 function callExecutor(): WorkflowExecutor {
   return {
     async advance(run: WorkflowRun, history: HistoryEvent[]): Promise<WorkflowDecision> {
@@ -99,7 +81,7 @@ describe('context carrier — opaque tenant/user/correlation propagation to work
       context: () => ({ tenantId: 't1', userRef: { type: 'User', id: 1 } }),
     });
     engine.register('wf', '1', async (ctx) => {
-      await ctx.call(ping, {});
+      await ctx.step('ext.ping', {});
       return 'x';
     });
 
@@ -128,7 +110,7 @@ describe('context carrier — opaque tenant/user/correlation propagation to work
       traceparent: () => '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01',
     });
     engine.register('wf', '1', async (ctx) => {
-      await ctx.call(ping, {});
+      await ctx.step('ext.ping', {});
       return 'x';
     });
 
@@ -149,7 +131,7 @@ describe('context carrier — opaque tenant/user/correlation propagation to work
       context: () => ({ tenantId: 't2', userRef: { type: 'User', id: 2 } }),
     });
     // A remote (executor-driven) workflow whose advance() emits a `call` command — this is applied by
-    // `applyCommands` (cmd.kind === 'call'), a DIFFERENT dispatch site than the native `ctx.call` path.
+    // `applyCommands` (cmd.kind === 'call'), a DIFFERENT dispatch site than the native `ctx.step` path.
     engine.registerRemote('pipeline', '1', { group: 'py-workflows', executor: callExecutor() });
 
     await startRun(engine, 'pipeline', {}, 'cmd1');
@@ -171,7 +153,7 @@ describe('context carrier — opaque tenant/user/correlation propagation to work
     // A `timeoutMs` step is awaited in-memory (callRemoteInMemory) with a heartbeat window, not via
     // the durable suspend path — a third, distinct dispatch site.
     engine.register('wf', '1', async (ctx) => {
-      await ctx.call(pingWithTimeout, {});
+      await ctx.step('ext.ping', {}, { timeoutMs: 1_000 });
       return 'x';
     });
 

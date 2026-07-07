@@ -42,12 +42,15 @@ ruleTester.run('no-nondeterminism', noNondeterminism, {
     },
     // A class method named run WITHOUT the @Workflow decorator is just a method.
     { code: 'class Plain { run() { return Date.now(); } }' },
-    // Non-determinism inside a ctx.step / ctx.task callback is checkpointed — replay-safe.
+    // Non-determinism inside a ctx.localStep / ctx.task / ctx.sideEffect callback is checkpointed
+    // (run once, then replayed) — replay-safe, so it is NOT flagged.
     {
-      code: wfClass("const s = await ctx.step('setup', async () => new Date().toISOString());"),
+      code: wfClass("const s = await ctx.localStep('setup', async () => new Date().toISOString());"),
     },
-    { code: wfFn("await ctx.step('setup', async () => { const r = Math.random(); });") },
+    { code: wfFn("await ctx.localStep('setup', async () => { const r = Math.random(); });") },
     { code: wfFn("await ctx.task('t', async () => Date.now());") },
+    { code: wfFn('const id = await ctx.sideEffect(() => globalThis.crypto.randomUUID());') },
+    { code: wfFn('const r = await ctx.sideEffect(() => Math.random());') },
     // A plain register call to something else is not a workflow body.
     { code: "registry.register('x', () => Date.now());" },
   ],
@@ -69,7 +72,13 @@ ruleTester.run('no-nondeterminism', noNondeterminism, {
     { code: wfFn('const id = crypto.randomUUID();'), errors: [{ messageId: 'useUuid' }] },
     // A banned call in the orchestration body, even alongside steps, is still flagged.
     {
-      code: wfFn("await ctx.step('a', async () => 1); const t = Date.now();"),
+      code: wfFn("await ctx.localStep('a', async () => 1); const t = Date.now();"),
+      errors: [{ messageId: 'useNow' }],
+    },
+    // `ctx.step` is now the always-DISPATCHED step (its 2nd arg is data, not a checkpointed body), so
+    // it is NOT a boundary — a banned call inside a function reaching it is still flagged.
+    {
+      code: wfFn("await ctx.step('a', { at: Date.now() });"),
       errors: [{ messageId: 'useNow' }],
     },
   ],

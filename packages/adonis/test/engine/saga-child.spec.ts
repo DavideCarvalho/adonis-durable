@@ -17,9 +17,9 @@ describe('saga compensation', () => {
     const engine = new WorkflowEngine({ store: new InMemoryStateStore() });
     const undone: string[] = [];
     engine.register('saga', '1', async (ctx) => {
-      await ctx.step('a', async () => 'A', { compensate: async () => void undone.push('a') });
-      await ctx.step('b', async () => 'B', { compensate: async () => void undone.push('b') });
-      await ctx.step('c', async () => {
+      await ctx.localStep('a', async () => 'A', { compensate: async () => void undone.push('a') });
+      await ctx.localStep('b', async () => 'B', { compensate: async () => void undone.push('b') });
+      await ctx.localStep('c', async () => {
         throw new Error('boom');
       });
     });
@@ -33,7 +33,7 @@ describe('saga compensation', () => {
     const engine = new WorkflowEngine({ store: new InMemoryStateStore() });
     const undone: string[] = [];
     engine.register('ok', '1', async (ctx) => {
-      await ctx.step('a', async () => 'A', { compensate: async () => void undone.push('a') });
+      await ctx.localStep('a', async () => 'A', { compensate: async () => void undone.push('a') });
       return 'done';
     });
     const res = await startRun(engine, 'ok', {}, 'r2');

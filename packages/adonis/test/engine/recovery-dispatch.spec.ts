@@ -10,7 +10,7 @@ describe('recoverIncomplete re-enqueues (non-blocking)', () => {
     const engine = new WorkflowEngine({ store, runDispatcher: { dispatch: () => {} } });
     let started = false;
     engine.register('slow', '1', async (ctx) =>
-      ctx.step('build', async () => {
+      ctx.localStep('build', async () => {
         started = true;
         await new Promise((r) => setTimeout(r, 10_000)); // a long inline step (e.g. a big CSV export)
         return 'done';

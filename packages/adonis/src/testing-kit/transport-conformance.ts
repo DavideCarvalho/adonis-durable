@@ -1,10 +1,4 @@
-import { z } from 'zod';
-import {
-  InMemoryStateStore,
-  type RemoteStepDef,
-  type Transport,
-  WorkflowEngine,
-} from '../index.js';
+import { InMemoryStateStore, type Transport, WorkflowEngine } from '../index.js';
 
 /** A transport that can register worker handlers (every shipped transport does). */
 export type HandleableTransport = Transport & {
@@ -12,16 +6,12 @@ export type HandleableTransport = Transport & {
   close?(): Promise<void>;
 };
 
-const echo: RemoteStepDef<{ n: number }, { doubled: number }> = {
-  name: 'conformance.echo',
-  group: 'conformance',
-  input: z.object({ n: z.number() }),
-  output: z.object({ doubled: z.number() }),
-  __remote: true,
-};
+/** The cross-runtime routing name the conformance worker serves — a plain string `ctx.step` call
+ *  (no def factory needed). */
+const ECHO = 'conformance.echo';
 
 /**
- * A durable `ctx.call` suspends the run; the worker result resumes it asynchronously (on whatever
+ * A durable `ctx.step` suspends the run; the worker result resumes it asynchronously (on whatever
  * tick/poll the transport delivers on). Poll the store until the run reaches a terminal state —
  * with a generous budget so a poll-based transport (DB/SQS) has time to round-trip.
  */
@@ -53,8 +43,12 @@ export async function assertTransportConformance(
     // which resumes the run. (Two engines on one transport would fight over the result stream.)
     const store = new InMemoryStateStore();
     const engine = new WorkflowEngine({ store, transport });
-    engine.register('conf-ok', '1', async (ctx) => (await ctx.call(echo, { n: 21 })).doubled);
-    engine.register('conf-fail', '1', async (ctx) => ctx.call(echo, { n: 1 }));
+    engine.register(
+      'conf-ok',
+      '1',
+      async (ctx) => (await ctx.step<{ doubled: number }>(ECHO, { n: 21 })).doubled,
+    );
+    engine.register('conf-fail', '1', async (ctx) => ctx.step(ECHO, { n: 1 }));
 
     // success: the worker doubles the input
     transport.handle('conformance.echo', async (input) => ({

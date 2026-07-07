@@ -6,7 +6,7 @@ function makeEngine() {
   const store = new InMemoryStateStore();
   const engine = new WorkflowEngine({ store, transport: new InMemoryTransport() });
   engine.register('checkout', '1', async (ctx) => {
-    await ctx.step('reserve', async () => 1);
+    await ctx.localStep('reserve', async () => 1);
     return 'ok';
   });
   return { store, engine };

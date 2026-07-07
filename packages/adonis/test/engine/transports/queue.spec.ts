@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Heartbeat, RemoteTask, StepResult } from '../../../src/interfaces.js';
+import { sanitizeQueueToken } from '../../../src/tenant-group.js';
 import { MockAdapter } from '../../../src/transports/queue-mock-adapter.js';
 import { QueueTransport, toBrokerPriority } from '../../../src/transports/queue.js';
 
@@ -14,16 +15,23 @@ async function until(cond: () => boolean, budgetMs = 1000): Promise<void> {
   }
 }
 
-const task = (over: Partial<RemoteTask> = {}): RemoteTask => ({
-  runId: 'r1',
-  seq: 1,
-  name: 'ext.echo',
-  stepId: 'r1:1',
-  group: 'ext',
-  input: { hello: 'world' },
-  attempt: 1,
-  ...over,
-});
+// Routing is now BY HANDLER NAME: the dispatched task's `group` is the name's routing token
+// (`sanitizeQueueToken(name)`), the same token `handle(name)` subscribes to. Default it from `name`
+// so a round-trip test's dispatch lands on the worker's queue; an explicit `group` still overrides
+// (for the queue-naming assertions).
+const task = (over: Partial<RemoteTask> = {}): RemoteTask => {
+  const name = over.name ?? 'ext.echo';
+  return {
+    runId: 'r1',
+    seq: 1,
+    name,
+    stepId: 'r1:1',
+    group: sanitizeQueueToken(name),
+    input: { hello: 'world' },
+    attempt: 1,
+    ...over,
+  };
+};
 
 describe('QueueTransport', () => {
   const transports: QueueTransport[] = [];
@@ -78,11 +86,14 @@ describe('QueueTransport', () => {
     const adapter = new MockAdapter();
     const engine = make(adapter);
     const worker = make(adapter, { group: 'ext' });
-    worker.handle('ext.other', async () => 1);
+    // The worker serves `ext.echo` (subscribing to that name's queue). A task carrying a DIFFERENT
+    // name but routed onto that same queue (group === the served token) has no matching handler →
+    // the no-handler result path.
+    worker.handle('ext.echo', async () => 1);
 
     const results: StepResult[] = [];
     engine.onResult(async (r) => void results.push(r));
-    await engine.dispatch(task({ name: 'ext.echo' }));
+    await engine.dispatch(task({ name: 'ext.other', group: sanitizeQueueToken('ext.echo') }));
 
     await until(() => results.length === 1);
     expect(results[0]!.status).toBe('failed');
@@ -132,9 +143,10 @@ describe('QueueTransport', () => {
     expect(got[0]).toEqual({ kind: 'cancel', runId: 'r1', from: pub.instanceId });
   });
 
-  it('handle() without a group throws', () => {
+  it('handle() subscribes per handler name without needing a group option', () => {
+    // Routing is by name now — a worker no longer declares a group to register handlers.
     const engine = make(new MockAdapter());
-    expect(() => engine.handle('x', async () => 1)).toThrow(/group/);
+    expect(() => engine.handle('x', async () => 1)).not.toThrow();
   });
 
   it('close() stops loops and destroys the adapter', async () => {
@@ -167,7 +179,7 @@ describe('QueueTransport', () => {
     await engine.dispatch(task({ stepId: 'r1:low', priority: 1 }));
     await engine.dispatch(task({ stepId: 'r1:high', priority: 9 }));
 
-    const queue = 'durable:tasks:ext';
+    const queue = 'durable:tasks:ext.echo';
     const first = await adapter.popFrom(queue);
     const second = await adapter.popFrom(queue);
     expect((first?.payload as RemoteTask).stepId).toBe('r1:high');

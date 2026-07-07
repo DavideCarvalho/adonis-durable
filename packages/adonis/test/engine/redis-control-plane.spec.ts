@@ -92,7 +92,7 @@ describe.skipIf(!REDIS_URL)('RedisControlPlane (real Redis)', () => {
     await delay(100); // let both subscribers connect
 
     worker.register('wf', '1', async (ctx) => {
-      await ctx.step('a', async () => 1);
+      await ctx.localStep('a', async () => 1);
       return 'ok';
     });
     await startRun(worker, 'wf', {}, 'run1');

@@ -12,7 +12,7 @@ describe('non-blocking control actions (retry / compensate-cancel)', () => {
     const engine = new WorkflowEngine({ store, runDispatcher: noDispatch });
     let fail = true;
     engine.register('w', '1', async (ctx) =>
-      ctx.step('s', async () => {
+      ctx.localStep('s', async () => {
         if (fail) {
           fail = false;
           throw new Error('boom');
@@ -37,7 +37,7 @@ describe('non-blocking control actions (retry / compensate-cancel)', () => {
     const engine = new WorkflowEngine({ store }); // default in-process dispatcher
     const undone: string[] = [];
     engine.register('w', '1', async (ctx) => {
-      await ctx.step('reserve', async () => 1, {
+      await ctx.localStep('reserve', async () => 1, {
         compensate: async () => void undone.push('reserve'),
       });
       await ctx.waitForSignal('go');

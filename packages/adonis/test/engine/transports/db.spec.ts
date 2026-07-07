@@ -6,18 +6,24 @@ import {
   TRANSPORT_TABLES,
   createDurableTransportTables,
 } from '../../../src/transports/db-schema.js';
+import { sanitizeQueueToken } from '../../../src/tenant-group.js';
 import { DbTransport } from '../../../src/transports/db.js';
 
-const task = (over: Partial<RemoteTask> = {}): RemoteTask => ({
-  runId: 'r1',
-  seq: 1,
-  stepId: 'r1:1',
-  name: 'math.double',
-  group: 'math',
-  input: { n: 21 },
-  attempt: 1,
-  ...over,
-});
+// Routing is now BY HANDLER NAME: a dispatched task's `group` is the name's routing token
+// (`sanitizeQueueToken(name)`), which is also the token a worker's `handle(name)` claims rows for.
+const task = (over: Partial<RemoteTask> = {}): RemoteTask => {
+  const name = over.name ?? 'math.double';
+  return {
+    runId: 'r1',
+    seq: 1,
+    stepId: 'r1:1',
+    name,
+    group: sanitizeQueueToken(name),
+    input: { n: 21 },
+    attempt: 1,
+    ...over,
+  };
+};
 
 async function waitFor(fn: () => Promise<boolean>, budgetMs = 2000): Promise<void> {
   const start = Date.now();
@@ -273,7 +279,8 @@ describe('DbTransport (unit)', () => {
           run_id: 'legacy',
           seq: 1,
           name: 'math.double',
-          grp: 'math',
+          // The routing token a worker serving `math.double` now claims by (name-based).
+          grp: 'math.double',
           input: JSON.stringify({ n: 5 }),
           attempt: 1,
           claimed_by: null,

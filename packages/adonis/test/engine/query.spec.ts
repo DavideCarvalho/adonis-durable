@@ -20,7 +20,7 @@ describe('ctx.setEvent / engine.getEvent — live query of a running run', () =>
     const engine = new WorkflowEngine({ store });
     engine.register('job', '1', async (ctx) => {
       await ctx.setEvent('progress', 0);
-      await ctx.step('phase-1', async () => 'a');
+      await ctx.localStep('phase-1', async () => 'a');
       await ctx.setEvent('progress', 50);
       await ctx.waitForSignal('go'); // suspend so we can query mid-flight
       await ctx.setEvent('progress', 100);

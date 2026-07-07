@@ -20,7 +20,6 @@ import type {
   EngineListener,
   GroupHealth,
   NamedTransport,
-  RemoteStepDef,
   RemoteTask,
   RunDispatcher,
   RunQuery,
@@ -31,6 +30,7 @@ import type {
   StepCheckpoint,
   StepError,
   StepEvent,
+  StepDef,
   StepInterceptor,
   StepInvocation,
   StepKind,
@@ -48,7 +48,9 @@ import type {
 import type { HistoryEvent } from './interfaces.js';
 import { breakpointToken, stepId } from './protocol.js';
 import type { QueueConfig } from './queue.js';
+import { RemoteWorkflowExecutor } from './remote-workflow-executor.js';
 import { SingletonGate } from './singleton-gate.js';
+import { sanitizeQueueToken, tenantGroup } from './tenant-group.js';
 import { TransportPool } from './transport-pool.js';
 import {
   type Compensation,
@@ -76,6 +78,13 @@ export interface StartOptions {
    * the engine dispatches to advance it. Higher wins; absent = unprioritised. See {@link WorkflowRun.priority}.
    */
   priority?: number | undefined;
+  /**
+   * Worker-pool partition to stamp on THIS run, overriding the engine's own `namespace` for it — the
+   * operator hook: a control-plane engine (its own namespace `undefined`/`default`) can route a run
+   * to a specific tenant's pool by passing that tenant here. Absent → the engine's namespace. Once
+   * stamped, the run is only picked up / resumed by an engine in the same namespace.
+   */
+  namespace?: string | undefined;
 }
 
 /**
@@ -264,6 +273,14 @@ export interface WorkflowEngineDeps {
    * run `runPending` on a worker pod to pick those up; or a broker-backed one for a worker pool.
    */
   runDispatcher?: RunDispatcher | undefined;
+  /**
+   * Route a run of a workflow this engine has NO local registration for to a live worker group of the
+   * SAME name (bare group, no partition suffix), discovered via `pool.listWorkerGroups()` — the
+   * convention-dispatch opt-in. When on and `start`/`resume` sees an unregistered workflow whose name
+   * matches a live worker group, it auto-registers a remote workflow routed to that group; when off
+   * (the default), an unregistered workflow throws exactly as before. Existing behaviour is unchanged.
+   */
+  remoteByConvention?: boolean | undefined;
 }
 
 /** Thrown by {@link WorkflowEngine.resume} when the run belongs to a different namespace. */
@@ -284,6 +301,11 @@ export class WorkflowEngine {
   private readonly store: StateStore;
   /** Ordered transport pool (dispatch + failover). Empty = no remote steps. */
   private readonly pool: TransportPool;
+  /** The primary task transport (first of the pool), used to build an on-the-fly remote-workflow
+   *  executor for {@link WorkflowEngineDeps.remoteByConvention}. Undefined when no transport is wired. */
+  private readonly primaryTransport?: Transport | undefined;
+  /** Convention-dispatch opt-in — see {@link WorkflowEngineDeps.remoteByConvention}. */
+  private readonly remoteByConvention: boolean;
   private readonly controlPlane?: ControlPlane | undefined;
   private readonly clock: () => number;
   private readonly instanceId: string;
@@ -346,6 +368,8 @@ export class WorkflowEngine {
     this.pool = new TransportPool(
       deps.transports ?? (deps.transport ? [{ id: 'default', transport: deps.transport }] : []),
     );
+    this.primaryTransport = deps.transports?.[0]?.transport ?? deps.transport;
+    this.remoteByConvention = deps.remoteByConvention ?? false;
     this.controlPlane = deps.controlPlane;
     this.clock = deps.clock ?? Date.now;
     this.admission = deps.admission ?? new InMemoryAdmissionBackend(this.clock);
@@ -560,7 +584,26 @@ export class WorkflowEngine {
   }
 
   /**
-   * Register a flow-control queue referenced by `ctx.call(step, input, { queue })`. Caps concurrent
+   * Convention-dispatch resolution (opt-in via {@link WorkflowEngineDeps.remoteByConvention}): when
+   * `name` isn't locally registered but a LIVE worker group of the same name exists, auto-register a
+   * remote workflow routed to that group (bare group, no partition) so its runs advance over the
+   * broker like any `registerRemote`'d one. Returns whether `name` is registered afterwards. A no-op
+   * (returns `false`) when the opt-in is off, no transport is wired, or no matching group is live.
+   */
+  private async ensureConventionWorkflow(name: string): Promise<boolean> {
+    if (!this.remoteByConvention || !this.primaryTransport) return false;
+    if (this.latest.get(name)) return true;
+    const groups = await this.pool.listWorkerGroups();
+    if (!groups.includes(name)) return false;
+    this.registerRemote(name, '1', {
+      group: name,
+      executor: new RemoteWorkflowExecutor(this.primaryTransport, name),
+    });
+    return true;
+  }
+
+  /**
+   * Register a flow-control queue referenced by `ctx.step(name, input, { queue })`. Caps concurrent
    * in-flight steps and/or the admission rate; blocked calls re-suspend and retry, so the limit is
    * durable. Per engine instance (see {@link QueueConfig}). Registering the same name replaces it.
    */
@@ -685,7 +728,12 @@ export class WorkflowEngine {
     opts?: StartOptions,
   ): Promise<RunResult> {
     const name = workflowName(workflow);
-    const registered = this.latest.get(name);
+    let registered = this.latest.get(name);
+    // remoteByConvention: an unregistered workflow whose name matches a LIVE worker group is routed to
+    // it as a remote workflow (bare group). Off by default → the original "not registered" throw.
+    if (!registered && (await this.ensureConventionWorkflow(name))) {
+      registered = this.latest.get(name);
+    }
     if (!registered) throw new Error(`workflow ${name} is not registered`);
     // Validate the input up front — a bad payload is rejected before any run is created.
     await registered.validateInput?.(input);
@@ -714,7 +762,7 @@ export class WorkflowEngine {
       workflow: name,
       workflowVersion: registered.version,
       status: 'pending',
-      namespace: this.namespace,
+      namespace: opts?.namespace ?? this.namespace,
       input,
       tags,
       searchAttributes: opts?.searchAttributes,
@@ -792,7 +840,14 @@ export class WorkflowEngine {
     }
     // Pin to the version the run STARTED on — replay is positional, so running a changed
     // workflow body against old checkpoints would corrupt the run.
-    const registered = this.workflows.get(versionKey(run.workflow, run.workflowVersion));
+    let registered = this.workflows.get(versionKey(run.workflow, run.workflowVersion));
+    // remoteByConvention: a run recovered on an instance that never registered this workflow (e.g. a
+    // crash-recovery pickup) is re-routed to a live worker group of the same name, if one exists.
+    if (!registered && (await this.ensureConventionWorkflow(run.workflow))) {
+      registered =
+        this.workflows.get(versionKey(run.workflow, run.workflowVersion)) ??
+        this.latest.get(run.workflow);
+    }
     if (!registered) {
       throw new Error(
         `workflow ${run.workflow}@${run.workflowVersion} is not registered — keep the prior version deployed so in-flight runs can drain (skew protection)`,
@@ -848,7 +903,7 @@ export class WorkflowEngine {
         if (run.createdAt.getTime() > deadline) continue;
         const error = { message: 'execution timeout', code: 'execution_timeout' };
         await this.store.updateRun(run.id, { status: 'cancelled', error, updatedAt: new Date() });
-        this.emit({ type: 'run.failed', runId: run.id, workflow: run.workflow, error });
+        this.emit({ type: 'run.failed', runId: run.id, workflow: run.workflow, namespace: run.namespace, error });
       }
     }
   }
@@ -900,7 +955,7 @@ export class WorkflowEngine {
       };
       await this.store.updateRun(run.id, { status: 'dead', error, updatedAt: new Date() });
       await this.store.releaseRunLock(run.id);
-      this.emit({ type: 'run.failed', runId: run.id, workflow: run.workflow, error });
+      this.emit({ type: 'run.failed', runId: run.id, workflow: run.workflow, namespace: run.namespace, error });
       this.notifyDead({ ...run, status: 'dead', error, recoveryAttempts: attempts });
       return { runId: run.id, status: 'dead', error };
     }
@@ -970,7 +1025,9 @@ export class WorkflowEngine {
     const run = await this.store.getRun(runId);
     if (!run) return null;
     const id = newRunId ?? `${runId}~retry~${globalThis.crypto.randomUUID().slice(0, 8)}`;
-    await this.start(run.workflow, input, id, { tags: run.tags });
+    // Inherit the original run's namespace so a retry lands in the SAME worker-pool partition (an
+    // operator-routed run keeps its tenant on retry, rather than falling back to the engine's own).
+    await this.start(run.workflow, input, id, { tags: run.tags, namespace: run.namespace });
     return { runId: id };
   }
 
@@ -1217,7 +1274,7 @@ export class WorkflowEngine {
     }
     const error = { message: 'cancelled' };
     await this.store.updateRun(runId, { status: 'cancelled', error, updatedAt: new Date() });
-    this.emit({ type: 'run.failed', runId, workflow: run.workflow, error });
+    this.emit({ type: 'run.failed', runId, workflow: run.workflow, namespace: run.namespace, error });
     await this.cancelChildren(runId, opts);
     // Notify local cancel listeners now (a worker on this pod), and broadcast so the instance/worker
     // actually running this run learns of it and can abort cooperatively (the store already records
@@ -1565,6 +1622,7 @@ export class WorkflowEngine {
         type: 'run.completed',
         runId: run.id,
         workflow: run.workflow,
+        namespace: run.namespace,
         output: outcome.output,
       });
       void this.notifyParent(run.id, { ok: true, value: outcome.output });
@@ -1576,13 +1634,14 @@ export class WorkflowEngine {
         type: 'run.failed',
         runId: run.id,
         workflow: run.workflow,
+        namespace: run.namespace,
         error: outcome.error,
       });
       void this.notifyParent(run.id, { ok: false, error: outcome.error.message });
       return { runId: run.id, status: 'failed', error: outcome.error };
     }
     await this.store.updateRun(run.id, { status: 'suspended', wakeAt: outcome.wakeAt, updatedAt });
-    this.emit({ type: 'run.suspended', runId: run.id, workflow: run.workflow });
+    this.emit({ type: 'run.suspended', runId: run.id, workflow: run.workflow, namespace: run.namespace });
     return { runId: run.id, status: 'suspended' };
   }
 
@@ -1594,12 +1653,12 @@ export class WorkflowEngine {
     if (run.status === 'pending') {
       await this.store.updateRun(run.id, { status: 'running', updatedAt: new Date() });
       run.status = 'running';
-      this.emit({ type: 'run.started', runId: run.id, workflow: run.workflow });
+      this.emit({ type: 'run.started', runId: run.id, workflow: run.workflow, namespace: run.namespace });
     }
     if (registered.singleton && !(await this.singletons.admit(run, registered.singleton))) {
       const wakeAt = this.singletons.retryWakeAt();
       await this.store.updateRun(run.id, { status: 'suspended', wakeAt, updatedAt: new Date() });
-      this.emit({ type: 'run.suspended', runId: run.id, workflow: run.workflow });
+      this.emit({ type: 'run.suspended', runId: run.id, workflow: run.workflow, namespace: run.namespace });
       await this.store.releaseRunLock(run.id);
       return { runId: run.id, status: 'suspended' };
     }
@@ -1614,7 +1673,7 @@ export class WorkflowEngine {
         stack: err instanceof Error ? err.stack : undefined,
       };
       await this.store.updateRun(run.id, { status: 'failed', error, updatedAt: new Date() });
-      this.emit({ type: 'run.failed', runId: run.id, workflow: run.workflow, error });
+      this.emit({ type: 'run.failed', runId: run.id, workflow: run.workflow, namespace: run.namespace, error });
       return { runId: run.id, status: 'failed', error };
     }
 
@@ -1748,6 +1807,10 @@ export class WorkflowEngine {
         // independently via the remote-result path (keyed by seq, so concurrent calls never clobber).
         // Mirrors the `startChild` `getRun(childId)` guard below.
         if (await this.store.getCheckpoint(run.id, cmd.seq)) continue;
+        // Route this cross-SDK-worker `call` by the SAME name-based token a native `ctx.step`
+        // dispatches with (and a worker subscribes to per handler name), so a decision-driven remote
+        // step and an in-process one land on the identical queue. The command carries no partition.
+        const callToken = tenantGroup(sanitizeQueueToken(cmd.name), undefined);
         await this.store.saveCheckpoint(
           stepCheckpoint({
             runId: run.id,
@@ -1757,13 +1820,13 @@ export class WorkflowEngine {
             status: 'pending',
             input: cmd.input,
             attempts: 1,
-            workerGroup: cmd.group,
+            workerGroup: callToken,
             enqueuedAt: at,
             startedAt: at,
             finishedAt: at,
             // A `ctx.gather_calls([...])` fan-out stamps every dispatched `call` in the fan with the
             // same group, so the dashboard renders the remote steps as one parallel fan (parity with
-            // the gathered `recordStep`/`startChild` tags). Undefined for a lone sequential `ctx.call`.
+            // the gathered `recordStep`/`startChild` tags). Undefined for a lone sequential `ctx.step`.
             parallelGroup: cmd.parallelGroup,
           }),
         );
@@ -1773,7 +1836,7 @@ export class WorkflowEngine {
             seq: cmd.seq,
             name: cmd.name,
             stepId: id,
-            group: cmd.group,
+            group: callToken,
             input: cmd.input,
             traceparent: this.traceparent?.(),
             context: this.context?.(),
@@ -1869,14 +1932,14 @@ export class WorkflowEngine {
     if (run.status === 'pending') {
       await this.store.updateRun(run.id, { status: 'running', updatedAt: new Date() });
       run.status = 'running';
-      this.emit({ type: 'run.started', runId: run.id, workflow: run.workflow });
+      this.emit({ type: 'run.started', runId: run.id, workflow: run.workflow, namespace: run.namespace });
     }
     // Singleton admission gate: if this run shares its key with `limit` older in-flight runs, wait
     // (suspend on a short timer) until a slot frees instead of running now. Re-checked on each resume.
     if (registered?.singleton && !(await this.singletons.admit(run, registered.singleton))) {
       const wakeAt = this.singletons.retryWakeAt();
       await this.store.updateRun(run.id, { status: 'suspended', wakeAt, updatedAt: new Date() });
-      this.emit({ type: 'run.suspended', runId: run.id, workflow: run.workflow });
+      this.emit({ type: 'run.suspended', runId: run.id, workflow: run.workflow, namespace: run.namespace });
       await this.store.releaseRunLock(run.id);
       return { runId: run.id, status: 'suspended' };
     }
@@ -1905,7 +1968,7 @@ export class WorkflowEngine {
           error: undefined,
           updatedAt: new Date(),
         });
-        this.emit({ type: 'run.completed', runId: run.id, workflow: run.workflow });
+        this.emit({ type: 'run.completed', runId: run.id, workflow: run.workflow, namespace: run.namespace });
         void this.notifyParent(run.id, { ok: true, value: undefined });
         const nextId = nextContinuationId(run.id);
         queueMicrotask(
@@ -1924,7 +1987,7 @@ export class WorkflowEngine {
           }
           const error = { message: 'cancelled' };
           await this.store.updateRun(run.id, { status: 'cancelled', error, updatedAt: new Date() });
-          this.emit({ type: 'run.failed', runId: run.id, workflow: run.workflow, error });
+          this.emit({ type: 'run.failed', runId: run.id, workflow: run.workflow, namespace: run.namespace, error });
           return { runId: run.id, status: 'cancelled', error };
         }
         return this.settleRun(run, { kind: 'suspended', wakeAt: err.wakeAt });
@@ -1953,14 +2016,20 @@ export class WorkflowEngine {
   /**
    * Run one saga compensation, retried up to `compensationRetries`, emitting a `compensate:<step>`
    * step event for its outcome so a stranded undo is visible. Never throws — a permanently-failing
-   * compensation is skipped so it can't mask the original failure.
+   * compensation is skipped so it can't mask the original failure. Handles both compensation shapes:
+   * a LOCAL `fn` (run in-process) and a DISPATCHED undo (an ordinary step def sent to a worker and
+   * awaited inline — the worker serving its name runs it with the {@link StepUndo} envelope).
    */
   private async runCompensation(run: WorkflowRun, comp: Compensation): Promise<void> {
     const name = `compensate:${comp.name}`;
     for (let attempt = 1; attempt <= this.compensationRetries; attempt += 1) {
       const startedAt = Date.now();
       try {
-        await comp.fn();
+        if ('fn' in comp) {
+          await comp.fn();
+        } else {
+          await this.dispatchCompensation(run, comp.dispatch.def, comp.dispatch.args, attempt);
+        }
         this.emit({
           type: 'step.completed',
           runId: run.id,
@@ -1983,6 +2052,47 @@ export class WorkflowEngine {
           });
         }
       }
+    }
+  }
+
+  /**
+   * Dispatch a saga undo step to a worker and await its result INLINE (the saga unwind already runs
+   * outside the positional replay, so this is not checkpointed — it's a one-shot dispatch + await).
+   * Routes by the undo def's own name/partition token, applies its own optional input schema, and
+   * honours its own liveness `timeoutMs` via the heartbeat window. Throws on a worker-reported failure
+   * or timeout so `runCompensation`'s retry/skip logic applies uniformly to both compensation shapes.
+   */
+  private async dispatchCompensation(
+    run: WorkflowRun,
+    def: StepDef<unknown, unknown>,
+    args: unknown,
+    attempt: number,
+  ): Promise<void> {
+    if (this.pool.size === 0) throw new Error('dispatched compensation requires a Transport');
+    const token = tenantGroup(sanitizeQueueToken(def.name), def.partition);
+    const validInput = def.input ? def.input.parse(args) : args;
+    const id = `${run.id}:compensate:${def.name}:${attempt}`;
+    const resultPromise = new Promise<RemoteResolution>((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+    });
+    try {
+      await this.pool.dispatch({
+        runId: run.id,
+        seq: -1,
+        name: def.name,
+        stepId: id,
+        group: token,
+        input: validInput,
+        traceparent: this.traceparent?.(),
+        context: this.context?.(),
+        attempt: 1,
+      });
+      await (def.timeoutMs
+        ? this.awaitWithHeartbeat(id, resultPromise, def.timeoutMs)
+        : resultPromise);
+    } catch (err) {
+      this.pending.delete(id);
+      throw err;
     }
   }
 
@@ -2094,7 +2204,7 @@ export class WorkflowEngine {
   private async callRemote<TInput, TOutput>(
     runId: string,
     seq: number,
-    step: RemoteStepDef<TInput, TOutput>,
+    step: StepDef<TInput, TOutput>,
     input: TInput,
     queue?: string,
     transport?: string,
@@ -2159,7 +2269,13 @@ export class WorkflowEngine {
       this.stepQueue.set(id, queue);
     }
 
-    const validInput = step.input.parse(input);
+    // Optional runtime schema: validate only when the def carries one (a bare `@Step()` / string-name
+    // call carries none — the engine passes the input through untouched then).
+    const validInput = step.input ? step.input.parse(input) : input;
+    // Routing token: BY NAME (sanitized for brokers), optionally partition-suffixed. Computed once and
+    // used at BOTH the checkpoint's workerGroup and the dispatched task's routing `group`, so the same
+    // token the worker subscribes to per handler name serves this step.
+    const token = tenantGroup(sanitizeQueueToken(step.name), step.partition);
     const enqueuedAt = new Date();
     // Persist the pending checkpoint BEFORE dispatching, so a fast result always finds it to complete.
     await this.store.saveCheckpoint({
@@ -2171,7 +2287,7 @@ export class WorkflowEngine {
       status: 'pending',
       input: validInput,
       attempts: attempt,
-      workerGroup: step.group,
+      workerGroup: token,
       enqueuedAt,
       startedAt: enqueuedAt, // placeholders until the worker result lands
       finishedAt: enqueuedAt,
@@ -2182,7 +2298,7 @@ export class WorkflowEngine {
         seq,
         name: step.name,
         stepId: id,
-        group: step.group,
+        group: token,
         input: validInput,
         traceparent: this.traceparent?.(),
         context: this.context?.(),
@@ -2260,12 +2376,13 @@ export class WorkflowEngine {
   private async callRemoteInMemory<TInput, TOutput>(
     runId: string,
     seq: number,
-    step: RemoteStepDef<TInput, TOutput>,
+    step: StepDef<TInput, TOutput>,
     input: TInput,
     transport?: string,
   ): Promise<TOutput> {
     if (this.pool.size === 0) throw new Error('remote steps require a Transport');
-    const validInput = step.input.parse(input);
+    const validInput = step.input ? step.input.parse(input) : input;
+    const token = tenantGroup(sanitizeQueueToken(step.name), step.partition);
     const id = stepId(runId, seq);
     const enqueuedAt = new Date();
     this.emit({ type: 'step.started', runId, seq, name: step.name, kind: 'remote' });
@@ -2286,7 +2403,7 @@ export class WorkflowEngine {
           seq,
           name: step.name,
           stepId: id,
-          group: step.group,
+          group: token,
           input: validInput,
           traceparent: this.traceparent?.(),
           context: this.context?.(),
@@ -2298,7 +2415,7 @@ export class WorkflowEngine {
         const resolution = step.timeoutMs
           ? await this.awaitWithHeartbeat(id, resultPromise, step.timeoutMs)
           : await resultPromise;
-        const output = step.output.parse(resolution.output) as TOutput;
+        const output = (step.output ? step.output.parse(resolution.output) : resolution.output) as TOutput;
         // The worker reports when it actually picked the task up; fall back to dispatch time if a
         // transport doesn't carry it (queue-wait then reads as zero rather than going negative).
         const startedAt = resolution.startedAt ? new Date(resolution.startedAt) : enqueuedAt;
@@ -2311,7 +2428,7 @@ export class WorkflowEngine {
           output,
           events: resolution.events,
           attempts: attempt,
-          workerGroup: step.group,
+          workerGroup: token,
           enqueuedAt,
           startedAt,
         });

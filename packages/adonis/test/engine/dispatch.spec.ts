@@ -39,7 +39,7 @@ describe('engine.start dispatches (does not run inline)', () => {
     const engine = new WorkflowEngine({ store, runDispatcher: { dispatch: () => {} } });
     let runs = 0;
     engine.register('w', '1', async (ctx) => {
-      await ctx.step('enter', async () => {
+      await ctx.localStep('enter', async () => {
         runs += 1;
       });
       return runs;

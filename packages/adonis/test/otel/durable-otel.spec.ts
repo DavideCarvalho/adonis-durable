@@ -29,7 +29,7 @@ describe('attachDurableOtel', () => {
     attachDurableOtel(engine, { tracer });
 
     engine.register('checkout', '1', async (ctx) => {
-      await ctx.step('charge', async () => 1);
+      await ctx.localStep('charge', async () => 1);
       return 'ok';
     });
     await engine.start('checkout', {}, 'run1');
@@ -51,7 +51,7 @@ describe('attachDurableOtel', () => {
     attachDurableOtel(engine, { tracer });
 
     engine.register('wf', '1', async (ctx) =>
-      ctx.step('boom', async () => {
+      ctx.localStep('boom', async () => {
         throw new Error('nope');
       }),
     );

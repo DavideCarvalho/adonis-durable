@@ -1,19 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { z } from 'zod';
 import type { AdmissionBackend } from '../../src/admission.js';
 import { WorkflowEngine } from '../../src/engine.js';
 import type { Admission, AdmissionItem, QueueConfig } from '../../src/queue.js';
-import { remoteStep } from '../../src/remote-step-factory.js';
 import { startRun } from '../../src/test-helpers.js';
 import { InMemoryStateStore } from '../../src/testing/in-memory-state-store.js';
 import { InMemoryTransport } from '../../src/testing/in-memory-transport.js';
-
-const chargeCard = remoteStep({
-  name: 'payments.charge-card',
-  group: 'payments',
-  input: z.object({ amount: z.number() }),
-  output: z.object({ chargeId: z.string() }),
-});
 
 /**
  * Backend that blocks admission until `open()` is called, and exposes the `onFreed` callback the
@@ -58,7 +49,9 @@ describe('engine wakes admission-blocked runs on a freed-slot signal', () => {
     const engine = new WorkflowEngine({ store, transport, admission: backend });
     engine.registerQueue({ name: 'charges', concurrency: 1 });
     engine.register('checkout', '1', async (ctx) => {
-      const c = await ctx.call(chargeCard, { amount: 7 }, { queue: 'charges' });
+      const c = await ctx.step<{ chargeId: string }>('payments.charge-card', { amount: 7 }, {
+        queue: 'charges',
+      });
       return c.chargeId;
     });
 

@@ -10,6 +10,7 @@ import {
 } from '../interfaces.js';
 import { type PollLoop, Pollers } from '../pollers.js';
 import { type StepHandler, runStepHandler } from '../protocol.js';
+import { sanitizeQueueToken, tenantGroup } from '../tenant-group.js';
 
 /**
  * The wire payloads carried as a queue job's `payload`. Everything that crosses the queue is plain
@@ -70,11 +71,19 @@ export interface QueueTransportOptions {
    */
   adapter: AdapterFactory;
   /**
-   * The worker group this instance serves. Required to register {@link QueueTransport.handle}
-   * consumers — the task poll loop pulls from this group's task queue. Omit on an engine-only
-   * instance that just dispatches + consumes results.
+   * @deprecated Steps are now routed BY HANDLER NAME, so this instance serves whatever names it
+   * `handle()`s — no group to declare. Accepted for back-compat / parity with the pre-redesign API
+   * and otherwise ignored (a worker subscribes to one task queue PER registered handler name). Use
+   * {@link partition} for isolation.
    */
   group?: string;
+  /**
+   * Optional isolation partition suffixing every per-handler tasks queue this worker subscribes to
+   * (`<name>@<partition>`), matching the `partition` a dispatch carries — so the same backend can
+   * host several worker pools serving the same handler name without their tasks crossing. Unset (or
+   * `'default'`) subscribes to the bare (sanitized) handler-name queue.
+   */
+  partition?: string;
   /** Queue-name prefix so several apps can share one backend without colliding. Default `durable`. */
   prefix?: string;
   /**
@@ -112,7 +121,7 @@ export interface QueueTransportOptions {
  */
 export class QueueTransport implements Transport, ControlPlane {
   readonly #adapter: Adapter;
-  readonly #group: string | undefined;
+  readonly #partition: string | undefined;
   readonly #prefix: string;
   // Logical deployment namespace folded into every queue name via `#effectivePrefix()`. Mutable so an
   // engine can push its namespace onto a transport via `useNamespace()` — but only when one wasn't
@@ -123,11 +132,13 @@ export class QueueTransport implements Transport, ControlPlane {
   readonly #instanceId: string;
   readonly #handlers = new Map<string, StepHandler>();
   readonly #pollers: Pollers;
-  #taskLoop: PollLoop | undefined;
+  /** One task poll loop per subscribed routing token (`tenantGroup(sanitizeQueueToken(name), partition)`)
+   *  — a dedicated queue per handler name, never a single shared group queue. */
+  readonly #taskLoops = new Map<string, PollLoop>();
 
   constructor(options: QueueTransportOptions) {
     this.#adapter = options.adapter();
-    this.#group = options.group;
+    this.#partition = options.partition;
     this.#prefix = options.prefix ?? 'durable';
     this.#namespace = options.namespace;
     this.#explicitNamespace = options.namespace !== undefined;
@@ -210,22 +221,23 @@ export class QueueTransport implements Transport, ControlPlane {
   // ---------------------------------------------------------------------------
 
   /**
-   * Register a step handler (worker side). Starts this group's task poll loop on the first call —
-   * each task it pops runs through {@link runStepHandler} and its result is pushed to the engine.
+   * Register a step handler (worker side). Starts a DEDICATED task poll loop for `name` on its own
+   * routing-token queue (`tenantGroup(sanitizeQueueToken(name), partition)`) on first registration —
+   * one queue per handler name, never a single group queue — so it matches the token the engine
+   * dispatches by (see `engine.callRemote`). Re-registering a name just swaps the handler fn.
    */
   handle(name: string, fn: StepHandler): void {
-    if (!this.#group) {
-      throw new Error('QueueTransport needs a `group` option to register handlers');
-    }
     this.#handlers.set(name, fn);
-    if (!this.#taskLoop) {
-      const group = this.#group;
-      this.#taskLoop = this.#startLoop(this.#tasksQueue(group), async (job) => {
+    const token = tenantGroup(sanitizeQueueToken(name), this.#partition);
+    if (this.#taskLoops.has(token)) return;
+    this.#taskLoops.set(
+      token,
+      this.#startLoop(this.#tasksQueue(token), async (job) => {
         const task = fromJson<TaskPayload>(job.payload);
         const result = await runStepHandler(task, this.#handlers.get(task.name));
         await this.#adapter.pushOn(this.#resultsQueue(), this.#job('result', result));
-      });
-    }
+      }),
+    );
   }
 
   /** Worker side: publish a liveness heartbeat for an in-flight long step. */
@@ -299,7 +311,7 @@ export class QueueTransport implements Transport, ControlPlane {
   /** Stop every poll loop and destroy the adapter so the process can exit. */
   async close(): Promise<void> {
     this.#pollers.stopAll();
-    this.#taskLoop = undefined;
+    this.#taskLoops.clear();
     await this.#adapter.destroy();
   }
 }

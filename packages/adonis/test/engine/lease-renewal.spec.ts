@@ -44,7 +44,7 @@ describe('lease renewal', () => {
     let runs = 0;
     const register = (e: WorkflowEngine) =>
       e.register('slow', '1', async (ctx) =>
-        ctx.step('work', async () => {
+        ctx.localStep('work', async () => {
           runs += 1;
           await sleep(300); // outlives the 100ms lease — only renewal keeps it ours
           return 'ok';

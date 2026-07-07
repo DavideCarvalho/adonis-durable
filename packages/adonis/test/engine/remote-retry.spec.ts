@@ -1,7 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { z } from 'zod';
 import { WorkflowEngine } from '../../src/engine.js';
-import { remoteStep } from '../../src/remote-step-factory.js';
 import { InMemoryStateStore } from '../../src/testing/in-memory-state-store.js';
 import { InMemoryTransport } from '../../src/testing/in-memory-transport.js';
 
@@ -21,15 +19,12 @@ describe('durable remote step — retry with backoff', () => {
     });
     let nowMs = 1000;
     const engine = new WorkflowEngine({ store, transport, clock: () => nowMs });
-    const flaky = remoteStep({
-      name: 'ext.flaky',
-      group: 'ext',
-      input: z.object({}),
-      output: z.object({ ok: z.boolean() }),
-      retries: 3,
-      backoffMs: 100,
-    });
-    engine.register('wf', '1', async (ctx) => (await ctx.call(flaky, {})).ok);
+    engine.register(
+      'wf',
+      '1',
+      async (ctx) =>
+        (await ctx.step<{ ok: boolean }>('ext.flaky', {}, { retries: 3, backoffMs: 100 })).ok,
+    );
 
     await engine.start('wf', {}, 'r1');
     await flush(); // attempt 1 fails → checkpoint failed, run suspended awaiting the backoff
@@ -61,14 +56,7 @@ describe('durable remote step — retry with backoff', () => {
       throw err;
     });
     const engine = new WorkflowEngine({ store, transport });
-    const declined = remoteStep({
-      name: 'ext.declined',
-      group: 'ext',
-      input: z.object({}),
-      output: z.object({ ok: z.boolean() }),
-      retries: 5,
-    });
-    engine.register('wf', '1', async (ctx) => ctx.call(declined, {}));
+    engine.register('wf', '1', async (ctx) => ctx.step('ext.declined', {}, { retries: 5 }));
 
     await engine.start('wf', {}, 'r1');
     await flush();

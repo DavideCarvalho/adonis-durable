@@ -8,7 +8,7 @@ describe('WorkflowEngine — step events (observability)', () => {
     const engine = new WorkflowEngine({ store });
 
     engine.register('wf', '1', async (ctx) => {
-      await ctx.step('processing', async (log) => {
+      await ctx.localStep('processing', async (log) => {
         log.info('planned 3 sub-processes');
         log.sub('proc-a', 'ok');
         log.sub('proc-b', 'failed', 'validation rejected');
@@ -37,7 +37,7 @@ describe('WorkflowEngine — step events (observability)', () => {
     const engine = new WorkflowEngine({ store });
 
     engine.register('wf', '1', async (ctx) => {
-      await ctx.step('boom', async (log) => {
+      await ctx.localStep('boom', async (log) => {
         log.error('about to fail');
         throw new Error('kaput');
       });
@@ -58,7 +58,7 @@ describe('WorkflowEngine — step events (observability)', () => {
     const engine = new WorkflowEngine({ store });
 
     engine.register('wf', '1', async (ctx) => {
-      await ctx.step('quiet', async () => 1);
+      await ctx.localStep('quiet', async () => 1);
       return 'ok';
     });
 

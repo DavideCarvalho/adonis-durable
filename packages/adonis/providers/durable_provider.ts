@@ -7,6 +7,8 @@ import {
   InMemoryStateStore,
   InMemoryTransport,
   type StateStore,
+  type StepServer,
+  type StepsBarrel,
   type StoreContext,
   type Transport,
   type TransportContext,
@@ -14,6 +16,8 @@ import {
   type WorkflowEngineDeps,
   type WorkflowsBarrel,
   attachDurableDiagnostics,
+  registerStepsFromBarrel,
+  registerStepsFromDir,
   registerWorkflowsFromBarrel,
   registerWorkflowsFromDir,
 } from '../src/index.js';
@@ -125,12 +129,46 @@ export default class DurableProvider {
     const barrel = await this.#loadGeneratedWorkflowsBarrel();
     if (barrel) {
       await registerWorkflowsFromBarrel(engine, barrel);
-      return;
+    } else {
+      // Fallback: no generated barrel — scan the configured directory at runtime.
+      const dir = this.app.makePath(config.workflowsPath ?? 'app/workflows');
+      await registerWorkflowsFromDir(engine, dir);
     }
 
-    // Fallback: no generated barrel — scan the configured directory at runtime.
-    const dir = this.app.makePath(config.workflowsPath ?? 'app/workflows');
-    await registerWorkflowsFromDir(engine, dir);
+    await this.#registerSteps(config);
+  }
+
+  /**
+   * Auto-register the `app/steps` convention: every `@Step` class / `defineStep(...)` handler is
+   * served BY NAME on the app's transport, so `ctx.step('name', input)` (or a typed ref) routes to it
+   * with no manual `transport.handle(...)`. Opt-out with `config.stepsPath = false`. Prefers the
+   * build-time barrel (`@adonis-agora/durable/hooks/steps`), falling back to a runtime directory scan.
+   * A transport that can't serve handlers (no `handle`) is skipped.
+   */
+  async #registerSteps(config: DurableConfig) {
+    if (config.stepsPath === false) return;
+    const server = this.#transport as (Transport & Partial<StepServer>) | null;
+    if (!server || typeof server.handle !== 'function') return;
+    const barrel = await this.#loadGeneratedStepsBarrel();
+    if (barrel) {
+      await registerStepsFromBarrel(server as StepServer, barrel);
+      return;
+    }
+    const dir = this.app.makePath(config.stepsPath ?? 'app/steps');
+    await registerStepsFromDir(server as StepServer, dir);
+  }
+
+  /** Best-effort import of the build-time steps barrel; `null` when absent (fall back to the scan). */
+  async #loadGeneratedStepsBarrel(): Promise<StepsBarrel | null> {
+    const path = this.app.makePath('.adonisjs/durable/steps.js');
+    try {
+      const mod = (await import(pathToFileURL(path).href)) as { steps?: StepsBarrel };
+      return mod.steps ?? null;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ERR_MODULE_NOT_FOUND' || code === 'ENOENT') return null;
+      throw err;
+    }
   }
 
   /**

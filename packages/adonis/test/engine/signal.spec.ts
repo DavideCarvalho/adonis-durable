@@ -9,11 +9,11 @@ describe('WorkflowEngine — signals (human-in-the-loop)', () => {
 
     const order: string[] = [];
     engine.register('approval', '1', async (ctx) => {
-      await ctx.step('request', async () => {
+      await ctx.localStep('request', async () => {
         order.push('request');
       });
       const decision = await ctx.waitForSignal<{ approved: boolean }>('approve-42');
-      await ctx.step('act', async () => {
+      await ctx.localStep('act', async () => {
         order.push(decision.approved ? 'approved' : 'rejected');
       });
       return decision.approved;

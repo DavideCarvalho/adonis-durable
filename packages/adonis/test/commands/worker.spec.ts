@@ -121,7 +121,7 @@ describe('runWorkerLoop', () => {
   it('actually advances real runs across ticks', async () => {
     const { engine, store } = makeEngine();
     engine.register('checkout', '1', async (ctx) => {
-      await ctx.step('reserve', async () => 1);
+      await ctx.localStep('reserve', async () => 1);
       return 'ok';
     });
     // Enqueue a run with a no-op dispatch path by creating it pending, then let the loop pick it up.

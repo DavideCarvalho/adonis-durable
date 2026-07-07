@@ -10,7 +10,7 @@ describe('collectMetrics', () => {
     const metrics = collectMetrics(engine);
 
     engine.register('ok', '1', async (ctx) => {
-      await ctx.step('a', async () => 1);
+      await ctx.localStep('a', async () => 1);
       return 'done';
     });
     engine.register('bad', '1', async () => {

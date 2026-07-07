@@ -16,9 +16,9 @@ async function recordHistory(register: (e: WorkflowEngine) => void): Promise<Run
 
 const v1 = (e: WorkflowEngine) =>
   e.register('wf', '1', async (ctx) => {
-    await ctx.step('a', async () => 1);
+    await ctx.localStep('a', async () => 1);
     await ctx.waitForSignal('go');
-    await ctx.step('b', async () => 2);
+    await ctx.localStep('b', async () => 2);
   });
 
 describe('assertReplayable', () => {
@@ -31,9 +31,9 @@ describe('assertReplayable', () => {
     const history = await recordHistory(v1);
     const changed = (e: WorkflowEngine) =>
       e.register('wf', '1', async (ctx) => {
-        await ctx.step('renamed', async () => 1); // seq 0 was "a" in the history
+        await ctx.localStep('renamed', async () => 1); // seq 0 was "a" in the history
         await ctx.waitForSignal('go');
-        await ctx.step('b', async () => 2);
+        await ctx.localStep('b', async () => 2);
       });
     await expect(assertReplayable(changed, history)).rejects.toThrow(/non-determinism/);
   });

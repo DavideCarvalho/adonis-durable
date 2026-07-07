@@ -629,11 +629,11 @@ export function runStateStoreContract(name: string, makeStore: StateStoreFactory
         let aRuns = 0;
         let failOnce = true;
         engine.register('wf', '1', async (ctx) => {
-          const a = await ctx.step('a', async () => {
+          const a = await ctx.localStep('a', async () => {
             aRuns += 1;
             return 10;
           });
-          const b = await ctx.step('b', async () => {
+          const b = await ctx.localStep('b', async () => {
             if (failOnce) {
               failOnce = false;
               throw new Error('boom');

@@ -11,7 +11,7 @@ describe('createTestEngine', () => {
   it('runs a workflow and exposes store/clock for assertions', async () => {
     const t = createTestEngine();
     t.engine.register('wf', '1', async (ctx) => {
-      await ctx.step('a', async () => 1);
+      await ctx.localStep('a', async () => 1);
       return 'ok';
     });
     const result = await t.run('wf', {}, 'run1');
@@ -26,9 +26,9 @@ describe('createTestEngine', () => {
     const t = createTestEngine();
     const order: string[] = [];
     t.engine.register('wf', '1', async (ctx) => {
-      await ctx.step('before', async () => order.push('before'));
+      await ctx.localStep('before', async () => order.push('before'));
       await ctx.sleep('10s');
-      await ctx.step('after', async () => order.push('after'));
+      await ctx.localStep('after', async () => order.push('after'));
     });
 
     const started = await t.run('wf', {}, 'run1');
@@ -47,7 +47,7 @@ describe('crash/flaky injection', () => {
   it('failOnce makes a step throw once, then succeed (drives retry/resume)', async () => {
     const t = createTestEngine();
     t.engine.register('wf', '1', async (ctx) =>
-      ctx.step('flaky', failOnce('done'), { retries: 2 }),
+      ctx.localStep('flaky', failOnce('done'), { retries: 2 }),
     );
 
     const result = await t.run('wf', {}, 'run1');

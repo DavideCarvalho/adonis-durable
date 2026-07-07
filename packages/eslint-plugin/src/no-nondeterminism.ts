@@ -8,8 +8,11 @@ const createRule = ESLintUtils.RuleCreator(
 type MessageId = 'useNow' | 'useRandom' | 'useUuid' | 'useNowDate';
 
 /**
- * A function/arrow passed as an argument to `ctx.step(...)` / `ctx.task(...)` — its body is run once
- * and checkpointed, so non-determinism inside it is fine (only the orchestration body must be pure).
+ * A function/arrow passed as an argument to a CHECKPOINT-CALLBACK primitive — `ctx.localStep(...)`,
+ * `ctx.task(...)` or `ctx.sideEffect(...)` — whose body is run once and checkpointed, so
+ * non-determinism inside it is fine (only the orchestration body must be pure). NOTE: `ctx.step` is
+ * NOT here — it is now the always-DISPATCHED step (its 2nd arg is data, not a callback), so a
+ * function reaching it is not a checkpointed body and the walk should not stop at it.
  */
 function isCheckpointedCallback(fn: TSESTree.Node): boolean {
   const call = fn.parent;
@@ -18,7 +21,9 @@ function isCheckpointedCallback(fn: TSESTree.Node): boolean {
   return (
     callee.type === 'MemberExpression' &&
     callee.property.type === 'Identifier' &&
-    (callee.property.name === 'step' || callee.property.name === 'task')
+    (callee.property.name === 'localStep' ||
+      callee.property.name === 'task' ||
+      callee.property.name === 'sideEffect')
   );
 }
 
@@ -118,15 +123,15 @@ export const noNondeterminism = createRule<[], MessageId>({
     type: 'problem',
     docs: {
       description:
-        'Disallow non-deterministic sources (Date.now, Math.random, new Date, crypto.randomUUID) inside a durable workflow body — they differ across replays and silently corrupt a durable run. Use ctx.now()/ctx.random()/ctx.uuid().',
+        'Disallow non-deterministic sources (Date.now, Math.random, new Date, crypto.randomUUID) inside a durable workflow body — they differ across replays and silently corrupt a durable run. Use ctx.now() for a timestamp or ctx.sideEffect(() => …) to capture any other generated value once.',
     },
     messages: {
       useNow:
         'Non-deterministic `{{call}}` inside a durable workflow body — use `ctx.now()` (recorded once, then replayed).',
       useRandom:
-        'Non-deterministic `Math.random()` inside a durable workflow body — use `ctx.random()`.',
+        'Non-deterministic `Math.random()` inside a durable workflow body — use `ctx.sideEffect(() => Math.random())` (captured once, then replayed).',
       useUuid:
-        'Non-deterministic `crypto.randomUUID()` inside a durable workflow body — use `ctx.uuid()`.',
+        'Non-deterministic `crypto.randomUUID()` inside a durable workflow body — use `ctx.sideEffect(() => crypto.randomUUID())` (captured once, then replayed).',
       useNowDate:
         'Non-deterministic `new Date()` inside a durable workflow body — use `new Date(await ctx.now())`.',
     },

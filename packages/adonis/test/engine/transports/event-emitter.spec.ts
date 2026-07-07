@@ -16,7 +16,7 @@ const task = (over: Partial<RemoteTask> = {}): RemoteTask => ({
   ...over,
 });
 
-// The transport delivers results on a later tick (so a durable ctx.call suspends first); poll.
+// The transport delivers results on a later tick (so a durable ctx.step suspends first); poll.
 async function waitFor(predicate: () => boolean) {
   for (let i = 0; i < 50 && !predicate(); i += 1) {
     await new Promise((resolve) => setImmediate(resolve));

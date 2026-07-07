@@ -9,9 +9,9 @@ describe('WorkflowEngine — breakpoints', () => {
 
     const order: string[] = [];
     engine.register('wf', '1', async (ctx) => {
-      await ctx.step('before', async () => void order.push('before'));
+      await ctx.localStep('before', async () => void order.push('before'));
       await ctx.breakpoint('after-extraction');
-      await ctx.step('after', async () => void order.push('after'));
+      await ctx.localStep('after', async () => void order.push('after'));
       return 'done';
     });
 

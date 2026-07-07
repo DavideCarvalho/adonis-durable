@@ -57,7 +57,7 @@ describe('runSchedules', () => {
     const engine = new WorkflowEngine({ store });
     let started = 0;
     engine.register('slow', '1', async (ctx) => {
-      await ctx.step('enter', async () => {
+      await ctx.localStep('enter', async () => {
         started += 1; // once-only (checkpointed)
       });
       await ctx.waitForSignal('go'); // stays in-flight (suspended)

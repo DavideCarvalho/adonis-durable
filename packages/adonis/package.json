@@ -1,7 +1,7 @@
 {
   "name": "@adonis-agora/durable",
-  "version": "0.6.1",
-  "description": "Durable cross-app workflows for AdonisJS — deterministic replay engine, AdonisJS binding, ace commands, dashboard, OpenTelemetry, Telescope, testing harness and Redis admission, all in one package. Part of the Agora ecosystem.",
+  "version": "0.7.0",
+  "description": "Durable cross-app workflows for AdonisJS \u2014 deterministic replay engine, AdonisJS binding, ace commands, dashboard, OpenTelemetry, Telescope, testing harness and Redis admission, all in one package. Part of the Agora ecosystem.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -58,6 +58,11 @@
       "import": "./dist/src/hooks/workflows.js",
       "default": "./dist/src/hooks/workflows.js"
     },
+    "./hooks/steps": {
+      "types": "./dist/src/hooks/steps.d.ts",
+      "import": "./dist/src/hooks/steps.js",
+      "default": "./dist/src/hooks/steps.js"
+    },
     "./admission-redis": {
       "types": "./dist/src/admission-redis/index.d.ts",
       "import": "./dist/src/admission-redis/index.js",
@@ -79,7 +84,11 @@
       "default": "./dist/commands/*.js"
     }
   },
-  "files": ["dist/", "README.md", "CHANGELOG.md"],
+  "files": [
+    "dist/",
+    "README.md",
+    "CHANGELOG.md"
+  ],
   "sideEffects": false,
   "scripts": {
     "build": "tsc -p tsconfig.json && pnpm run copy:stubs",

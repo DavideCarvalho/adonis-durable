@@ -35,7 +35,7 @@ describe('Transport control plane', () => {
     dashboard.subscribe((e) => onDashboard.push(e.type));
 
     worker.register('wf', '1', async (ctx) => {
-      await ctx.step('a', async () => 1);
+      await ctx.localStep('a', async () => 1);
       return 'ok';
     });
     await startRun(worker, 'wf', {}, 'run1');

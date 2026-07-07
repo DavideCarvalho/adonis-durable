@@ -35,7 +35,7 @@ describe('recovery lease', () => {
     const make = () => {
       const engine = new WorkflowEngine({ store });
       engine.register('wf', '1', async (ctx) =>
-        ctx.step('s', async () => {
+        ctx.localStep('s', async () => {
           bodyRuns += 1;
           return 'ok';
         }),

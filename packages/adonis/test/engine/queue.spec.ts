@@ -1,19 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { z } from 'zod';
 import { WorkflowEngine } from '../../src/engine.js';
 import type { RemoteTask, StepResult, Transport } from '../../src/interfaces.js';
 import { QueueController } from '../../src/queue.js';
-import { remoteStep } from '../../src/remote-step-factory.js';
 import { startRun } from '../../src/test-helpers.js';
 import { InMemoryStateStore } from '../../src/testing/in-memory-state-store.js';
 import { InMemoryTransport } from '../../src/testing/in-memory-transport.js';
-
-const ping = remoteStep({
-  name: 'ext.ping',
-  group: 'ext',
-  input: z.object({}),
-  output: z.object({ pong: z.boolean() }),
-});
 
 /** Drive the InMemoryTransport's deferred results until `runId` reaches a terminal state. */
 async function settle(store: InMemoryStateStore, runId: string) {
@@ -151,7 +142,7 @@ describe('flow control — durable queues', () => {
     const engine = new WorkflowEngine({ store, transport, clock: () => nowMs });
     engine.registerQueue({ name: 'api', rateLimit: { limit: 2, periodMs: 1000 } });
     engine.register('caller', '1', async (ctx) => {
-      await ctx.call(ping, {}, { queue: 'api' });
+      await ctx.step('ext.ping', {}, { queue: 'api' });
       return 'done';
     });
 
@@ -179,7 +170,7 @@ describe('flow control — durable queues', () => {
     const engine = new WorkflowEngine({ store, transport, clock: () => nowMs });
     engine.registerQueue({ name: 'db', concurrency: 1 });
     engine.register('caller', '1', async (ctx) => {
-      await ctx.call(ping, {}, { queue: 'db' });
+      await ctx.step('ext.ping', {}, { queue: 'db' });
       return 'done';
     });
 
@@ -213,11 +204,11 @@ describe('flow control — durable queues', () => {
     const engine = new WorkflowEngine({ store, transport, clock: () => nowMs });
     engine.registerQueue({ name: 'pq', concurrency: 1 });
     engine.register('lo', '1', async (ctx) => {
-      await ctx.call(ping, {}, { queue: 'pq', priority: 1 });
+      await ctx.step('ext.ping', {}, { queue: 'pq', priority: 1 });
       return 'done';
     });
     engine.register('hi', '1', async (ctx) => {
-      await ctx.call(ping, {}, { queue: 'pq', priority: 9 });
+      await ctx.step('ext.ping', {}, { queue: 'pq', priority: 9 });
       return 'done';
     });
 

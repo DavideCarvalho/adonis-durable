@@ -10,8 +10,8 @@ describe('ctx.patched — in-place workflow migration', () => {
     // OLD deploy: reserve, charge, then wait (so the run is in flight, not yet completed).
     const oldEngine = new WorkflowEngine({ store });
     oldEngine.register('checkout', '1', async (ctx) => {
-      await ctx.step('reserve', async () => 'r');
-      await ctx.step('charge', async () => 'c');
+      await ctx.localStep('reserve', async () => 'r');
+      await ctx.localStep('charge', async () => 'c');
       await ctx.waitForSignal('done');
       return 'old';
     });
@@ -23,10 +23,10 @@ describe('ctx.patched — in-place workflow migration', () => {
     const engine = new WorkflowEngine({ store });
     engine.register('checkout', '1', async (ctx) => {
       if (await ctx.patched('add-fraud-check')) {
-        await ctx.step('fraud', async () => 'f');
+        await ctx.localStep('fraud', async () => 'f');
       }
-      await ctx.step('reserve', async () => 'r');
-      await ctx.step('charge', async () => 'c');
+      await ctx.localStep('reserve', async () => 'r');
+      await ctx.localStep('charge', async () => 'c');
       await ctx.waitForSignal('done');
       return 'new';
     });

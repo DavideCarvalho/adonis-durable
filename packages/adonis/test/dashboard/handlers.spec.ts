@@ -16,13 +16,13 @@ function makeEngine(): Deps {
   const engine = new WorkflowEngine({ store, transport: new InMemoryTransport() });
 
   engine.register('greet', '1', async (ctx) => {
-    const a = await ctx.step('a', async () => 21);
+    const a = await ctx.localStep('a', async () => 21);
     return a * 2;
   });
 
   // A workflow that always throws, so a run reaches `failed`.
   engine.register('boom', '1', async (ctx) => {
-    await ctx.step('explode', async () => {
+    await ctx.localStep('explode', async () => {
       throw new Error('kaboom');
     });
     return 'never';

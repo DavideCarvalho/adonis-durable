@@ -15,13 +15,13 @@ describe('saga compensation — retry + visibility', () => {
 
     let undoAttempts = 0;
     engine.register('saga', '1', async (ctx) => {
-      await ctx.step('reserve', async () => 'r', {
+      await ctx.localStep('reserve', async () => 'r', {
         compensate: async () => {
           undoAttempts += 1;
           if (undoAttempts < 2) throw new Error('refund hiccup');
         },
       });
-      await ctx.step('charge', async () => {
+      await ctx.localStep('charge', async () => {
         throw new Error('declined');
       });
       return 'done';
@@ -42,12 +42,12 @@ describe('saga compensation — retry + visibility', () => {
     });
 
     engine.register('saga', '1', async (ctx) => {
-      await ctx.step('reserve', async () => 'r', {
+      await ctx.localStep('reserve', async () => 'r', {
         compensate: async () => {
           throw new Error('refund permanently down');
         },
       });
-      await ctx.step('charge', async () => {
+      await ctx.localStep('charge', async () => {
         throw new Error('declined');
       });
       return 'done';

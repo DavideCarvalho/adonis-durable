@@ -40,7 +40,7 @@ describe('DurableProvider', () => {
 
     // The engine works end-to-end through the binding: register + run a workflow.
     engine.register('greet', '1', async (ctx) => {
-      const a = await ctx.step('a', async () => 21);
+      const a = await ctx.localStep('a', async () => 21);
       return a * 2;
     });
     await engine.start('greet', {}, 'run-1');
@@ -64,7 +64,7 @@ describe('DurableProvider', () => {
       const { app, resolve } = fakeApp();
       new DurableProvider(app).register();
       const engine = await resolve();
-      engine.register('wf', '1', async (ctx) => ctx.step('s', async () => 'ok'));
+      engine.register('wf', '1', async (ctx) => ctx.localStep('s', async () => 'ok'));
       await engine.start('wf', {}, 'otel-run');
       const result = await engine.waitForRun('otel-run');
       expect(result.status).toBe('completed');

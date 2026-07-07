@@ -18,7 +18,7 @@ describe('local step context re-hydration (engine.rehydrate)', () => {
       },
     });
     engine.register('w', '1', async (ctx) =>
-      ctx.step('s', async () => {
+      ctx.localStep('s', async () => {
         ran = true;
         return 42;
       }),
@@ -43,7 +43,7 @@ describe('local step context re-hydration (engine.rehydrate)', () => {
         return fn();
       },
     });
-    engine.register('w', '1', async (ctx) => ctx.step('s', async () => 'ok'));
+    engine.register('w', '1', async (ctx) => ctx.localStep('s', async () => 'ok'));
 
     const res = await startRun(engine, 'w', {}, 'r1');
 
@@ -56,8 +56,8 @@ describe('local step context re-hydration (engine.rehydrate)', () => {
     const store = new InMemoryStateStore();
     const engine = new WorkflowEngine({ store });
     engine.register('w', '1', async (ctx) => {
-      const a = await ctx.step('a', async () => 1);
-      const b = await ctx.step('b', async () => a + 1);
+      const a = await ctx.localStep('a', async () => 1);
+      const b = await ctx.localStep('b', async () => a + 1);
       return b;
     });
 

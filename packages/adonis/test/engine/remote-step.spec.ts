@@ -1,20 +1,11 @@
-import { z } from 'zod';
+import { describe, expect, it } from 'vitest';
 import { WorkflowEngine } from '../../src/engine.js';
-import type { RemoteStepDef } from '../../src/interfaces.js';
 import { startRun } from '../../src/test-helpers.js';
 import { InMemoryStateStore } from '../../src/testing/in-memory-state-store.js';
 import { InMemoryTransport } from '../../src/testing/in-memory-transport.js';
 
-const chargeCard: RemoteStepDef<{ amount: number }, { chargeId: string }> = {
-  name: 'payments.charge-card',
-  group: 'payments',
-  input: z.object({ amount: z.number() }),
-  output: z.object({ chargeId: z.string() }),
-  __remote: true,
-};
-
 /**
- * A durable `ctx.call` SUSPENDS the run, then the worker result resumes it asynchronously (the
+ * A durable dispatched `ctx.step` SUSPENDS the run, then the worker result resumes it asynchronously (the
  * InMemoryTransport delivers on `setImmediate`). Drive those deferred results + resumes until the
  * run reaches a terminal state.
  */
@@ -37,11 +28,11 @@ describe('WorkflowEngine — remote steps', () => {
 
     const engine = new WorkflowEngine({ store, transport });
     engine.register('checkout', '1', async (ctx) => {
-      const charge = await ctx.call(chargeCard, { amount: 42 });
+      const charge = await ctx.step<{ chargeId: string }>('payments.charge-card', { amount: 42 });
       return charge.chargeId;
     });
 
-    // The call suspends the run durably; it completes when the worker result lands.
+    // The step suspends the run durably; it completes when the worker result lands.
     const started = await startRun(engine, 'checkout', {}, 'run1');
     expect(started.status).toBe('suspended');
 
@@ -72,7 +63,7 @@ describe('WorkflowEngine — remote steps', () => {
     });
 
     engine.register('checkout', '1', async (ctx) => {
-      const charge = await ctx.call(chargeCard, { amount: 42 });
+      const charge = await ctx.step<{ chargeId: string }>('payments.charge-card', { amount: 42 });
       return charge.chargeId;
     });
 
@@ -106,8 +97,8 @@ describe('WorkflowEngine — remote steps', () => {
     const engine = new WorkflowEngine({ store, transport });
     let failLocalOnce = true;
     engine.register('checkout', '1', async (ctx) => {
-      const charge = await ctx.call(chargeCard, { amount: 42 });
-      await ctx.step('after', async () => {
+      const charge = await ctx.step<{ chargeId: string }>('payments.charge-card', { amount: 42 });
+      await ctx.localStep('after', async () => {
         if (failLocalOnce) {
           failLocalOnce = false;
           throw new Error('boom');

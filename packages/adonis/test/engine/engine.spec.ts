@@ -12,11 +12,11 @@ describe('WorkflowEngine — deterministic replay', () => {
     let failOnce = true;
 
     engine.register('wf', '1', async (ctx) => {
-      const a = await ctx.step('a', async () => {
+      const a = await ctx.localStep('a', async () => {
         aRuns.push(1);
         return 10;
       });
-      const b = await ctx.step('b', async () => {
+      const b = await ctx.localStep('b', async () => {
         if (failOnce) {
           failOnce = false;
           throw new Error('boom');
@@ -43,7 +43,7 @@ describe('WorkflowEngine — deterministic replay', () => {
 
     let attempts = 0;
     engine.register('wf', '1', async (ctx) =>
-      ctx.step(
+      ctx.localStep(
         'flaky',
         async () => {
           attempts += 1;
@@ -67,7 +67,7 @@ describe('WorkflowEngine — deterministic replay', () => {
 
     let attempts = 0;
     engine.register('wf', '1', async (ctx) =>
-      ctx.step(
+      ctx.localStep(
         'always-fails',
         async () => {
           attempts += 1;
@@ -91,15 +91,15 @@ describe('WorkflowEngine — deterministic replay', () => {
     const order: string[] = [];
     engine.register('wf', '1', async (ctx) => {
       const [a, b, c] = await Promise.all([
-        ctx.step('a', async () => {
+        ctx.localStep('a', async () => {
           order.push('a');
           return 1;
         }),
-        ctx.step('b', async () => {
+        ctx.localStep('b', async () => {
           order.push('b');
           return 2;
         }),
-        ctx.step('c', async () => {
+        ctx.localStep('c', async () => {
           order.push('c');
           return 3;
         }),
@@ -127,7 +127,7 @@ describe('WorkflowEngine — deterministic replay', () => {
 
     let attempts = 0;
     engine.register('wf', '1', async (ctx) =>
-      ctx.step(
+      ctx.localStep(
         'boom',
         async () => {
           attempts += 1;
@@ -150,11 +150,11 @@ describe('WorkflowEngine — deterministic replay', () => {
 
     let aRuns = 0;
     engine.register('wf', '1', async (ctx) => {
-      const a = await ctx.step('a', async () => {
+      const a = await ctx.localStep('a', async () => {
         aRuns += 1;
         return 1;
       });
-      const b = await ctx.step('b', async () => 2);
+      const b = await ctx.localStep('b', async () => 2);
       return a + b;
     });
 

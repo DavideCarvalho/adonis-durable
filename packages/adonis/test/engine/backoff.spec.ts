@@ -17,7 +17,7 @@ describe('WorkflowEngine — retry backoff', () => {
 
     let attempts = 0;
     engine.register('wf', '1', async (ctx) => {
-      await ctx.step(
+      await ctx.localStep(
         'flaky',
         async () => {
           attempts += 1;
@@ -49,7 +49,7 @@ describe('WorkflowEngine — retry backoff', () => {
 
     let attempts = 0;
     engine.register('wf', '1', async (ctx) => {
-      await ctx.step(
+      await ctx.localStep(
         'flaky',
         async () => {
           attempts += 1;

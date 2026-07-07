@@ -84,7 +84,7 @@ export class Entities {
       const msg = (await ctx.waitForSignal(token)) as { op: string; arg: unknown; reply?: string };
       // Run the handler and snapshot the (possibly mutated) state in ONE checkpoint, so replay
       // restores the state from the checkpoint instead of re-running the handler.
-      const out = await ctx.step(`op:${i}`, async () => {
+      const out = await ctx.localStep(`op:${i}`, async () => {
         const handler = config.handlers[msg.op];
         if (!handler) throw new FatalError(`entity "${name}" has no handler for op "${msg.op}"`);
         const result = await handler(state, msg.arg);
@@ -93,7 +93,7 @@ export class Entities {
       state = out.state; // carry state forward (and restore it from the checkpoint on replay)
       await ctx.setEvent('state', state); // publish for getState
       if (msg.reply) {
-        await ctx.step(`reply:${i}`, async () => {
+        await ctx.localStep(`reply:${i}`, async () => {
           await this.host.signal((msg as { reply: string }).reply, out.result);
         });
       }

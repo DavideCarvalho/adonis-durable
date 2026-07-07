@@ -14,6 +14,7 @@ import {
 } from '../interfaces.js';
 import { type PollLoop, Pollers } from '../pollers.js';
 import { type StepHandler, runStepHandler } from '../protocol.js';
+import { sanitizeQueueToken, tenantGroup } from '../tenant-group.js';
 import { TRANSPORT_TABLES, createDurableTransportTables } from './db-schema.js';
 
 /**
@@ -89,11 +90,18 @@ export interface DbTransportOptions {
    */
   db: Database;
   /**
-   * The worker group this instance serves. Required to register {@link DbTransport.handle} consumers
-   * — the task poll loop claims rows for this group. Omit on an engine-only instance that just
-   * dispatches + consumes results/heartbeats.
+   * @deprecated Steps are now routed BY HANDLER NAME, so this instance serves whatever names it
+   * `handle()`s — no group to declare. Accepted for back-compat / parity and otherwise ignored (the
+   * task poll loop claims rows for every registered handler name's routing token). Use
+   * {@link partition} for isolation.
    */
   group?: string;
+  /**
+   * Optional isolation partition suffixing every per-handler routing token this worker claims
+   * (`<name>@<partition>`), matching the `partition` a dispatch carries. Unset (or `'default'`)
+   * claims the bare (sanitized) handler-name tokens.
+   */
+  partition?: string;
   /**
    * Logical deployment namespace, stamped on every row this instance writes and required on every row
    * it claims, so the same backend tables can host several worker-pool partitions without their
@@ -148,7 +156,10 @@ export interface DbTransportOptions {
  */
 export class DbTransport implements Transport, ControlPlane {
   readonly #db: Database;
-  readonly #group: string | undefined;
+  readonly #partition: string | undefined;
+  /** Routing tokens this worker serves — `tenantGroup(sanitizeQueueToken(name), partition)` for each
+   *  registered handler name; the task loop claims rows whose `grp` is in this set. */
+  readonly #servedTokens = new Set<string>();
   // Logical deployment namespace stamped on every write and required on every claim. Mutable so an
   // engine can push its namespace via `useNamespace()` — but only when one wasn't passed explicitly to
   // the constructor (`#explicitNamespace`), which always wins. Resolved to a concrete column value
@@ -168,7 +179,7 @@ export class DbTransport implements Transport, ControlPlane {
 
   constructor(options: DbTransportOptions) {
     this.#db = options.db;
-    this.#group = options.group;
+    this.#partition = options.partition;
     this.#namespace = options.namespace;
     this.#explicitNamespace = options.namespace !== undefined;
     this.#connectionName = options.connectionName;
@@ -252,17 +263,16 @@ export class DbTransport implements Transport, ControlPlane {
   // ───────────────────────────────────────────────────────────────────────────
 
   /**
-   * Register a step handler (worker side). Starts this group's task poll loop on the first call —
-   * each claimed task runs through {@link runStepHandler} and its result is written for the engine.
+   * Register a step handler (worker side). Records this name's routing token
+   * (`tenantGroup(sanitizeQueueToken(name), partition)`) as served and starts the shared task poll
+   * loop on the first call — it claims task rows for EVERY served token (matching the token the
+   * engine dispatches by), runs each through {@link runStepHandler}, and writes the result.
    */
   handle(name: string, fn: StepHandler): void {
-    if (!this.#group) {
-      throw new Error('DbTransport needs a `group` option to register handlers');
-    }
     this.#handlers.set(name, fn);
+    this.#servedTokens.add(tenantGroup(sanitizeQueueToken(name), this.#partition));
     if (!this.#taskLoop) {
-      const group = this.#group;
-      this.#taskLoop = this.#pollers.start(async () => (await this.#drainTasks(group)) > 0);
+      this.#taskLoop = this.#pollers.start(async () => (await this.#drainTasks()) > 0);
     }
   }
 
@@ -281,15 +291,16 @@ export class DbTransport implements Transport, ControlPlane {
     });
   }
 
-  async #drainTasks(group: string): Promise<number> {
-    const rows = await this.#claim<TaskRow>(TRANSPORT_TABLES.tasks, group);
+  async #drainTasks(): Promise<number> {
+    if (this.#servedTokens.size === 0) return 0;
+    const rows = await this.#claim<TaskRow>(TRANSPORT_TABLES.tasks, [...this.#servedTokens]);
     for (const row of rows) {
       const task: RemoteTask = {
         runId: row.run_id,
         seq: Number(row.seq),
         stepId: row.step_id,
         name: row.name,
-        group,
+        group: row.grp,
         input: fromJson(row.input),
         attempt: Number(row.attempt),
         ...(row.traceparent != null ? { traceparent: row.traceparent } : {}),
@@ -419,7 +430,7 @@ export class DbTransport implements Transport, ControlPlane {
    */
   async #claim<T>(
     table: string,
-    group?: string,
+    groups?: string[],
     idCol: 'id' | 'step_id' = 'step_id',
   ): Promise<T[]> {
     await this.#ensureSchema();
@@ -443,7 +454,7 @@ export class DbTransport implements Transport, ControlPlane {
       .select(idCol)
       .where('namespace', namespace)
       .modify((q) => {
-        if (group !== undefined) q.where('grp', group);
+        if (groups !== undefined) q.whereIn('grp', groups);
       })
       .where((q) => q.whereNull('claimed_at').orWhere('claimed_at', '<', stale))
       .orderBy(idCol === 'id' ? 'id' : 'created_at', 'asc')

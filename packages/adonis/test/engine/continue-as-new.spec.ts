@@ -20,7 +20,7 @@ describe('ctx.continueAsNew', () => {
     engine.register('counter', '1', async (ctx, input) => {
       const n = (input as { n: number }).n;
       seen.push(n);
-      await ctx.step(`work-${n}`, async () => n);
+      await ctx.localStep(`work-${n}`, async () => n);
       if (n < 3) await ctx.continueAsNew({ n: n + 1 });
       return `done at ${n}`;
     });

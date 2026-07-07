@@ -47,7 +47,7 @@ describe('event triggers (onEvent starts a workflow)', () => {
       'count',
       '1',
       async (ctx) => {
-        await ctx.step('enter', async () => {
+        await ctx.localStep('enter', async () => {
           starts += 1;
         });
         return starts;

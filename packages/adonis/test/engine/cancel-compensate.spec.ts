@@ -10,12 +10,12 @@ describe('engine.cancel({ compensate: true }) — undo on cancellation', () => {
     const undone: string[] = [];
 
     engine.register('saga', '1', async (ctx) => {
-      await ctx.step('reserve', async () => 'r', {
+      await ctx.localStep('reserve', async () => 'r', {
         compensate: async () => {
           undone.push('reserve');
         },
       });
-      await ctx.step('pack', async () => 'p', {
+      await ctx.localStep('pack', async () => 'p', {
         compensate: async () => {
           undone.push('pack');
         },
@@ -41,7 +41,7 @@ describe('engine.cancel({ compensate: true }) — undo on cancellation', () => {
     const engine = new WorkflowEngine({ store });
     let undos = 0;
     engine.register('saga', '1', async (ctx) => {
-      await ctx.step('reserve', async () => 'r', {
+      await ctx.localStep('reserve', async () => 'r', {
         compensate: async () => {
           undos += 1;
         },

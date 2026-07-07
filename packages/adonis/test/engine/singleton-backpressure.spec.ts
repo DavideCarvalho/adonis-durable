@@ -24,7 +24,7 @@ describe('singleton notify-on-release', () => {
       '1',
       async (ctx, input) => {
         const { id } = input as { id: string };
-        await ctx.step('enter', async () => void ran.push(id));
+        await ctx.localStep('enter', async () => void ran.push(id));
         await ctx.waitForSignal(`go:${id}`);
         return 'done';
       },
@@ -64,7 +64,7 @@ describe('singleton notify-on-release', () => {
       '1',
       async (ctx, input) => {
         const { id } = input as { id: string };
-        await ctx.step('enter', async () => void ran.push(id));
+        await ctx.localStep('enter', async () => void ran.push(id));
         await ctx.waitForSignal(`go:${id}`);
         return 'done';
       },

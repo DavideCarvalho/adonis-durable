@@ -10,11 +10,11 @@ describe('WorkflowEngine — durable sleep', () => {
 
     const order: string[] = [];
     engine.register('wf', '1', async (ctx) => {
-      await ctx.step('before', async () => {
+      await ctx.localStep('before', async () => {
         order.push('before');
       });
       await ctx.sleep('10s');
-      await ctx.step('after', async () => {
+      await ctx.localStep('after', async () => {
         order.push('after');
       });
       return 'done';

@@ -16,7 +16,7 @@ describe('ctx.webhook', () => {
       const wh = ctx.webhook<{ ok: boolean }>();
       issuedUrl = wh.url ?? '';
       // In a real flow you'd hand wh.url to a third party inside a step here.
-      await ctx.step('register', async () => 'registered');
+      await ctx.localStep('register', async () => 'registered');
       const payload = await wh.wait();
       return payload.ok;
     });

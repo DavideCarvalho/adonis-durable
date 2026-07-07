@@ -11,9 +11,9 @@ describe('WorkflowEngine — ctx.sleepUntil (absolute wake time)', () => {
 
     const order: string[] = [];
     engine.register('wf', '1', async (ctx) => {
-      await ctx.step('before', async () => void order.push('before'));
+      await ctx.localStep('before', async () => void order.push('before'));
       await ctx.sleepUntil(new Date(20_000)); // absolute epoch ms
-      await ctx.step('after', async () => void order.push('after'));
+      await ctx.localStep('after', async () => void order.push('after'));
       return 'done';
     });
 

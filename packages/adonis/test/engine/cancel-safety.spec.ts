@@ -8,7 +8,7 @@ describe('WorkflowEngine — cancelled runs are not resurrected', () => {
 
     let ran = 0;
     engine.register('wf', '1', async (ctx) => {
-      await ctx.step('after-signal', async () => {
+      await ctx.localStep('after-signal', async () => {
         ran += 1;
       });
       return 'ok';

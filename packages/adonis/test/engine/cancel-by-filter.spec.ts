@@ -69,7 +69,7 @@ describe('cancelWhere — cancel runs matching a filter', () => {
     const engine = new WorkflowEngine({ store });
     const undone: string[] = [];
     engine.register('saga', '1', async (ctx) => {
-      await ctx.step('reserve', async () => 1, {
+      await ctx.localStep('reserve', async () => 1, {
         compensate: async () => void undone.push('reserve'),
       });
       await ctx.waitForSignal('never');

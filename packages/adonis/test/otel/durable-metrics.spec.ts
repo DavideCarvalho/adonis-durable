@@ -8,8 +8,8 @@ describe('attachDurableMetrics', () => {
     const metrics = attachDurableMetrics(engine);
 
     engine.register('wf', '1', async (ctx) => {
-      await ctx.step('a', async () => 1);
-      await ctx.step('b', async () => 2);
+      await ctx.localStep('a', async () => 1);
+      await ctx.localStep('b', async () => 2);
       return 'done';
     });
     await engine.start('wf', {}, 'run1');
@@ -31,7 +31,7 @@ describe('attachDurableMetrics', () => {
     const engine = new WorkflowEngine({ store: new InMemoryStateStore() });
     const metrics = attachDurableMetrics(engine);
     engine.register('boom', '1', async (ctx) =>
-      ctx.step('x', async () => {
+      ctx.localStep('x', async () => {
         throw new Error('nope');
       }),
     );

@@ -1,17 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { z } from 'zod';
 import { WorkflowEngine } from '../../src/engine.js';
 import type { RemoteTask, StepResult, Transport } from '../../src/interfaces.js';
-import { remoteStep } from '../../src/remote-step-factory.js';
 import { startRun } from '../../src/test-helpers.js';
 import { InMemoryStateStore } from '../../src/testing/in-memory-state-store.js';
-
-const ping = remoteStep({
-  name: 'ext.ping',
-  group: 'ext',
-  input: z.object({}),
-  output: z.object({ pong: z.boolean() }),
-});
 
 /** A capturing transport whose dispatch can be made to fail, and whose result handler is exposed. */
 class FakeTransport implements Transport {
@@ -49,7 +40,7 @@ describe('multiple transports — failover + per-step selection', () => {
         { id: 'b', transport: b },
       ],
     });
-    engine.register('wf', '1', async (ctx) => ctx.call(ping, {}));
+    engine.register('wf', '1', async (ctx) => ctx.step('ext.ping', {}));
 
     await startRun(engine, 'wf', {}, 'r1');
 
@@ -58,7 +49,7 @@ describe('multiple transports — failover + per-step selection', () => {
     expect(b.dispatched[0]?.transport).toBe('b'); // the task carries the transport that delivered it
   });
 
-  it('dispatches on the transport a step pins via ctx.call opts', async () => {
+  it('dispatches on the transport a step pins via ctx.step opts', async () => {
     const a = new FakeTransport();
     const b = new FakeTransport();
     const store = new InMemoryStateStore();
@@ -69,7 +60,7 @@ describe('multiple transports — failover + per-step selection', () => {
         { id: 'b', transport: b },
       ],
     });
-    engine.register('wf', '1', async (ctx) => ctx.call(ping, {}, { transport: 'b' }));
+    engine.register('wf', '1', async (ctx) => ctx.step('ext.ping', {}, { transport: 'b' }));
 
     await startRun(engine, 'wf', {}, 'r1');
 
@@ -90,7 +81,7 @@ describe('multiple transports — failover + per-step selection', () => {
       ],
     });
     engine.register('wf', '1', async (ctx) => {
-      const r = await ctx.call(ping, {}, { transport: 'b' });
+      const r = await ctx.step<{ pong: boolean }>('ext.ping', {}, { transport: 'b' });
       return r.pong;
     });
 
