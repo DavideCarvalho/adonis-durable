@@ -100,12 +100,17 @@ export abstract class BaseWorkflow {
       // deterministic, replay-stable id from call position — never generate one here.
       return ctx.child(this, input, opts?.runId) as Promise<WorkflowOutputOf<C>>;
     }
-    // OUTSIDE: enqueue on the engine, then block on the settle.
+    // OUTSIDE: enqueue on the engine, then block until the run reaches a TERMINAL state. `runId` is a
+    // BaseWorkflow-only option (not part of StartOptions) — strip it before forwarding to engine.start.
     return (async () => {
       const engine = await resolveEngine();
+      const { runId: _runId, ...startOpts } = opts ?? {};
       const runId = opts?.runId ?? globalThis.crypto.randomUUID();
-      await engine.start(this, input, runId, opts);
-      const result = await engine.waitForRun(runId);
+      await engine.start(this, input, runId, startOpts);
+      // `terminal: true` so a workflow that suspends (sleep/waitForSignal/waitForEvent/async step)
+      // keeps blocking through the suspension and returns the real output — the ".start = I want the
+      // result" contract, matching the INSIDE ctx.child path (which also waits for terminal).
+      const result = await engine.waitForRun(runId, { terminal: true });
       return result.output as WorkflowOutputOf<C>;
     })();
   }
@@ -125,11 +130,13 @@ export abstract class BaseWorkflow {
       // INSIDE: fire-and-forget child. Same childId rule as .start — let ctx derive it when absent.
       return ctx.startChild(this, input, opts?.runId).then((runId) => ({ runId }));
     }
-    // OUTSIDE: enqueue and return the id without blocking on the settle.
+    // OUTSIDE: enqueue and return the id without blocking on the settle. `runId` is a BaseWorkflow-only
+    // option (not part of StartOptions) — strip it before forwarding to engine.start.
     return (async () => {
       const engine = await resolveEngine();
+      const { runId: _runId, ...startOpts } = opts ?? {};
       const runId = opts?.runId ?? globalThis.crypto.randomUUID();
-      await engine.start(this, input, runId, opts);
+      await engine.start(this, input, runId, startOpts);
       return { runId };
     })();
   }

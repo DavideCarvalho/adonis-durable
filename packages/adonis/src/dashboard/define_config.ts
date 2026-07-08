@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import type { HttpContext } from '@adonisjs/core/http';
 
 /**
@@ -65,6 +66,19 @@ function readToken(ctx: HttpContext): string | undefined {
 }
 
 /**
+ * Compare two secrets in constant time (guarding for equal byte-length first,
+ * since {@link timingSafeEqual} throws on a length mismatch). Returns `false`
+ * for any length difference, otherwise the timing-safe equality — so the token
+ * check leaks neither a match nor the token's length via response time.
+ */
+function secretsMatch(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
+}
+
+/**
  * The default guard: open outside production; in production it requires a
  * bearer token equal to `DURABLE_DASHBOARD_TOKEN`. If that env var is unset in
  * production the dashboard is denied entirely (fail-closed) — you must opt in
@@ -74,7 +88,10 @@ export function defaultAuthorize(ctx: HttpContext): boolean {
   if (!isProduction()) return true;
   const expected = process.env.DURABLE_DASHBOARD_TOKEN;
   if (!expected) return false;
-  return readToken(ctx) === expected;
+  const provided = readToken(ctx);
+  if (provided === undefined) return false;
+  // Constant-time compare to remove the timing side-channel from the token check.
+  return secretsMatch(provided, expected);
 }
 
 /** Apply defaults to a partial config, producing a fully-resolved one. */

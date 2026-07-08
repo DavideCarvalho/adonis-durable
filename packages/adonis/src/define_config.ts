@@ -92,8 +92,9 @@ export interface DurableConfig {
    */
   schedules?: ScheduledWorkflow[];
   /**
-   * Directory (relative to the app root) the provider scans at boot for `@Workflow`-decorated classes
-   * to auto-register on the engine — the `app/workflows` convention, mirroring `@adonisjs/queue`'s
+   * Directory (relative to the app root) the provider scans at boot for workflow classes
+   * (`BaseWorkflow` subclasses or `@Workflow`-decorated) to auto-register on the engine — the
+   * `app/workflows` convention, mirroring `@adonisjs/queue`'s
    * `app/jobs`. Default `'app/workflows'`. Set `false` to disable discovery entirely (register by
    * hand with `engine.register(...)`). A missing directory is fine — nothing to register.
    */

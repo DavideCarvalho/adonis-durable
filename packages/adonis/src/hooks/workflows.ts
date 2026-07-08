@@ -29,8 +29,9 @@ export interface WorkflowsHookOptions {
  * generated `.adonisjs/durable/workflows.ts` always reflects `app/workflows`.
  *
  * The generated file is a lazy barrel — `export const workflows = { Name: () => import('#workflows/…') }`
- * — which the durable provider imports at boot, awaiting each thunk and registering every
- * `@Workflow`-decorated export it finds (falling back to the runtime scan when the barrel is absent).
+ * — which the durable provider imports at boot, awaiting each thunk and registering every workflow
+ * export it finds (`BaseWorkflow` subclass or `@Workflow`-decorated; falling back to the runtime
+ * scan when the barrel is absent).
  *
  * Register it in `adonisrc.ts`:
  *

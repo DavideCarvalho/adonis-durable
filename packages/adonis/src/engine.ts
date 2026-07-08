@@ -1048,9 +1048,18 @@ export class WorkflowEngine {
    * Resolve once `runId` reaches a settled state — terminal (completed/failed/cancelled/dead) or
    * suspended (handed off to a timer/signal/event). The async counterpart to dispatch: pair it with
    * `start` when a call site needs the outcome — `await start(...); const r = await waitForRun(id)`.
+   *
+   * Pass `{ terminal: true }` to wait for a strictly TERMINAL state only (completed/failed/cancelled/
+   * dead) — a `suspended` run (e.g. one parked on `ctx.sleep`/`ctx.waitForSignal`) does NOT resolve;
+   * the wait continues until the run reaches an end state. This is what `BaseWorkflow.start` needs so
+   * "I want the result" blocks through a suspension instead of returning early with no output. The
+   * default (`terminal` unset/false) resolves on any settled state, suspended included.
    */
-  waitForRun(runId: string, opts?: { timeoutMs?: number }): Promise<RunResult> {
+  waitForRun(runId: string, opts?: { timeoutMs?: number; terminal?: boolean }): Promise<RunResult> {
+    const isTerminal = (s: RunStatus): boolean =>
+      s === 'completed' || s === 'failed' || s === 'cancelled' || s === 'dead';
     const isSettled = (s: RunStatus): boolean => s !== 'pending' && s !== 'running';
+    const shouldResolve = opts?.terminal ? isTerminal : isSettled;
     const toResult = (run: WorkflowRun): RunResult => ({
       runId,
       status: run.status,
@@ -1078,7 +1087,7 @@ export class WorkflowEngine {
       };
       const check = (): void => {
         void this.store.getRun(runId).then((run) => {
-          if (run && isSettled(run.status)) finish(run);
+          if (run && shouldResolve(run.status)) finish(run);
         });
       };
       // React only to this run's settling events (not its every step event), and subscribe BEFORE the

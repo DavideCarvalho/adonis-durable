@@ -152,6 +152,42 @@ describe('BaseWorkflow — OUTSIDE a workflow (engine path)', () => {
     const result = await Double.start({ n: 21 });
     expect(result).toBe(42); // resolved only after the run settled
   });
+
+  it('.start waits THROUGH a suspension (waitForSignal), resolving only on the terminal output', async () => {
+    const store = new InMemoryStateStore();
+    const engine = new WorkflowEngine({ store });
+    setWorkflowEngineResolver(() => engine);
+
+    class Approval extends BaseWorkflow {
+      static workflow = { name: 'outside-approval', version: '1' };
+      async run(ctx: WorkflowCtx) {
+        const decision = await ctx.waitForSignal<string>('approve-decision');
+        return `decided:${decision}`;
+      }
+    }
+    registerWorkflowClass(engine, Approval);
+
+    // Fixed runId so the test can address the run for signalling / status polling.
+    const startPromise = Approval.start({}, { runId: 'appr-1' });
+    let settled = false;
+    void startPromise.then(() => {
+      settled = true;
+    });
+
+    // The run parks on the signal (suspended). `.start` must NOT resolve on that settled-but-suspended
+    // state — with the old `waitForRun` (resolve-on-settle) it would return `undefined` here.
+    await poll(async () => (await store.getRun('appr-1'))?.status === 'suspended');
+    await new Promise((r) => setTimeout(r, 20)); // give the promise a window to (wrongly) resolve
+    expect(settled).toBe(false);
+    expect((await store.getRun('appr-1'))?.status).toBe('suspended');
+
+    // Deliver the signal → the run resumes and reaches a terminal state.
+    await engine.signal('approve-decision', 'yes');
+
+    const result = await startPromise; // resolves now, with the REAL output
+    expect(result).toBe('decided:yes');
+    expect((await store.getRun('appr-1'))?.status).toBe('completed');
+  });
 });
 
 describe('BaseWorkflow — INSIDE a running workflow (ctx path)', () => {

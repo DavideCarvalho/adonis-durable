@@ -34,10 +34,15 @@ export interface WorkflowMeta extends WorkflowOptions {
 }
 
 /**
- * Class decorator marking a class as a durable workflow. Stamps the full options (name + version +
- * tags …) so a class ref resolves via {@link workflowName} and the provider's `app/workflows`
- * auto-discovery can register it on the engine — no manual `engine.register(...)`. The class must
- * expose `run(ctx, input)`; that method becomes the workflow body.
+ * Class decorator marking a class as a durable workflow — an **alias** for the blessed
+ * `BaseWorkflow` + `static workflow = { name, version, … }` form. Both stamp the same metadata and
+ * resolve identically through {@link workflowMeta}/{@link workflowName}, so the provider's
+ * `app/workflows` auto-discovery registers either on the engine — no manual `engine.register(...)`.
+ * The class must expose `run(ctx, input)`; that method becomes the workflow body.
+ *
+ * **Prefer `BaseWorkflow` for new code**: besides the identity, it carries the `.start`/`.dispatch`
+ * statics (context-aware dispatch). Use `@Workflow` when you need a decorator (e.g. on a class that
+ * can't extend `BaseWorkflow`); it stays fully supported.
  *
  * ```ts
  * @Workflow({ name: 'order', version: '1' })
