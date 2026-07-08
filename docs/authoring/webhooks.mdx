@@ -17,12 +17,13 @@ hook.url   // public callback URL, if a webhookUrl builder is configured
 
 The `token` is `wh:<runId>:<seq>` — derived from the run and the call's logical position, so it is **deterministic and stable across replay**. The `url` is that token rendered into a public callback URL by the engine's `webhookUrl` builder. If no builder is configured, `url` is `undefined` and you build your own URL from `token`.
 
-Configure the builder once, on the engine deps (via `config/durable.ts` or the dependency object you pass `WorkflowEngine`):
+Configure the builder once, in `config/durable.ts`:
 
-```ts
-const engine = new WorkflowEngine({
-  store,
-  transport,
+```ts title="config/durable.ts"
+import { defineConfig } from '@adonis-agora/durable'
+
+export default defineConfig({
+  // … plus your transport/store (see Getting Started)
   // Renders ctx.webhook().url. Your route turns the callback POST into engine.signal(token, body).
   webhookUrl: (token) => `https://api.example.com/durable/webhooks/${token}`,
 })

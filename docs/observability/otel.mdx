@@ -52,8 +52,7 @@ import { defineConfig } from '@adonis-agora/durable'
 import { otelTraceparent } from '@adonis-agora/durable/otel'
 
 export default defineConfig({
-  store,
-  transport,
+  // … plus your transport/store (see Getting Started)
   traceparent: () => otelTraceparent(),
 })
 ```

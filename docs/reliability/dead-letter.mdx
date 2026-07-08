@@ -15,8 +15,7 @@ Set `maxRecoveryAttempts` in `config/durable.ts`, and once a run exceeds it, ins
 
 ```ts title="config/durable.ts"
 export default defineConfig({
-  store,
-  transport,
+  // … plus your transport/store (see Getting Started)
   maxRecoveryAttempts: 5, // after 5 crash-recoveries, dead-letter the run instead of looping
 })
 ```

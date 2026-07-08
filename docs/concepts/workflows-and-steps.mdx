@@ -66,11 +66,11 @@ import { z } from 'zod'
 export default class PaymentSteps {
   @Step({
     name: 'payments:charge-card',
-    input: z.object({ orderId: z.string(), amountCents: z.number().int() }),
+    input: z.object({ orderId: z.number().int(), amountCents: z.number().int() }),
     output: z.object({ chargeId: z.string() }),
     retries: 3,
   })
-  async chargeCard(input: { orderId: string; amountCents: number }) {
+  async chargeCard(input: { orderId: number; amountCents: number }) {
     return { chargeId: await stripe.charge(input) }
   }
 }
@@ -91,9 +91,9 @@ import { z } from 'zod'
 
 export const chargeCard = defineStep(
   'payments:charge-card',
-  async (input: { orderId: string; amountCents: number }) => ({ chargeId: await stripe.charge(input) }),
+  async (input: { orderId: number; amountCents: number }) => ({ chargeId: await stripe.charge(input) }),
   {
-    input: z.object({ orderId: z.string(), amountCents: z.number().int() }),
+    input: z.object({ orderId: z.number().int(), amountCents: z.number().int() }),
     output: z.object({ chargeId: z.string() }),
     retries: 3,
   },
@@ -121,7 +121,7 @@ Steps under `app/steps` are discovered and served **by name** automatically (the
 
 ```ts
 // worker side — the transport serving this name
-transport.handle('payments:charge-card', async (input: { orderId: string; amountCents: number }) => {
+transport.handle('payments:charge-card', async (input: { orderId: number; amountCents: number }) => {
   return { chargeId: await stripe.charge(input) }
 })
 ```

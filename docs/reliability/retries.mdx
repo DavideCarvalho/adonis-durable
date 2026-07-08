@@ -59,9 +59,9 @@ Declare the durable-retry policy on the step's `@Step`/`defineStep` config (or o
 ```ts
 export const chargeCard = defineStep(
   'payments:charge-card',
-  async (input: { orderId: string; amountCents: number }) => ({ chargeId: await stripe.charge(input) }),
+  async (input: { orderId: number; amountCents: number }) => ({ chargeId: await stripe.charge(input) }),
   {
-    input: z.object({ orderId: z.string(), amountCents: z.number().int() }),
+    input: z.object({ orderId: z.number().int(), amountCents: z.number().int() }),
     output: z.object({ chargeId: z.string() }),
     retries: 4,
     backoff: 'exp',

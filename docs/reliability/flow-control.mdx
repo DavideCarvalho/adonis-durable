@@ -89,7 +89,10 @@ import { RedisAdmissionBackend } from '@adonis-agora/durable/admission-redis'
 const admission = new RedisAdmissionBackend({ connection: redis.connection() })
 admission.register({ name: 'emails', concurrency: 10, rateLimit: { limit: 1000, periodMs: 3_600_000 } })
 
-export default defineConfig({ store, transport, admission })
+export default defineConfig({
+  // … plus your transport/store (see Getting Started)
+  admission,
+})
 ```
 
 Options on `RedisAdmissionBackend`:

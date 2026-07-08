@@ -68,10 +68,12 @@ Start a run from a controller. `dispatch` **enqueues** the run and returns `{ ru
 import type { HttpContext } from '@adonisjs/core/http'
 import CheckoutWorkflow from '#workflows/checkout_workflow'
 import Order from '#models/order'
+import { createCheckoutValidator } from '#validators/checkout'
 
 export default class CheckoutController {
   async store({ request, response }: HttpContext) {
-    const order = await Order.create(request.only(['total']))
+    const { total } = await request.validateUsing(createCheckoutValidator)
+    const order = await Order.create({ total })
     const { runId } = await CheckoutWorkflow.dispatch(
       { id: order.id, total: order.total },
       { runId: `checkout:${order.id}` }
@@ -106,9 +108,9 @@ import { z } from 'zod'
 
 export const chargeCard = defineStep(
   'payments:charge-card',
-  async (input: { orderId: string; amountCents: number }) => ({ chargeId: await charge(input) }),
+  async (input: { orderId: number; amountCents: number }) => ({ chargeId: await charge(input) }),
   {
-    input: z.object({ orderId: z.string(), amountCents: z.number().int() }),
+    input: z.object({ orderId: z.number().int(), amountCents: z.number().int() }),
     output: z.object({ chargeId: z.string() }),
     retries: 3,
   },

@@ -1,17 +1,17 @@
 ---
 title: CLI
-description: Ace commands for durable — durable:work runs the worker loop, durable:runs lists runs, and durable:retry re-enqueues a run, all resolving the engine bound by @adonis-agora/durable.
+description: Ace commands for durable — durable:work runs the worker loop, durable:runs lists runs, durable:retry re-enqueues a run, and make:workflow scaffolds a workflow, all resolving the engine bound by @adonis-agora/durable.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-`@adonis-agora/durable` ships three ace commands: a long-running **worker loop**, a run **lister**, and a **retry**. All three resolve the [`WorkflowEngine`](/docs/durable/concepts/workflows-and-steps) bound by the provider, so they operate on the same engine (and store) your app is configured with.
+`@adonis-agora/durable` ships four ace commands: a long-running **worker loop**, a run **lister**, a **retry**, and a **workflow generator**. They all resolve the [`WorkflowEngine`](/docs/durable/concepts/workflows-and-steps) bound by the provider, so they operate on the same engine (and store) your app is configured with.
 
 ```bash
 node ace configure @adonis-agora/durable
 ```
 
-`configure` registers the commands barrel (`@adonis-agora/durable/commands`) in `adonisrc.ts` so the three commands become available to ace — there's no separate package to install.
+`configure` registers the commands barrel (`@adonis-agora/durable/commands`) in `adonisrc.ts` so the commands become available to ace — there's no separate package to install.
 
 ## `durable:work` — the worker loop
 
@@ -63,7 +63,7 @@ Run `durable:work` (or any worker) to pick it up afterward. This is the terminal
 
 ## `make:workflow` — scaffold a workflow class
 
-Scaffolds a `@Workflow` class under `app/workflows/`, the parallel to `@adonisjs/queue`'s `make:job`. The generated class is auto-registered on the engine at boot — see [app/workflows & make:workflow](/docs/durable/authoring/app-workflows).
+Scaffolds a `BaseWorkflow` subclass under `app/workflows/`, the parallel to `@adonisjs/queue`'s `make:job`. The generated class is auto-registered on the engine at boot — see [app/workflows & make:workflow](/docs/durable/authoring/app-workflows).
 
 ```bash
 node ace make:workflow order

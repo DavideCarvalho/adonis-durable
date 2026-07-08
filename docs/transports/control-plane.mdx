@@ -33,7 +33,7 @@ import { defineConfig, transports, controlPlanes } from '@adonis-agora/durable'
 
 export default defineConfig({
   transport: 'queue',
-  transports: { queue: transports.queue({ connection: 'redis', group: 'workers' }) },
+  transports: { queue: transports.queue({ connection: 'redis' }) },
   // Fan out lifecycle events + cancellation across every replica.
   controlPlane: controlPlanes.redis({ connection: 'main' }),
 })
