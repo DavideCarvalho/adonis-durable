@@ -3,7 +3,7 @@ import { WorkflowEngine } from '../../src/engine.js';
 import { InMemoryStateStore } from '../../src/testing/in-memory-state-store.js';
 
 describe('workflow tags', () => {
-  it('merges @Workflow static tags with per-run tags onto the run', async () => {
+  it('merges static workflow tags with per-run tags onto the run', async () => {
     const store = new InMemoryStateStore();
     const engine = new WorkflowEngine({ store });
     engine.register('etl', '1', async () => 'done', { tags: ['etl', 'critical'] });

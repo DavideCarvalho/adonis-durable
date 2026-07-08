@@ -6,15 +6,7 @@
  * string stays available for the cross-runtime case.
  */
 
-/**
- * The symbol the `@Workflow` decorator stamps the full options onto (name + version + tags …), so
- * auto-discovery can register the class against the engine and a class ref can be resolved back to
- * its name via {@link workflowName}. A global-registry symbol (`Symbol.for`) so it survives duplicate
- * copies of this package in a dependency tree.
- */
-export const WORKFLOW_META_KEY: unique symbol = Symbol.for('@agora/durable:workflow-meta');
-
-/** Options passed to `@Workflow({ name, version, … })`. */
+/** Options for a workflow's `static workflow = { name, version, … }` config (see {@link BaseWorkflow}). */
 export interface WorkflowOptions {
   /** The registered workflow name (the cross-runtime identity, e.g. `order`). */
   name: string;
@@ -28,56 +20,19 @@ export interface WorkflowOptions {
   onEvent?: string[];
 }
 
-/** The metadata the `@Workflow` decorator stamps onto a class for discovery + registration. */
+/** The metadata read off a workflow class's `static workflow` config for discovery + registration. */
 export interface WorkflowMeta extends WorkflowOptions {
   version: string;
 }
 
 /**
- * Class decorator marking a class as a durable workflow — an **alias** for the blessed
- * `BaseWorkflow` + `static workflow = { name, version, … }` form. Both stamp the same metadata and
- * resolve identically through {@link workflowMeta}/{@link workflowName}, so the provider's
- * `app/workflows` auto-discovery registers either on the engine — no manual `engine.register(...)`.
- * The class must expose `run(ctx, input)`; that method becomes the workflow body.
- *
- * **Prefer `BaseWorkflow` for new code**: besides the identity, it carries the `.start`/`.dispatch`
- * statics (context-aware dispatch). Use `@Workflow` when you need a decorator (e.g. on a class that
- * can't extend `BaseWorkflow`); it stays fully supported.
- *
- * ```ts
- * @Workflow({ name: 'order', version: '1' })
- * export default class OrderWorkflow {
- *   async run(ctx: WorkflowCtx, input: { id: string }) { ... }
- * }
- * ```
- */
-export function Workflow(options: WorkflowOptions) {
-  return <T extends abstract new (...args: never[]) => { run(ctx: never, input: never): unknown }>(
-    target: T,
-  ): T => {
-    const meta: WorkflowMeta = { ...options, version: options.version ?? '1' };
-    Object.defineProperty(target, WORKFLOW_META_KEY, {
-      value: meta,
-      enumerable: false,
-      configurable: true,
-    });
-    return target;
-  };
-}
-
-/**
- * Read a class's {@link WorkflowMeta} — its name/version/tags/… — resolved from EITHER the symbol a
- * `@Workflow` decorator stamped OR a plain `static workflow = { name, version, … }` config on the
- * class (the decorator-free {@link BaseWorkflow} form). The decorator wins if both are present. Any
- * absent `version` is normalized to `'1'`. Returns `undefined` for a class carrying neither (an
- * undecorated, config-less class is not a registrable workflow).
+ * Read a class's {@link WorkflowMeta} — its name/version/tags/… — from its `static workflow =
+ * { name, version, … }` config (the {@link BaseWorkflow} authoring form). Any absent `version` is
+ * normalized to `'1'`. Returns `undefined` for a class carrying no valid config (a class with no
+ * `static workflow`, or one whose `name` is not a string, is not a registrable workflow).
  */
 export function workflowMeta(target: unknown): WorkflowMeta | undefined {
   if (typeof target !== 'function') return undefined;
-  const stamped = (target as { [WORKFLOW_META_KEY]?: WorkflowMeta })[WORKFLOW_META_KEY];
-  if (stamped) return stamped;
-  // Fallback: a `static workflow` object (BaseWorkflow authoring form). Alias for the decorator —
-  // same normalization (default version '1'), so both forms resolve identically downstream.
   const config = (target as { workflow?: WorkflowOptions }).workflow;
   if (config && typeof config === 'object' && typeof config.name === 'string') {
     return { ...config, version: config.version ?? '1' };
@@ -85,7 +40,7 @@ export function workflowMeta(target: unknown): WorkflowMeta | undefined {
   return undefined;
 }
 
-/** Structural shape of a `@Workflow` class — its `run(ctx, input)` carries the input/output types. */
+/** Structural shape of a workflow class — its `run(ctx, input)` carries the input/output types. */
 export type WorkflowClass<TInput = unknown, TOutput = unknown> = abstract new (
   ...args: never[]
 ) => {
@@ -117,15 +72,15 @@ export type WorkflowOutputOf<C> = C extends abstract new (
 
 /**
  * Resolve a {@link WorkflowRef} to its registered workflow name: a string is returned as-is; a
- * `@Workflow` class is resolved via the name the decorator stamped in its metadata. Throws if a
- * class was never decorated (so it carries no registered name).
+ * workflow class is resolved via the name on its `static workflow` config. Throws if a class carries
+ * no `static workflow` config (so it has no registered name).
  */
 export function workflowName(ref: WorkflowRef): string {
   if (typeof ref === 'string') return ref;
   const name = workflowMeta(ref)?.name;
   if (!name) {
     throw new Error(
-      `workflow class ${ref.name} has no registered name — is it decorated with @Workflow({ name })?`,
+      `workflow class ${ref.name} has no registered name — does it declare \`static workflow = { name }\`?`,
     );
   }
   return name;

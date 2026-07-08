@@ -53,7 +53,7 @@ export default defineConfig({
 `node ace configure` registers an AdonisJS **Assembler `init` hook** that generates
 a typed barrel of `app/workflows/` at build/dev time — exactly how core generates
 the controllers/events/listeners barrels. The provider imports the generated
-`.adonisjs/durable/workflows.ts` at boot and registers every `@Workflow` class,
+`.adonisjs/durable/workflows.ts` at boot and registers every `BaseWorkflow` class,
 instead of scanning the directory with `readdir` at runtime. The file watcher
 regenerates the barrel whenever a workflow file changes.
 

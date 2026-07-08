@@ -7,7 +7,6 @@ import defaultHook, {
 import { startRun } from '../../src/test-helpers.js';
 import { InMemoryStateStore } from '../../src/testing/in-memory-state-store.js';
 import { type WorkflowsBarrel, registerWorkflowsFromBarrel } from '../../src/workflow-discovery.js';
-import { Workflow } from '../../src/workflow-ref.js';
 
 /** A minimal stand-in for the Assembler IndexGenerator: records the `add(name, config)` calls. */
 function fakeIndexGenerator() {
@@ -64,9 +63,9 @@ describe('workflows assembler init hook', () => {
 });
 
 describe('registerWorkflowsFromBarrel (provider consumes the generated barrel)', () => {
-  it('registers every @Workflow class reachable from a lazy barrel and runs it', async () => {
-    @Workflow({ name: 'greet' })
+  it('registers every workflow class reachable from a lazy barrel and runs it', async () => {
     class Greet {
+      static workflow = { name: 'greet' };
       async run(_ctx: unknown, input: { name: string }) {
         return `hi ${input.name}`;
       }
@@ -89,8 +88,8 @@ describe('registerWorkflowsFromBarrel (provider consumes the generated barrel)',
   });
 
   it('dedupes a class re-exported under several keys/modules (registers once)', async () => {
-    @Workflow({ name: 'once' })
     class Once {
+      static workflow = { name: 'once' };
       async run() {
         return 'ok';
       }
@@ -107,7 +106,7 @@ describe('registerWorkflowsFromBarrel (provider consumes the generated barrel)',
     expect(meta).toEqual([{ name: 'once', version: '1' }]);
   });
 
-  it('ignores undecorated exports in a barrel module', async () => {
+  it('ignores non-workflow exports in a barrel module', async () => {
     class NotAWorkflow {}
     const barrel: WorkflowsBarrel = {
       X: async () => ({ default: NotAWorkflow, helper: () => 1 }),

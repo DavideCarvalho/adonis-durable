@@ -68,7 +68,7 @@ export class RemoteStepTimeout extends Error {
  * Thrown on resume when the workflow code no longer matches the recorded history: the step at a
  * logical position has a different name/kind than the checkpoint saved there. This means the
  * workflow definition changed (a step was added/removed/reordered) under an in-flight run without a
- * new `@Workflow` version — continuing would replay the wrong checkpoint into the wrong step and
+ * new workflow version — continuing would replay the wrong checkpoint into the wrong step and
  * silently corrupt the run, so the engine fails loudly instead. Register a new workflow version for
  * breaking changes (old runs finish on the version they started on).
  */
@@ -78,7 +78,7 @@ export class NonDeterminismError extends Error {
   constructor(runId: string, seq: number, expected: string, recorded: string) {
     super(
       `non-determinism at ${runId}#${seq}: code expects "${expected}" but history recorded ` +
-        `"${recorded}". The workflow changed under an in-flight run — register a new @Workflow version.`,
+        `"${recorded}". The workflow changed under an in-flight run — register a new workflow version.`,
     );
     this.name = 'NonDeterminismError';
     this.runId = runId;

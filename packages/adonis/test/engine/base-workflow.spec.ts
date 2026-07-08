@@ -6,7 +6,7 @@ import { startRun } from '../../src/test-helpers.js';
 import { InMemoryStateStore } from '../../src/testing/in-memory-state-store.js';
 import { getCurrentWorkflowCtx } from '../../src/workflow-als.js';
 import { registerWorkflowClass } from '../../src/workflow-discovery.js';
-import { Workflow, workflowMeta, workflowName } from '../../src/workflow-ref.js';
+import { workflowMeta, workflowName } from '../../src/workflow-ref.js';
 
 async function poll(fn: () => Promise<boolean>, timeoutMs = 1000): Promise<void> {
   const start = Date.now();
@@ -20,8 +20,8 @@ async function poll(fn: () => Promise<boolean>, timeoutMs = 1000): Promise<void>
 // Always clear the injected engine resolver so an OUTSIDE test never bleeds into the next.
 afterEach(() => setWorkflowEngineResolver(undefined));
 
-describe('BaseWorkflow — authoring parity (static workflow vs @Workflow)', () => {
-  it('resolves name/version/tags from a `static workflow` config, same as the decorator', () => {
+describe('BaseWorkflow — authoring (static workflow)', () => {
+  it('resolves name/version/tags from a `static workflow` config', () => {
     class CheckoutWorkflow extends BaseWorkflow {
       static workflow = { name: 'checkout', version: '2', tags: ['billing'] };
       async run(_ctx: WorkflowCtx, input: { id: string }) {
@@ -36,7 +36,7 @@ describe('BaseWorkflow — authoring parity (static workflow vs @Workflow)', () 
     });
   });
 
-  it('defaults version to "1" when the static config omits it (decorator parity)', () => {
+  it('defaults version to "1" when the static config omits it', () => {
     class BareWorkflow extends BaseWorkflow {
       static workflow = { name: 'bare' };
       async run() {
@@ -46,19 +46,7 @@ describe('BaseWorkflow — authoring parity (static workflow vs @Workflow)', () 
     expect(workflowMeta(BareWorkflow)).toEqual({ name: 'bare', version: '1' });
   });
 
-  it('the decorator wins when both a symbol and a static config are present', () => {
-    @Workflow({ name: 'decorated', version: '9' })
-    class Both extends BaseWorkflow {
-      static workflow = { name: 'static-name', version: '1' };
-      async run() {
-        return 'ok';
-      }
-    }
-    expect(workflowName(Both)).toBe('decorated');
-    expect(workflowMeta(Both)).toMatchObject({ name: 'decorated', version: '9' });
-  });
-
-  it('a config-less subclass is not a registrable workflow (like an undecorated class)', () => {
+  it('a config-less subclass is not a registrable workflow', () => {
     class NoConfig extends BaseWorkflow {
       async run() {
         return 'ok';
@@ -68,7 +56,7 @@ describe('BaseWorkflow — authoring parity (static workflow vs @Workflow)', () 
     expect(() => workflowName(NoConfig)).toThrow(/NoConfig/);
   });
 
-  it('registers + runs a `static workflow` class identically to a decorated one', async () => {
+  it('registers + runs a `static workflow` class', async () => {
     const engine = new WorkflowEngine({ store: new InMemoryStateStore() });
 
     class StaticGreet extends BaseWorkflow {
@@ -77,20 +65,11 @@ describe('BaseWorkflow — authoring parity (static workflow vs @Workflow)', () 
         return `hi ${input.name}`;
       }
     }
-    @Workflow({ name: 'decorated-greet', version: '1' })
-    class DecoratedGreet extends BaseWorkflow {
-      async run(_ctx: WorkflowCtx, input: { name: string }) {
-        return `hi ${input.name}`;
-      }
-    }
 
     expect(registerWorkflowClass(engine, StaticGreet)).toBe(true);
-    expect(registerWorkflowClass(engine, DecoratedGreet)).toBe(true);
 
     const a = await startRun(engine, 'static-greet', { name: 'davi' }, 's1');
-    const b = await startRun(engine, 'decorated-greet', { name: 'davi' }, 'd1');
     expect(a.output).toBe('hi davi');
-    expect(b.output).toBe('hi davi');
   });
 });
 

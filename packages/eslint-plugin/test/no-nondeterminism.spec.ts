@@ -10,10 +10,10 @@ RuleTester.itOnly = it.only;
 
 const ruleTester = new RuleTester();
 
-// The @Workflow class form (ported from the aviary).
+// The class form: a `BaseWorkflow` subclass with a `static workflow` config.
 const wfClass = (body: string) => `
-  @Workflow({ name: 'wf', version: '1' })
-  class W {
+  class W extends BaseWorkflow {
+    static workflow = { name: 'wf', version: '1' };
     async run(ctx) {
       ${body}
     }
@@ -36,11 +36,11 @@ ruleTester.run('no-nondeterminism', noNondeterminism, {
     // Banned calls OUTSIDE any workflow body.
     { code: 'function f() { return Date.now(); }' },
     { code: 'const r = Math.random();' },
-    // A non-`run` method of a @Workflow class is not the deterministic body.
+    // A non-`run` method of a workflow class is not the deterministic body.
     {
-      code: `@Workflow({ name: 'wf', version: '1' }) class W { helper() { return Math.random(); } }`,
+      code: `class W extends BaseWorkflow { static workflow = { name: 'wf', version: '1' }; helper() { return Math.random(); } }`,
     },
-    // A class method named run WITHOUT the @Workflow decorator is just a method.
+    // A class method named run on a non-workflow class (no BaseWorkflow / static workflow) is just a method.
     { code: 'class Plain { run() { return Date.now(); } }' },
     // Non-determinism inside a ctx.localStep / ctx.task / ctx.sideEffect callback is checkpointed
     // (run once, then replayed) — replay-safe, so it is NOT flagged.

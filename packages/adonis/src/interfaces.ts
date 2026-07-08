@@ -55,7 +55,7 @@ export interface WorkflowRun {
   lockedUntil?: number | undefined;
   /** How many times crash-recovery has picked this run up — caps poison pills (see maxRecoveryAttempts). */
   recoveryAttempts?: number | undefined;
-  /** Searchable labels: the workflow's static `@Workflow({ tags })` merged with the run's start-time tags. */
+  /** Searchable labels: the workflow's static `workflow` config `tags` merged with the run's start-time tags. */
   tags?: string[] | undefined;
   /** Typed, queryable run data (e.g. `{ amount: 200, tier: 'pro' }`) — see {@link RunQuery.attributes}. */
   searchAttributes?: SearchAttributes | undefined;

@@ -38,8 +38,8 @@ export default [
 ### `no-nondeterminism`
 
 Disallows non-deterministic sources inside a durable workflow body — both the function form
-(`engine.register('wf', '1', async (ctx) => { … })`) and the `@Workflow`-decorated class's `run`
-method:
+(`engine.register('wf', '1', async (ctx) => { … })`) and a workflow class's `run` method (a
+`BaseWorkflow` subclass / `static workflow` config):
 
 | Flagged                | Use instead              |
 | ---------------------- | ------------------------ |

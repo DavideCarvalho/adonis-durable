@@ -8,8 +8,8 @@ import type { BackoffStrategy } from './interfaces.js';
  * `Symbol.for` (the GLOBAL registry), NOT a plain `Symbol()` — so a duplicate copy of this module
  * (pnpm peer-dependency multiplexing, or a dual ESM/CJS load) still reads the SAME key. A plain
  * `Symbol()` would mint a distinct token per copy, so a decorator running against one copy could
- * stamp a name a different copy's `ctx.step` can never read back. Uses the `@agora/` wire namespace
- * to match {@link import('./workflow-ref.js').WORKFLOW_META_KEY}.
+ * stamp a name a different copy's `ctx.step` can never read back. Uses the `@agora/` wire namespace,
+ * matching the other cross-package symbols in this package.
  */
 export const DURABLE_STEP_NAME: unique symbol = Symbol.for('@agora/durable:step-name');
 

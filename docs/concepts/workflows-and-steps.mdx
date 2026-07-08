@@ -24,8 +24,7 @@ engine.register('checkout', '1', async (ctx: WorkflowCtx, order: Order) => {
 `engine.register` is the low-level primitive. The recommended way to author is a `BaseWorkflow` class under
 `app/workflows/` with a `static workflow = { name, version }` (auto-registered at boot), run with the
 context-aware statics `Wf.dispatch(input)` (fire-and-forget → `{ runId }`) and `Wf.start(input)` (blocks until
-the run settles → result). The `@Workflow` decorator remains a supported alias. See
-[app/workflows](/docs/durable/authoring/app-workflows).
+the run settles → result). See [app/workflows](/docs/durable/authoring/app-workflows).
 </Callout>
 
 <Callout type="info">
@@ -57,7 +56,7 @@ The handler is registered under that same name — see [serving a handler](#serv
 
 ### 2. `@Step` decorator (recommended)
 
-Mark a class method with `@Step`, mirroring `@Workflow`. Steps are discovered from `app/steps` (config `stepsPath`, plus the `@adonis-agora/durable/hooks/steps` assembler barrel) and served by name automatically. Pass the method **reference** to `ctx.step` for full input/output types:
+Mark a class method with `@Step`. Steps are discovered from `app/steps` (config `stepsPath`, plus the `@adonis-agora/durable/hooks/steps` assembler barrel) and served by name automatically. Pass the method **reference** to `ctx.step` for full input/output types:
 
 ```ts title="app/steps/payment_steps.ts"
 import { Step } from '@adonis-agora/durable'

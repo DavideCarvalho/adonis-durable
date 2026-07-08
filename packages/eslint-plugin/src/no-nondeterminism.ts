@@ -60,27 +60,36 @@ function isRegisterWorkflowBody(fn: TSESTree.Node): boolean {
   );
 }
 
-/** True when the class `node` decorates a method `run` and carries the `@Workflow` decorator. */
-function isWorkflowDecoratedClass(classNode: TSESTree.Node | undefined): boolean {
+/**
+ * True when `classNode` is a durable workflow class — a `BaseWorkflow` subclass, or any class
+ * carrying a `static workflow = { name, … }` config (the authoring form the engine registers). Its
+ * `run` method is the deterministic orchestration body the rule guards.
+ */
+function isWorkflowClass(classNode: TSESTree.Node | undefined): boolean {
   if (
     !classNode ||
     (classNode.type !== 'ClassDeclaration' && classNode.type !== 'ClassExpression')
   ) {
     return false;
   }
-  return (classNode.decorators ?? []).some((d) => {
-    const e = d.expression;
-    if (e.type === 'Identifier') return e.name === 'Workflow';
-    if (e.type === 'CallExpression' && e.callee.type === 'Identifier') {
-      return e.callee.name === 'Workflow';
-    }
-    return false;
-  });
+  // `class X extends BaseWorkflow { … }`
+  if (classNode.superClass?.type === 'Identifier' && classNode.superClass.name === 'BaseWorkflow') {
+    return true;
+  }
+  // `static workflow = { name, … }` on the class body.
+  return classNode.body.body.some(
+    (member) =>
+      member.type === 'PropertyDefinition' &&
+      member.static &&
+      member.key.type === 'Identifier' &&
+      member.key.name === 'workflow',
+  );
 }
 
 /**
  * True when `node` sits lexically inside a workflow's deterministic orchestration body — either the
- * `run` method of a class decorated with `@Workflow`, or the function passed to `engine.register(...)`.
+ * `run` method of a workflow class (`BaseWorkflow` subclass / `static workflow` config), or the
+ * function passed to `engine.register(...)`.
  * Returns false the moment the walk crosses a `ctx.step`/`ctx.task` callback boundary, since that body
  * is checkpointed (run once) and so may be non-deterministic.
  */
@@ -94,12 +103,12 @@ function isInWorkflowBody(node: TSESTree.Node): boolean {
       // The function form: the body passed to `engine.register(name, version, fn)`.
       if (isRegisterWorkflowBody(cur)) return true;
     }
-    // The class form: the `run` method of a `@Workflow`-decorated class.
+    // The class form: the `run` method of a workflow class.
     if (
       cur.type === 'MethodDefinition' &&
       cur.key.type === 'Identifier' &&
       cur.key.name === 'run' &&
-      isWorkflowDecoratedClass(cur.parent?.parent) // MethodDefinition → ClassBody → Class
+      isWorkflowClass(cur.parent?.parent) // MethodDefinition → ClassBody → Class
     ) {
       return true;
     }

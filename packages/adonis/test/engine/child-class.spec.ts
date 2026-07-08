@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { WorkflowEngine } from '../../src/engine.js';
 import { startRun } from '../../src/test-helpers.js';
 import { InMemoryStateStore } from '../../src/testing/in-memory-state-store.js';
-import { Workflow } from '../../src/workflow-ref.js';
 
 async function poll(fn: () => Promise<boolean>, timeoutMs = 1000): Promise<void> {
   const start = Date.now();
@@ -13,13 +12,14 @@ async function poll(fn: () => Promise<boolean>, timeoutMs = 1000): Promise<void>
   throw new Error('poll timed out');
 }
 
-/** Stamp a class with a registered name via the `@Workflow` decorator (its metadata carries it). */
+/** Give a class a registered name via a `static workflow` config (read by `workflowMeta`). */
 function named<
   T extends abstract new (
     ...args: never[]
   ) => { run(ctx: never, input: never): unknown },
 >(cls: T, name: string): T {
-  return Workflow({ name })(cls);
+  Object.defineProperty(cls, 'workflow', { value: { name }, configurable: true });
+  return cls;
 }
 
 describe('class-ref forms of child / startChild / start', () => {

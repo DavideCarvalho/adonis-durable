@@ -1,12 +1,11 @@
 ---
 title: app/workflows & make:workflow
-description: The class-based authoring convention — a BaseWorkflow subclass per file under app/workflows with a static workflow config, auto-registered at boot, scaffolded by make:workflow. The @Workflow decorator remains a supported alias. The parallel to @adonisjs/queue's app/jobs and make:job.
+description: The class-based authoring convention — a BaseWorkflow subclass per file under app/workflows with a static workflow config, auto-registered at boot, scaffolded by make:workflow. The parallel to @adonisjs/queue's app/jobs and make:job.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
-import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
-The **recommended** way to author a workflow is a class under `app/workflows/` that extends `BaseWorkflow` and
+The way to author a workflow is a class under `app/workflows/` that extends `BaseWorkflow` and
 declares its identity with a `static workflow = { name, version }`, mirroring how
 [`@adonisjs/queue`](https://docs.adonisjs.com/guides/digging-deeper/queues) authors a job per file under
 `app/jobs/`. The durable provider scans `app/workflows/` at boot and registers every exported workflow class on
@@ -41,61 +40,13 @@ export default class OrderWorkflow extends BaseWorkflow {
 The class's `run(ctx, input)` **is** the workflow body — the same deterministic `(ctx, input) => …` that
 [`engine.register`](/docs/durable/concepts/workflows-and-steps) takes, just attached to a class so a class
 ref (`OrderWorkflow.dispatch(input)`, `ctx.child(OrderWorkflow)`) carries its input/output types. The
-`static workflow` object accepts the same options as the decorator and `register` — `name`, `version`, and
+`static workflow` object accepts the same options as `engine.register` — `name`, `version`, and
 optional `tags` / `onEvent` / `executionTimeout`.
-
-## The `@Workflow` decorator (alias)
-
-`@Workflow({ name, version })` remains fully supported — it is an **alias** that writes the same metadata as
-`static workflow`. Both forms resolve through `workflowName()` and `app/workflows` discovery identically, so
-you can mix them freely and migrate at your own pace.
-
-<Tabs items={['static workflow (recommended)', '@Workflow (alias)']}>
-
-<Tab value="static workflow (recommended)">
-
-```ts title="app/workflows/order_workflow.ts"
-import { BaseWorkflow } from '@adonis-agora/durable'
-import type { WorkflowCtx } from '@adonis-agora/durable'
-
-export default class OrderWorkflow extends BaseWorkflow {
-  static workflow = { name: 'order', version: '1' }
-
-  async run(ctx: WorkflowCtx, input: OrderInput) {
-    return input
-  }
-}
-```
-
-</Tab>
-
-<Tab value="@Workflow (alias)">
-
-```ts title="app/workflows/order_workflow.ts"
-import { Workflow } from '@adonis-agora/durable'
-import type { WorkflowCtx } from '@adonis-agora/durable'
-
-@Workflow({ name: 'order', version: '1' })
-export default class OrderWorkflow {
-  async run(ctx: WorkflowCtx, input: OrderInput) {
-    return input
-  }
-}
-```
-
-</Tab>
-
-</Tabs>
-
-<Callout type="info" title="No breaking change">
-The `@Workflow` decorator continues to work exactly as before. `BaseWorkflow` + `static workflow` is simply the
-new primary idiom — decorator-free, queue-style — and both compile to the same registered metadata.
-</Callout>
 
 ## Auto-registration
 
 At boot the provider scans the configured directory (default `app/workflows`), imports each module, and
-registers every exported workflow class — decorator or `static workflow`, either way — including the version,
+registers every exported workflow class from its `static workflow` config — including the version,
 `tags`, `executionTimeout` and `onEvent` from its options.
 
 ## Running a workflow

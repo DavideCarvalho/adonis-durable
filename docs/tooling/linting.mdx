@@ -1,6 +1,6 @@
 ---
 title: Linting for non-determinism
-description: Catch Date.now(), Math.random(), new Date() and crypto.randomUUID() inside a workflow body at author time with @adonis-agora/durable-eslint-plugin — an AST-scoped ESLint rule that knows both the engine.register() function form and a @Workflow-decorated class.
+description: Catch Date.now(), Math.random(), new Date() and crypto.randomUUID() inside a workflow body at author time with @adonis-agora/durable-eslint-plugin — an AST-scoped ESLint rule that knows both the engine.register() function form and a BaseWorkflow class.
 ---
 
 A durable workflow body is executed *and replayed*: the engine re-runs it from the top on every resume, replaying recorded step results to reach the suspension point. That only stays correct if the body is **deterministic** — the same input has to produce the same sequence of step calls every time. A bare `Date.now()`, `Math.random()`, `new Date()`, `crypto.randomUUID()`, or `performance.now()` returns a *different value on every replay*, so the replayed path diverges from the recorded one and silently corrupts the run.
@@ -48,7 +48,7 @@ engine.register('checkout', '1', async (ctx, order) => {
 The `no-nondeterminism` rule is **AST-scoped** — it only fires *inside a workflow body*, recognizing both forms Agora supports:
 
 - **The function form** — the function passed to `engine.register(name, version, fn)` (and `registerRemote` / `registerEntity`), where the receiver reads as a workflow engine (`engine`, `workflowEngine`, `this.engine`, …). An unrelated `someRegistry.register(...)` is left alone.
-- **The class form** — the `run` method of a class decorated with `@Workflow` (whether written `@Workflow` or `@Workflow({ ... })`).
+- **The class form** — the `run` method of a workflow class: a `BaseWorkflow` subclass, or any class carrying a `static workflow = { name, … }` config.
 
 Crucially, the rule **stops at a `ctx.localStep(...)`, `ctx.task(...)`, or `ctx.sideEffect(...)` callback boundary**: those are the checkpoint-callback primitives whose body runs once and whose whole result is recorded, so a `Date.now()` inside one is fine. (`ctx.step` is **not** a boundary — it is the always-dispatched step whose second argument is data, not a callback.) Only the deterministic orchestration prefix is checked, so you can enable the rule across your whole `**/*.ts` glob without false positives.
 

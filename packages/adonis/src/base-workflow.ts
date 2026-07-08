@@ -47,8 +47,8 @@ async function resolveEngine(): Promise<WorkflowEngine> {
 }
 
 /**
- * Base class for a durable workflow authored WITHOUT the `@Workflow` decorator. Declare the workflow's
- * identity as a `static workflow = { name, version }` config and implement `run(ctx, input)`:
+ * Base class for a durable workflow. Declare the workflow's identity as a
+ * `static workflow = { name, version }` config and implement `run(ctx, input)`:
  *
  * ```ts
  * export default class CheckoutWorkflow extends BaseWorkflow {
@@ -57,8 +57,8 @@ async function resolveEngine(): Promise<WorkflowEngine> {
  * }
  * ```
  *
- * The static `workflow` config is an exact alias for `@Workflow({ … })` — both resolve through
- * `workflowName()` and register via `app/workflows` auto-discovery identically.
+ * The static `workflow` config is resolved through `workflowName()` and registered via
+ * `app/workflows` auto-discovery.
  *
  * ## Context-aware dispatch
  * The statics behave differently depending on whether they're called inside or outside a running
@@ -75,9 +75,8 @@ async function resolveEngine(): Promise<WorkflowEngine> {
  */
 export abstract class BaseWorkflow {
   /**
-   * The workflow's identity + options — the decorator-free equivalent of `@Workflow({ … })`. Read by
-   * `workflowMeta()`/`workflowName()` and by `app/workflows` auto-discovery. Omit it (and the
-   * decorator) and the class is not a registrable workflow.
+   * The workflow's identity + options. Read by `workflowMeta()`/`workflowName()` and by
+   * `app/workflows` auto-discovery. Omit it and the class is not a registrable workflow.
    */
   static workflow?: WorkflowOptions;
 

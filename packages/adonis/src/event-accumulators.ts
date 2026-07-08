@@ -1,7 +1,7 @@
 import { SignalTimeoutError } from './errors.js';
 import type { WorkflowCtx } from './interfaces.js';
 
-/** How `onEvent` triggers are coalesced into fewer runs (see `@Workflow({ debounce | batch })`). */
+/** How `onEvent` triggers are coalesced into fewer runs (see the `onEvent` `debounce`/`batch` config). */
 export type EventBatchConfig =
   | { mode: 'debounce'; windowMs: number }
   | { mode: 'batch'; maxSize: number; windowMs: number };

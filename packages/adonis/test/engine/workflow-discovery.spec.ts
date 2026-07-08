@@ -7,15 +7,15 @@ import { WorkflowEngine } from '../../src/engine.js';
 import { startRun } from '../../src/test-helpers.js';
 import { InMemoryStateStore } from '../../src/testing/in-memory-state-store.js';
 import { discoverWorkflows, registerWorkflowsFromDir } from '../../src/workflow-discovery.js';
-import { Workflow, workflowMeta, workflowName } from '../../src/workflow-ref.js';
+import { workflowMeta, workflowName } from '../../src/workflow-ref.js';
 
-// Absolute path to the package src so a temp workflow module can import @Workflow without the alias.
+// Absolute path to the package src so a temp workflow module can import BaseWorkflow without the alias.
 const SRC = fileURLToPath(new URL('../../src', import.meta.url));
 
-describe('@Workflow decorator', () => {
-  it('stamps the registered name and full metadata (default version 1)', () => {
-    @Workflow({ name: 'greet' })
+describe('static workflow config', () => {
+  it('exposes the registered name and full metadata (default version 1)', () => {
     class Greet {
+      static workflow = { name: 'greet' };
       async run(_ctx: unknown, input: { name: string }) {
         return `hi ${input.name}`;
       }
@@ -25,8 +25,8 @@ describe('@Workflow decorator', () => {
   });
 
   it('carries version/tags/onEvent through the metadata', () => {
-    @Workflow({ name: 'order', version: '2', tags: ['billing'], onEvent: ['order.placed'] })
     class Order {
+      static workflow = { name: 'order', version: '2', tags: ['billing'], onEvent: ['order.placed'] };
       async run() {
         return 'done';
       }
@@ -50,14 +50,13 @@ describe('app/workflows auto-discovery', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it('discovers + registers an exported @Workflow class so it is runnable', async () => {
+  it('discovers + registers an exported `static workflow` class so it is runnable', async () => {
     await writeFile(
       join(dir, 'greet_workflow.ts'),
-      `import { Workflow } from '${SRC}/workflow-ref.js'
-       class GreetWorkflow {
+      `export default class GreetWorkflow {
+         static workflow = { name: 'greet', version: '1' }
          async run(_ctx, input) { return 'hi ' + input.name }
-       }
-       export default Workflow({ name: 'greet', version: '1' })(GreetWorkflow)`,
+       }`,
     );
 
     const engine = new WorkflowEngine({ store: new InMemoryStateStore() });
@@ -86,15 +85,15 @@ describe('app/workflows auto-discovery', () => {
     expect(res.output).toBe('checkout:x');
   });
 
-  it('discovers @Workflow classes in NESTED directories (matches make:workflow nested paths)', async () => {
+  it('discovers workflow classes in NESTED directories (matches make:workflow nested paths)', async () => {
     await mkdir(join(dir, 'billing'), { recursive: true });
     await writeFile(
       join(dir, 'billing', 'charge_workflow.ts'),
-      `import { Workflow } from '${SRC}/workflow-ref.js'
-       class ChargeWorkflow {
+      `import { BaseWorkflow } from '${SRC}/base-workflow.js'
+       export default class ChargeWorkflow extends BaseWorkflow {
+         static workflow = { name: 'billing.charge', version: '1' }
          async run(_ctx, input) { return 'charged:' + input.id }
-       }
-       export default Workflow({ name: 'billing.charge', version: '1' })(ChargeWorkflow)`,
+       }`,
     );
 
     const engine = new WorkflowEngine({ store: new InMemoryStateStore() });

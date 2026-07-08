@@ -102,14 +102,14 @@ describe('DurableProvider — app/workflows auto-discovery (boot)', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it('scans the configured dir and auto-registers @Workflow classes (no manual register)', async () => {
+  it('scans the configured dir and auto-registers workflow classes (no manual register)', async () => {
     await writeFile(
       join(dir, 'order_workflow.ts'),
-      `import { Workflow } from '${SRC}/workflow-ref.js'
-       class OrderWorkflow {
+      `import { BaseWorkflow } from '${SRC}/base-workflow.js'
+       export default class OrderWorkflow extends BaseWorkflow {
+         static workflow = { name: 'order', version: '1' }
          async run(_ctx, input) { return 'order:' + input.id }
-       }
-       export default Workflow({ name: 'order', version: '1' })(OrderWorkflow)`,
+       }`,
     );
 
     // workflowsPath is given as a path relative to the (faked) app root === dir.

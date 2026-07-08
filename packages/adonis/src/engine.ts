@@ -70,7 +70,7 @@ type WorkflowFn = (ctx: WorkflowCtx, input: unknown) => Promise<unknown>;
 
 /** Options for {@link WorkflowEngine.start}. */
 export interface StartOptions {
-  /** Run-scoped tags, merged with the workflow's static `@Workflow({ tags })` onto the run. */
+  /** Run-scoped tags, merged with the workflow's static `workflow` config `tags` onto the run. */
   tags?: string[] | undefined;
   /** Typed, queryable run data stamped on the run (e.g. `{ amount: 200, tier: 'pro' }`). */
   searchAttributes?: SearchAttributes | undefined;
@@ -124,7 +124,7 @@ interface RegisteredWorkflow {
   name: string;
   version: string;
   fn: WorkflowFn;
-  /** Static `@Workflow({ tags })` — merged with per-run tags onto each run at start. */
+  /** Static `workflow` config `tags` — merged with per-run tags onto each run at start. */
   tags?: string[] | undefined;
   /** Per-key serialization (a durable mutex). See {@link SingletonConfig}. */
   singleton?: SingletonConfig | undefined;
