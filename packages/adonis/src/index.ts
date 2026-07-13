@@ -3,6 +3,7 @@ export const VERSION = '0.7.0';
 
 // --- engine + core primitives -----------------------------------------------
 export * from './admission.js';
+export * from './control-flow-signal.js';
 export * from './duration.js';
 export * from './engine.js';
 export * from './entities.js';

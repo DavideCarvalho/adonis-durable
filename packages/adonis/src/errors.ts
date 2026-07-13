@@ -1,3 +1,5 @@
+import { CONTROL_FLOW_SIGNAL, type isWorkflowControlFlowSignal } from './control-flow-signal.js';
+
 /**
  * Thrown inside a step to signal an unrecoverable failure: the engine will NOT retry it,
  * regardless of the step's `retries` setting, and fails the run immediately. Use it for
@@ -106,6 +108,8 @@ export class GatherError extends Error {
 export class WorkflowSuspended extends Error {
   /** Epoch ms to auto-resume (durable sleep), or undefined when waiting on an external signal. */
   readonly wakeAt?: number | undefined;
+  /** Marks this as a control-flow signal — see {@link isWorkflowControlFlowSignal}. */
+  readonly [CONTROL_FLOW_SIGNAL] = true;
   constructor(wakeAt?: number) {
     super('workflow suspended');
     this.name = 'WorkflowSuspended';
@@ -119,6 +123,8 @@ export class WorkflowSuspended extends Error {
  * accumulate unbounded checkpoints. The engine completes this run and starts the next one.
  */
 export class ContinueAsNew extends Error {
+  /** Marks this as a control-flow signal — see {@link isWorkflowControlFlowSignal}. */
+  readonly [CONTROL_FLOW_SIGNAL] = true;
   constructor(readonly input: unknown) {
     super('workflow continued as new');
     this.name = 'ContinueAsNew';
