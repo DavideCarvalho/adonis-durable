@@ -2,6 +2,12 @@ import type { HttpContext } from '@adonisjs/core/http';
 import router from '@adonisjs/core/services/router';
 import type { ApplicationService } from '@adonisjs/core/types';
 import {
+  type ResolvedDashboardAuth,
+  SESSION_COOKIE_NAME,
+  performLogin,
+  readSession,
+} from '../src/dashboard/auth.js';
+import {
   type DurableDashboardConfig,
   type ResolvedDurableDashboardConfig,
   resolveConfig,
@@ -17,6 +23,7 @@ import {
   retryRun,
 } from '../src/dashboard/handlers.js';
 import { renderDashboard } from '../src/dashboard/html.js';
+import { renderLoginPage } from '../src/dashboard/login_page.js';
 import { WorkflowEngine } from '../src/index.js';
 
 /**
@@ -35,6 +42,9 @@ import { WorkflowEngine } from '../src/index.js';
  */
 export default class DashboardProvider {
   constructor(protected app: ApplicationService) {}
+
+  /** Warn once so a throwing `login` hook doesn't spam the logs on every failed attempt. */
+  private warnedOnHookThrow = false;
 
   async boot() {
     const config = resolveConfig(
@@ -56,10 +66,19 @@ export default class DashboardProvider {
       return { engine };
     };
 
+    // Built-in `dashboardAuth` login screen (opt-in). Registered ONLY when configured, so omitting
+    // `dashboardAuth` leaves route registration byte-for-byte as it was. These endpoints are public
+    // (behind NEITHER guard): they MINT the session the guard checks for, and the login page must
+    // stay reachable while unauthenticated — including in production, where the default `authorize`
+    // hook would otherwise deny it.
+    if (config.dashboardAuth) {
+      this.registerAuthRoutes(config, config.dashboardAuth);
+    }
+
     // The HTML page.
     router
       .get(config.path === '' ? '/' : config.path, async (ctx) => {
-        if (!(await this.guard(config, ctx))) return;
+        if (!(await this.enforce(config, ctx, 'page'))) return;
         ctx.response.header('content-type', 'text/html; charset=utf-8');
         return ctx.response.send(renderDashboard(apiBase));
       })
@@ -68,7 +87,7 @@ export default class DashboardProvider {
     // JSON API.
     const json = (handler: (d: Deps, req: ApiRequest) => Promise<ApiResponse>) => {
       return async (ctx: HttpContext) => {
-        if (!(await this.guard(config, ctx))) return;
+        if (!(await this.enforce(config, ctx, 'api'))) return;
         try {
           const result = await handler(await deps(), toApiRequest(ctx));
           return ctx.response.status(result.status).json(result.body);
@@ -93,16 +112,127 @@ export default class DashboardProvider {
   }
 
   /**
-   * Run the configured guard. On denial, replies `403` and returns `false` so
-   * the route handler short-circuits.
+   * Mount the built-in `dashboardAuth` endpoints under `basePath`. All three are public (no guard):
+   * they create/destroy the session the {@link enforce} guard checks for.
+   *
+   * - `GET  <base>/login`  → the server-rendered login page (never varies per request beyond the
+   *    developer-controlled `basePath`; `returnTo`/`error` are read client-side from the query).
+   * - `POST <base>/login`  → verifies credentials via the host `login` hook and mints the cookie.
+   *    Called by the login page's own `fetch` (JSON body). Uniform `401` on ANY failure — unknown
+   *    user, wrong password, or a throwing hook — so there is no user-enumeration.
+   * - `GET  <base>/logout` → clears the cookie and redirects back to the login page. A plain `GET`
+   *    (idempotent, only ever destroys the caller's own session) so a simple `<a href>` works.
    */
-  private async guard(config: ResolvedDurableDashboardConfig, ctx: HttpContext): Promise<boolean> {
+  private registerAuthRoutes(
+    config: ResolvedDurableDashboardConfig,
+    auth: ResolvedDashboardAuth,
+  ): void {
+    const loginPath = `${config.path}/login`;
+    const logoutPath = `${config.path}/logout`;
+
+    router
+      .get(loginPath, async (ctx) => {
+        ctx.response.header('content-type', 'text/html; charset=utf-8');
+        ctx.response.header('cache-control', 'no-store, must-revalidate');
+        return ctx.response.send(renderLoginPage(config.path));
+      })
+      .as('durable_dashboard.login.page');
+
+    router
+      .post(loginPath, async (ctx) => {
+        const outcome = await performLogin(auth, ctx.request.body(), config.path);
+        if (outcome.kind === 'bad-request') {
+          return ctx.response.status(400).json({ error: outcome.message });
+        }
+        if (outcome.kind === 'unauthorized') {
+          // A throwing hook is a denial (never a 500), warn-logged once so a buggy hook doesn't
+          // flood the logs. The client sees the same uniform 401 either way.
+          if (outcome.hookError !== undefined && !this.warnedOnHookThrow) {
+            this.warnedOnHookThrow = true;
+            const message =
+              outcome.hookError instanceof Error
+                ? outcome.hookError.message
+                : String(outcome.hookError);
+            const logger = await this.app.container.make('logger');
+            logger.warn(`dashboardAuth login hook threw; treating as denial. ${message}`);
+          }
+          return ctx.response.status(401).json({ error: outcome.message });
+        }
+        this.writeSessionCookie(ctx, auth, outcome.cookieValue);
+        return ctx.response.status(200).json({ redirectTo: outcome.redirectTo });
+      })
+      .as('durable_dashboard.login.submit');
+
+    router
+      .get(logoutPath, async (ctx) => {
+        ctx.response.clearCookie(SESSION_COOKIE_NAME, { path: '/' });
+        return ctx.response.redirect().toPath(loginPath);
+      })
+      .as('durable_dashboard.logout');
+  }
+
+  /**
+   * Run the guards for a dashboard resource. Composes the existing `authorize` hook (bearer
+   * token/custom) with the optional `dashboardAuth` session guard — BOTH must pass:
+   *
+   * 1. `authorize` fails → `403` (unchanged behavior).
+   * 2. `dashboardAuth` configured AND no valid session → for a `page` request, redirect `302` to
+   *    the login page carrying a sanitized `returnTo`; for an `api` request, a plain `401`.
+   *
+   * When `dashboardAuth` is unconfigured only step 1 runs, so behavior is byte-for-byte unchanged.
+   * Returns `false` (and has already written the response) when the request must short-circuit.
+   */
+  private async enforce(
+    config: ResolvedDurableDashboardConfig,
+    ctx: HttpContext,
+    mode: 'page' | 'api',
+  ): Promise<boolean> {
     const allowed = await config.authorize(ctx);
     if (!allowed) {
       ctx.response.status(403).json({ error: 'forbidden' });
       return false;
     }
-    return true;
+
+    const auth = config.dashboardAuth;
+    if (!auth) return true;
+
+    const session = readSession(auth, this.readSessionCookie(ctx));
+    if (session) return true;
+
+    if (mode === 'page') {
+      const returnTo = ctx.request.url(true);
+      ctx.response.redirect().withQs('returnTo', returnTo).toPath(`${config.path}/login`);
+      return false;
+    }
+    ctx.response.status(401).json({ error: 'unauthorized' });
+    return false;
+  }
+
+  /** Read the raw (unencoded) session cookie value, or `undefined` when absent. */
+  private readSessionCookie(ctx: HttpContext): string | undefined {
+    const value = ctx.request.plainCookie(SESSION_COOKIE_NAME, undefined, false);
+    return typeof value === 'string' && value !== '' ? value : undefined;
+  }
+
+  /**
+   * Write the signed session as an unsigned (`plainCookie`, `encode: false`) cookie — the value
+   * carries its own HMAC signature, so AdonisJS's cookie signing would be redundant double-wrapping.
+   * `HttpOnly` + `SameSite=Lax` (blocks cross-site POSTs carrying the cookie — CSRF coverage) +
+   * `Secure` on https. `Path=/` so it reaches both the UI and API mounts regardless of prefix.
+   */
+  private writeSessionCookie(
+    ctx: HttpContext,
+    auth: ResolvedDashboardAuth,
+    value: string,
+  ): void {
+    ctx.response.plainCookie(SESSION_COOKIE_NAME, value, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: ctx.request.secure(),
+      path: '/',
+      maxAge: Math.floor(auth.ttlMs / 1000),
+      encode: false,
+    });
   }
 }
 

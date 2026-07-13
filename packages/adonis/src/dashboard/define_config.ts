@@ -1,5 +1,10 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { HttpContext } from '@adonisjs/core/http';
+import {
+  type DashboardAuthOptions,
+  type ResolvedDashboardAuth,
+  resolveDashboardAuth,
+} from './auth.js';
 
 /**
  * Authorization guard for the dashboard. Runs before every dashboard route
@@ -30,6 +35,20 @@ export interface DurableDashboardConfig {
    * token matching the `DURABLE_DASHBOARD_TOKEN` env var (deny if it is unset).
    */
   authorize?: AuthorizeHook;
+  /**
+   * Optional built-in login screen. When set, the provider mounts a
+   * server-rendered `GET <path>/login` page plus `POST <path>/login` /
+   * `GET <path>/logout`, and stamps a session guard on the dashboard: an
+   * unauthenticated page navigation is redirected (`302`) to the login page and
+   * an unauthenticated API request gets `401`. The signed session cookie is
+   * minted only by the host's {@link DashboardAuthOptions.login} hook.
+   *
+   * This is ADDITIVE and composes WITH {@link authorize} (both must pass) — it
+   * does not replace it. Omit it entirely to keep today's behavior byte-for-byte
+   * (no login/logout routes, no session guard). Missing `secret`/`login` fails
+   * closed at boot.
+   */
+  dashboardAuth?: DashboardAuthOptions;
 }
 
 /** A fully-resolved config — every field present (defaults applied). */
@@ -37,6 +56,8 @@ export interface ResolvedDurableDashboardConfig {
   enabled: boolean;
   path: string;
   authorize: AuthorizeHook;
+  /** Resolved built-in login config, or `null` when `dashboardAuth` is unconfigured. */
+  dashboardAuth: ResolvedDashboardAuth | null;
 }
 
 /**
@@ -103,6 +124,9 @@ export function resolveConfig(config: DurableDashboardConfig = {}): ResolvedDura
     enabled: config.enabled ?? true,
     path: trimmed === '/' ? '' : trimmed,
     authorize: config.authorize ?? defaultAuthorize,
+    // Validate + resolve now so a misconfigured secret/login fails closed at boot,
+    // not on the first login attempt. `null` when `dashboardAuth` is omitted.
+    dashboardAuth: resolveDashboardAuth(config.dashboardAuth),
   };
 }
 
