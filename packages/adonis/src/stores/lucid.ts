@@ -280,6 +280,18 @@ export class LucidStateStore implements StateStore {
     ).map(rowToSignalWaiter);
   }
 
+  async removeSignalWaiter(waiter: SignalWaiter): Promise<void> {
+    // Exact match on (token, run_id, seq): only delete the row THIS caller registered. `token` is the
+    // primary key, so a later putSignalWaiter for the same token may have replaced the row with a
+    // different run's waiter — the run_id/seq predicate leaves that one untouched. No-op if absent.
+    await this.client()
+      .from(DURABLE_TABLES.signalWaiters)
+      .where('token', waiter.token)
+      .andWhere('run_id', waiter.runId)
+      .andWhere('seq', waiter.seq)
+      .delete();
+  }
+
   // --- buffered signals (FIFO per token) ----------------------------------
 
   async bufferSignal(token: string, payload: unknown): Promise<void> {
@@ -301,6 +313,50 @@ export class LucidStateStore implements StateStore {
       if (rowsAffected(deleted) !== 1) return null;
       return { payload: r.payload == null ? undefined : (JSON.parse(r.payload) as unknown) };
     });
+  }
+
+  // --- buffered events (name-keyed, match-based consumption) ---------------
+
+  async bufferEvent(input: {
+    name: string;
+    payload: unknown;
+    id: string;
+    publishedAt: number;
+  }): Promise<void> {
+    await this.client().table(DURABLE_TABLES.bufferedEvents).insert({
+      id: input.id,
+      name: input.name,
+      payload: input.payload === undefined ? null : JSON.stringify(input.payload),
+      published_at: input.publishedAt,
+    });
+  }
+
+  async listBufferedEvents(
+    name: string,
+    limit: number,
+  ): Promise<Array<{ id: string; payload: unknown; publishedAt: number }>> {
+    const rows = await this.client()
+      .from(DURABLE_TABLES.bufferedEvents)
+      .where('name', name)
+      .orderBy('published_at', 'asc') // oldest first
+      .limit(limit);
+    return (rows as Array<{ id: string; payload: string | null; published_at: number | string }>).map(
+      (r) => ({
+        id: r.id,
+        payload: r.payload == null ? undefined : (JSON.parse(r.payload) as unknown),
+        publishedAt: Number(r.published_at),
+      }),
+    );
+  }
+
+  async removeBufferedEvent(id: string): Promise<boolean> {
+    // Atomic claim: whoever's delete affects the row (returns 1) is the one that gets to deliver;
+    // a concurrent claimant sees 0 and backs off. `id` is the primary key.
+    const deleted = await this.client()
+      .from(DURABLE_TABLES.bufferedEvents)
+      .where('id', id)
+      .delete();
+    return rowsAffected(deleted) === 1;
   }
 
   // --- transaction (exactly-once business write + checkpoint) -------------

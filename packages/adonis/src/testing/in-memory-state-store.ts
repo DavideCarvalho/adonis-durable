@@ -169,6 +169,16 @@ export class InMemoryStateStore implements StateStore {
       .map((w) => ({ ...w }));
   }
 
+  async removeSignalWaiter(waiter: SignalWaiter): Promise<void> {
+    // Keyed by token only (one row per token) — only delete if the CURRENT row still matches this
+    // exact (runId, seq); a later putSignalWaiter for the same token may have already replaced it
+    // with a different run's row, which must be left alone.
+    const current = this.signalWaiters.get(waiter.token);
+    if (current && current.runId === waiter.runId && current.seq === waiter.seq) {
+      this.signalWaiters.delete(waiter.token);
+    }
+  }
+
   // No real DB transaction (there's no DB) — run the work and save the checkpoint. Exactly-once
   // across a crash needs a SQL store; this keeps `ctx.transaction` usable in tests / local dev.
   async transaction<T>(
@@ -192,6 +202,38 @@ export class InMemoryStateStore implements StateStore {
     const payload = queue.shift();
     if (queue.length === 0) this.bufferedSignals.delete(token);
     return { payload };
+  }
+
+  /** `id -> row`, so {@link removeBufferedEvent} can delete an exact row regardless of iteration
+   *  order — mirrors the SQL store's PK-by-id delete. */
+  private readonly bufferedEvents = new Map<
+    string,
+    { name: string; payload: unknown; publishedAt: number }
+  >();
+  async bufferEvent(input: {
+    name: string;
+    payload: unknown;
+    id: string;
+    publishedAt: number;
+  }): Promise<void> {
+    this.bufferedEvents.set(input.id, {
+      name: input.name,
+      payload: input.payload,
+      publishedAt: input.publishedAt,
+    });
+  }
+  async listBufferedEvents(
+    name: string,
+    limit: number,
+  ): Promise<Array<{ id: string; payload: unknown; publishedAt: number }>> {
+    return [...this.bufferedEvents.entries()]
+      .filter(([, e]) => e.name === name)
+      .sort((a, b) => a[1].publishedAt - b[1].publishedAt) // oldest first
+      .slice(0, limit)
+      .map(([id, e]) => ({ id, payload: e.payload, publishedAt: e.publishedAt }));
+  }
+  async removeBufferedEvent(id: string): Promise<boolean> {
+    return this.bufferedEvents.delete(id);
   }
 
   /**

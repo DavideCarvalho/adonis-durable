@@ -604,6 +604,43 @@ export function runStateStoreContract(name: string, makeStore: StateStoreFactory
       expect(await store.takeBufferedSignal('other')).toEqual({ payload: { n: 9 } });
     });
 
+    t('removeSignalWaiter deletes only the EXACT (token, runId, seq) row', async () => {
+      await store.putSignalWaiter({ token: 'go', runId: 'r1', seq: 0 });
+      // A different run claims the same token (token is the PK — this REPLACES r1's row).
+      await store.putSignalWaiter({ token: 'go', runId: 'r2', seq: 9 });
+
+      // r1's stale cleanup must NOT delete r2's live registration (runId/seq mismatch).
+      await store.removeSignalWaiter({ token: 'go', runId: 'r1', seq: 0 });
+      expect(await store.listSignalWaiters('go')).toEqual([{ token: 'go', runId: 'r2', seq: 9 }]);
+
+      // Exact match removes it; a second call is a harmless no-op.
+      await store.removeSignalWaiter({ token: 'go', runId: 'r2', seq: 9 });
+      expect(await store.listSignalWaiters('go')).toEqual([]);
+      await store.removeSignalWaiter({ token: 'go', runId: 'r2', seq: 9 });
+    });
+
+    t('buffers events (name-keyed), lists oldest-first, and claims a row atomically', async () => {
+      await store.bufferEvent({ name: 'ord', payload: { d: 'a' }, id: 'e1', publishedAt: 100 });
+      await store.bufferEvent({ name: 'ord', payload: { d: 'b' }, id: 'e2', publishedAt: 200 });
+      await store.bufferEvent({ name: 'other', payload: { n: 9 }, id: 'e3', publishedAt: 150 });
+
+      const listed = await store.listBufferedEvents('ord', 10);
+      expect(listed).toEqual([
+        { id: 'e1', payload: { d: 'a' }, publishedAt: 100 },
+        { id: 'e2', payload: { d: 'b' }, publishedAt: 200 },
+      ]);
+      expect(await store.listBufferedEvents('other', 10)).toEqual([
+        { id: 'e3', payload: { n: 9 }, publishedAt: 150 },
+      ]);
+
+      // Claim arbitration: first delete wins (true), a second delete of the same id backs off (false).
+      expect(await store.removeBufferedEvent('e1')).toBe(true);
+      expect(await store.removeBufferedEvent('e1')).toBe(false);
+      expect(await store.listBufferedEvents('ord', 10)).toEqual([
+        { id: 'e2', payload: { d: 'b' }, publishedAt: 200 },
+      ]);
+    });
+
     // ---- transaction (optional) -------------------------------------------------------------
 
     t('transaction commits the checkpoint atomically and returns the work result', async () => {

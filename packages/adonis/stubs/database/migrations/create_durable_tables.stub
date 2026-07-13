@@ -5,7 +5,7 @@ import { BaseSchema } from '@adonisjs/lucid/schema'
 
 /**
  * Durable workflow tables for the @adonis-agora/durable `lucid` state store: runs, step checkpoints, the
- * search-attribute side-table, signal waiters and buffered signals. JSON payloads are stored as TEXT (the store
+ * search-attribute side-table, signal waiters, buffered signals and buffered events. JSON payloads are stored as TEXT (the store
  * (de)serializes them) and timestamps as epoch-ms integers, so the schema is portable across
  * SQLite / Postgres / MySQL.
  */
@@ -79,9 +79,21 @@ export default class extends BaseSchema {
       table.text('payload')
       table.index(['token'], 'durable_buffered_signals_token_idx')
     })
+
+    // Reliable (buffered) events: a publish matching no live waiter keeps ONE copy here, consumed by
+    // the first future matching `waitForEvent`. Keyed by `name` (many waiters share a name with
+    // different `match`); `id` is the caller-minted PK; `published_at` is epoch-ms.
+    this.schema.createTable('durable_buffered_events', (table) => {
+      table.string('id').primary()
+      table.string('name').notNullable()
+      table.text('payload')
+      table.bigInteger('published_at').notNullable()
+      table.index(['name', 'published_at'], 'durable_buffered_events_name_idx')
+    })
   }
 
   async down() {
+    this.schema.dropTableIfExists('durable_buffered_events')
     this.schema.dropTableIfExists('durable_buffered_signals')
     this.schema.dropTableIfExists('durable_signal_waiters')
     this.schema.dropTableIfExists('durable_run_attributes')

@@ -10,7 +10,7 @@ import {
   SignalTimeoutError,
   WorkflowSuspended,
 } from './errors.js';
-import { eventToken } from './events.js';
+import { EVENT_BUFFER_SCAN_LIMIT, eventMatches, eventToken } from './events.js';
 import type {
   ChildCallOptions,
   DurableWebhook,
@@ -353,6 +353,43 @@ export function createWorkflowCtx(
     return { value: buffered.payload as T };
   };
 
+  // Consume a buffered EVENT matching `match` (one published with no live waiter — see
+  // engine.publishEvent's buffering), recording it as the resolving `signal:<token>` checkpoint at
+  // `seq` so replay is deterministic — the event analog of `consumeBuffered` above, but match-aware:
+  // an event's buffer is keyed by NAME only (many waiters can share a name with different `match`
+  // criteria), so consumption scans the oldest candidates and evaluates each one's match HERE — the
+  // match predicate belongs to the WAITER, never the store (see events.ts / interfaces.ts). A hit
+  // atomically claims that one row via `removeBufferedEvent`'s boolean return, which arbitrates a
+  // concurrent claim (notably engine.publishEvent's own late re-check reaching the same row first);
+  // losing that race tries the NEXT oldest candidate instead of giving up, so a later non-matching
+  // buffered event never blocks an earlier matching one behind it.
+  const consumeBufferedEvent = async <T>(
+    name: string,
+    match: Record<string, unknown> | undefined,
+    token: string,
+    seq: number,
+  ): Promise<{ value: T } | null> => {
+    const candidates = await store.listBufferedEvents(name, EVENT_BUFFER_SCAN_LIMIT);
+    for (const candidate of candidates) {
+      if (!eventMatches(candidate.payload, match ?? {})) continue;
+      if (!(await store.removeBufferedEvent(candidate.id))) continue; // raced away — try the next
+      // Resolved it ourselves — remove OUR OWN waiter row via the exact match (harmless here since an
+      // event token is unique per call, but keeps this symmetric with the signal-side precedent).
+      await store.removeSignalWaiter({ token, runId, seq });
+      await writeCheckpoint(
+        instantCheckpoint({
+          runId,
+          seq,
+          name: `signal:${token}`,
+          kind: 'signal',
+          output: candidate.payload,
+        }),
+      );
+      return { value: candidate.payload as T };
+    }
+    return null;
+  };
+
   const waitForSignal = async <T>(token: string, opts?: { timeoutMs?: number }): Promise<T> => {
     if (opts?.timeoutMs == null) {
       const current = pos.next();
@@ -360,7 +397,26 @@ export function createWorkflowCtx(
       if (existing && existing.status === 'completed') return existing.output as T;
       const buffered = await consumeBuffered<T>(token, current);
       if (buffered) return buffered.value;
+      // Register, THEN check the buffer again before suspending — closes the lost-wake window
+      // between the check above and this registration: a signal delivered in that sliver found no
+      // waiter (we hadn't registered yet) and no buffer either by the time IT checked, so it buffered
+      // the payload; without this re-check we'd suspend with the payload sitting unpaired forever.
+      // (Registering UNCONDITIONALLY before even the first check — instead of only on a miss like
+      // here — reopens a worse window: a token an entity loop reuses across iterations would expose
+      // a "this turn is about to self-resolve from the buffer" waiter row to a concurrent signal for
+      // the NEXT iteration's payload, which can steal it via engine.signal's plain takeSignalWaiter
+      // and misdeliver. Checking first, so we only ever register when we're sure no buffer already
+      // existed, avoids that.) See the interleaving proof at engine.signal for the mirror-image
+      // take→buffer→re-take on the signaling side that this pairs with.
       await store.putSignalWaiter({ token, runId, seq: current });
+      const lateBuffered = await consumeBuffered<T>(token, current);
+      if (lateBuffered) {
+        // Resolved it ourselves — remove OUR OWN row via the exact match, not
+        // `takeSignalWaiter(token)`, which deletes ANY row for this token and could steal a
+        // different run's waiter that has since claimed the same token.
+        await store.removeSignalWaiter({ token, runId, seq: current });
+        return lateBuffered.value;
+      }
       throw new WorkflowSuspended();
     }
     const timeoutMs = opts.timeoutMs;
@@ -386,16 +442,37 @@ export function createWorkflowCtx(
     const buffered = await consumeBuffered<T>(token, waitSeq);
     if (buffered) return buffered.value;
     if (host.clock() >= deadline) {
-      await store.takeSignalWaiter(token).catch(() => undefined);
+      // A PRIOR replay of this same call may have already registered the waiter (below) before this
+      // one found the deadline past — clean up that exact row (own token/runId/seq only; a plain
+      // `takeSignalWaiter(token)` could otherwise steal a different run's waiter on the same token).
+      // A no-op if nothing was ever registered.
+      await store.removeSignalWaiter({ token, runId, seq: waitSeq }).catch(() => undefined);
       throw new SignalTimeoutError(token, timeoutMs);
     }
+    // Same reorder as the unbounded arm above: check, THEN register, THEN re-check before suspending.
     await store.putSignalWaiter({ token, runId, seq: waitSeq });
+    const lateBuffered = await consumeBuffered<T>(token, waitSeq);
+    if (lateBuffered) {
+      await store.removeSignalWaiter({ token, runId, seq: waitSeq });
+      return lateBuffered.value;
+    }
     throw new WorkflowSuspended(deadline);
   };
 
   // Wait for a named event delivered by engine.publishEvent(name, payload). Like waitForSignal, but
   // name-based pub/sub with optional `match` filtering — the token embeds name + match (see events.ts),
   // so a publish fans out to the runs whose match the payload satisfies.
+  //
+  // Buffering (reliable events — mirrors signalWithStart's reliability contract for signals, see the
+  // "Semantics" doc on engine.publishEvent): a publish that finds no live waiter buffers ONE copy, and
+  // this call's post-registration scan is what consumes it. UNLIKE waitForSignal, this registers its
+  // waiter FIRST and scans the buffer only ONCE after — no separate "check before registering" pass.
+  // That's deliberate: waitForSignal's own token is a caller-chosen string an entity loop can legitimately
+  // REUSE across iterations, so registering before checking would expose a "this turn is about to
+  // self-resolve" waiter row to a concurrent signal for the NEXT iteration's token. An event token embeds
+  // this call's OWN `runId#seq` (see eventToken in events.ts) — nothing else ever mints the same token —
+  // so that hazard cannot arise here, and a single check-after-register closes the lost-wake window
+  // symmetrically with engine.publishEvent's own buffer-then-recheck.
   const waitForEvent = async <T>(
     name: string,
     opts?: { match?: Record<string, unknown>; timeoutMs?: number },
@@ -406,6 +483,8 @@ export function createWorkflowCtx(
       const existing = await readCheckpoint(current);
       if (existing && existing.status === 'completed') return existing.output as T;
       await store.putSignalWaiter({ token, runId, seq: current });
+      const bufferedHit = await consumeBufferedEvent<T>(name, opts?.match, token, current);
+      if (bufferedHit) return bufferedHit.value;
       throw new WorkflowSuspended();
     }
     const timeoutMs = opts.timeoutMs;
@@ -428,10 +507,14 @@ export function createWorkflowCtx(
     const waited = await readCheckpoint(waitSeq);
     if (waited && waited.status === 'completed') return waited.output as T;
     if (host.clock() >= deadline) {
-      await store.takeSignalWaiter(token).catch(() => undefined);
+      // Exact removal (see waitForSignal above) — takeSignalWaiter(token) deletes ANY row for this
+      // token and could steal a different run's waiter registered on it after ours timed out.
+      await store.removeSignalWaiter({ token, runId, seq: waitSeq }).catch(() => undefined);
       throw new SignalTimeoutError(`event:${name}`, timeoutMs);
     }
     await store.putSignalWaiter({ token, runId, seq: waitSeq });
+    const bufferedHit = await consumeBufferedEvent<T>(name, opts.match, token, waitSeq);
+    if (bufferedHit) return bufferedHit.value;
     throw new WorkflowSuspended(deadline);
   };
 

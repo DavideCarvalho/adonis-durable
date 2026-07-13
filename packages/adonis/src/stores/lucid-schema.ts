@@ -11,6 +11,7 @@ export const DURABLE_TABLES = {
   attributes: 'durable_run_attributes',
   signalWaiters: 'durable_signal_waiters',
   bufferedSignals: 'durable_buffered_signals',
+  bufferedEvents: 'durable_buffered_events',
 } as const;
 
 /**
@@ -142,11 +143,26 @@ export async function createDurableTables(db: Database): Promise<void> {
       table.index(['token'], 'durable_buffered_signals_token_idx');
     });
   }
+
+  // Reliable (buffered) events: a publish that matched NO live waiter keeps ONE copy here, consumed
+  // by the first future matching `waitForEvent`. Keyed by `name` (not token) since many waiters can
+  // share a name with different `match` criteria; the caller-minted `id` is the PK so a claim targets
+  // an exact row. `published_at` is epoch-ms (for oldest-first scan + optional TTL pruning).
+  if (!(await conn().hasTable(DURABLE_TABLES.bufferedEvents))) {
+    await conn().createTable(DURABLE_TABLES.bufferedEvents, (table) => {
+      table.string('id').primary();
+      table.string('name').notNullable();
+      table.text('payload');
+      table.bigInteger('published_at').notNullable();
+      table.index(['name', 'published_at'], 'durable_buffered_events_name_idx');
+    });
+  }
 }
 
 /** Drop every durable table (reverse FK order). Used by tests and migration `down`. */
 export async function dropDurableTables(db: Database): Promise<void> {
   const conn = () => db.connection().schema;
+  await conn().dropTableIfExists(DURABLE_TABLES.bufferedEvents);
   await conn().dropTableIfExists(DURABLE_TABLES.bufferedSignals);
   await conn().dropTableIfExists(DURABLE_TABLES.signalWaiters);
   await conn().dropTableIfExists(DURABLE_TABLES.attributes);

@@ -294,6 +294,17 @@ export interface StateStore {
   listSignalWaiters(prefix: string): Promise<SignalWaiter[]>;
 
   /**
+   * Delete the EXACT waiter row — `token` AND `runId` AND `seq` must all match — no-op if absent.
+   * Unlike {@link takeSignalWaiter}, which deletes ANY row for `token` (fine when the caller just won
+   * the race to consume it), this is for a caller removing its OWN registration after resolving the
+   * wait some other way (a buffered hit, a timeout): blind `takeSignalWaiter(token)` there could steal
+   * a DIFFERENT run's waiter that has since claimed the same token (`token` is the store's primary key,
+   * so a later `putSignalWaiter` for the same token replaces the row). The exact-match variant only
+   * ever removes the row this caller itself put there.
+   */
+  removeSignalWaiter(waiter: SignalWaiter): Promise<void>;
+
+  /**
    * Buffer a signal whose waiter hasn't arrived yet, so the next `waitForSignal(token)` consumes it
    * instead of it being lost (FIFO per token). Makes signals reliable regardless of timing and
    * powers `signalWithStart`.
@@ -301,6 +312,39 @@ export interface StateStore {
   bufferSignal(token: string, payload: unknown): Promise<void>;
   /** Take the oldest buffered signal for `token` (FIFO), or null if none is buffered. */
   takeBufferedSignal(token: string): Promise<{ payload: unknown } | null>;
+
+  /**
+   * Buffer a published event that matched NO live waiter, so a LATER `ctx.waitForEvent(name, { match })`
+   * still consumes it instead of it being silently dropped — the events analog of {@link bufferSignal}'s
+   * reliability contract for signals, but MATCH-based rather than token-based: an event's buffer is keyed
+   * by `name` alone (many waiters can share a name with different `match` criteria), so consumption is
+   * list ({@link listBufferedEvents}) + evaluate the WAITER's own match predicate + claim
+   * ({@link removeBufferedEvent}) — never a blind take, because the store has no way to know which
+   * candidate a given waiter wants. `input.id` is minted by the caller (engine.publishEvent) so
+   * {@link removeBufferedEvent} can later target this exact row.
+   */
+  bufferEvent(input: {
+    name: string;
+    payload: unknown;
+    id: string;
+    publishedAt: number;
+  }): Promise<void>;
+  /**
+   * Buffered events for `name`, OLDEST (`publishedAt`) first, capped at `limit`. A waiter scans these,
+   * evaluates its own `eventMatches(payload, match)` locally, and claims the one it wants via
+   * {@link removeBufferedEvent} — the match predicate belongs to the WAITER, never the store.
+   */
+  listBufferedEvents(
+    name: string,
+    limit: number,
+  ): Promise<Array<{ id: string; payload: unknown; publishedAt: number }>>;
+  /**
+   * Atomically delete the buffered event `id`. Returns `true` iff a row was actually deleted, `false`
+   * if it was already gone (claimed by a concurrent waiter, reclaimed by `engine.publishEvent`'s own
+   * late re-check, or pruned as expired) — the arbiter under concurrency: whichever caller's delete
+   * returns `true` is the one that gets to deliver the payload; every other caller backs off.
+   */
+  removeBufferedEvent(id: string): Promise<boolean>;
 
   /**
    * Run `work` in a SINGLE store transaction — giving it the store-native transaction handle (`raw`)
