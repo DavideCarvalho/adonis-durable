@@ -17,7 +17,7 @@ The `lucid` driver persists runs and step checkpoints through [`@adonisjs/lucid`
 node ace configure @adonis-agora/durable
 ```
 
-`configure` registers the provider, publishes `config/durable.ts`, and publishes the migration that creates the five durable tables (alongside the optional `db`-transport migration — delete that one if you don't use the `db` transport).
+`configure` registers the provider, publishes `config/durable.ts`, and publishes the migration that creates the six durable tables (alongside the optional `db`-transport migration — delete that one if you don't use the `db` transport).
 
 </Step>
 <Step>
@@ -57,7 +57,7 @@ stores.lucid({ connection: 'durable' })
 
 ## What the migration creates
 
-The migration creates five tables (default names, from the `DURABLE_TABLES` constant):
+The migration creates six tables (default names, from the `DURABLE_TABLES` constant):
 
 | Table | Purpose |
 | --- | --- |
@@ -66,6 +66,7 @@ The migration creates five tables (default names, from the `DURABLE_TABLES` cons
 | `durable_run_attributes` | normalized side-table of searchable attributes (`key` + `str_value`/`num_value`) for fast filtering |
 | `durable_signal_waiters` | runs parked on a [signal](/docs/durable/concepts/sleep-and-signals) token |
 | `durable_buffered_signals` | signals delivered before the run waited (FIFO per token) |
+| `durable_buffered_events` | [named events](/docs/durable/concepts/sleep-and-signals#reliable-buffered-events) published before any run was waiting, keyed by `name` and indexed `(name, published_at)` for the oldest-first redelivery scan |
 
 The runs table is indexed on `status` and on `(status, wake_at)` so the worker's `listPendingRuns` and `listDueTimers` scans stay fast; checkpoints are keyed `(run_id, seq)` with a `(run_id, name)` index for targeted reads; and the attributes table is indexed per `(key, value)` so [search-attribute](/docs/durable/concepts/workflows-and-steps#tags) filters push down to SQL.
 

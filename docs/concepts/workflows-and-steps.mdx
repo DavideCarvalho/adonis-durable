@@ -170,6 +170,26 @@ await ctx.localStep('charge', async () => {
 
 The optional second argument is a machine-readable `code` that ends up on the run's structured error.
 
+### Catching errors — rethrow control-flow signals
+
+If you wrap a step in your **own** `try/catch` inside the workflow body — to run a cleanup or compensating path on failure — you must **rethrow control-flow signals untouched**. Suspend-the-run operations (`ctx.sleep`, `ctx.waitForSignal`, [`ctx.continueAsNew`](/docs/durable/authoring/child-workflows#continue-as-new)) unwind the current turn by *throwing*: they are not real failures, and running a failure path on one records extra commands into history that a later replay never produces — which surfaces as a `NonDeterminismError` when the run resumes.
+
+Use `isWorkflowControlFlowSignal(error)` to let those through before treating an error as a genuine failure:
+
+```ts
+import { isWorkflowControlFlowSignal } from '@adonis-agora/durable'
+
+try {
+  await ctx.step('chargeCard', input)
+} catch (error) {
+  if (isWorkflowControlFlowSignal(error)) throw error // suspend / continue-as-new: rethrow as-is
+  await ctx.step('refund', input) // a REAL failure — safe to compensate here
+  throw error
+}
+```
+
+The predicate is `true` for the engine's control-flow signals (currently a suspend and a continue-as-new) regardless of which module instance threw them — it checks a stamped marker (`CONTROL_FLOW_SIGNAL`), not `instanceof`, so it stays correct across a duplicated module copy. It is deliberately **`false`** for a cancelled run (a terminal outcome you may legitimately want to observe) and for a `FatalError` or a step rejection (real failures your `catch` is meant to handle) — so this guard never swallows a genuine error. Most of the time you don't need it: prefer the built-in [saga compensation](/docs/durable/reliability/sagas) over hand-rolled `try/catch`, and reach for `isWorkflowControlFlowSignal` only when you truly must catch inside the workflow body.
+
 ## Steps vs. sub-process events
 
 These look similar in the dashboard but are fundamentally different — the distinction is **durability**:

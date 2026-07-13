@@ -1,6 +1,6 @@
 ---
 title: Sleep & signals
-description: Pause a workflow durably — ctx.sleep for time-based waits (minutes to months, no compute) and ctx.waitForSignal for human approvals and webhooks, both surviving restarts.
+description: Pause a workflow durably — ctx.sleep for time-based waits (minutes to months, no compute), ctx.waitForSignal for human approvals and webhooks, and ctx.waitForEvent for name-based pub/sub with reliable (buffered) delivery, all surviving restarts.
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
@@ -64,12 +64,72 @@ try {
 
 ### Signal buffering & signal-with-start
 
-A signal sent **before** the run has reached its `waitForSignal` is **buffered**, not lost — the next `waitForSignal` for that token consumes it. And `engine.signalWithStart(workflow, input, runId, { token, payload })` starts a run *if it doesn't exist* and delivers a signal to it in one race-free call — ideal for an event-sourced entity that's driven entirely by incoming events:
+A signal sent **before** the run has reached its `waitForSignal` is **buffered**, not lost — the next `waitForSignal` for that token consumes it. This holds even under the tight race where the sender and the waiter arrive at almost the same instant: delivery uses a *take → buffer → re-check* sandwich on the send side that pairs with a *register → re-check* on the wait side, so a waiter that registers in the sliver between a "nobody's waiting" miss and the buffer write is still resumed instead of both rows being stranded (the lost-wake window is closed).
+
+And `engine.signalWithStart(workflow, input, runId, { token, payload })` starts a run *if it doesn't exist* and delivers a signal to it in one race-free call — ideal for an event-sourced entity that's driven entirely by incoming events:
 
 ```ts
 // Each event starts the run if needed, then delivers; ordering and exactly-once are preserved.
 await engine.signalWithStart('counter', {}, 'k1', { token: 'add:k1', payload: 10 })
 await engine.signalWithStart('counter', {}, 'k1', { token: 'add:k1', payload: 20 })
 ```
+
+<Callout type="info">
+Writing a **custom [`StateStore`](/docs/durable/stores)**? Reliable delivery needs the store to expose `removeSignalWaiter(waiter)` — an **exact-match** delete (`token` + `runId` + `seq` must all match) that a waiter uses to retract its *own* registration after resolving some other way (a buffered hit, a timeout). It is distinct from `takeSignalWaiter(token)`, which deletes *any* row for the token; a blind take there could steal a different run's waiter that has since claimed the same token. The bundled Lucid and in-memory stores already implement it.
+</Callout>
+
+## Named events
+
+A **signal** is point-to-point: one token, one waiter. A **named event** is name-based pub/sub — one `engine.publishEvent(name, payload)` fans out to every run parked on that name, filtered by an optional `match`. Use it when several runs (or none yet) care about the same real-world fact.
+
+Inside a workflow, `ctx.waitForEvent(name, { match })` suspends the run — no compute — until a matching event is published. `match` is a subset of the payload that must deep-equal, so a publish only wakes the runs it concerns:
+
+```ts
+// Each order-run waits only for ITS payment to settle:
+const settled = await ctx.waitForEvent<{ orderId: string; amount: number }>(
+  'payment.settled',
+  { match: { orderId: order.id } },
+)
+```
+
+Publish from anywhere — a controller, a webhook, another workflow — via the engine. `publishEvent` returns how many live recipients it reached:
+
+```ts title="app/controllers/payments_controller.ts"
+async settled({ request, response }: HttpContext) {
+  const body = request.body() // { orderId, amount }
+  await this.engine.publishEvent('payment.settled', body) // wakes every matching waiter
+  return response.noContent()
+}
+```
+
+A publish can also **start** runs: register a workflow with `onEvent: [name]` and each publish of that name starts a fresh run of it, passing the payload as input.
+
+```ts
+engine.register('fraud-check', '1', async (ctx, payment) => { /* … */ }, {
+  onEvent: ['payment.settled'], // every publish starts a new fraud-check run
+})
+```
+
+`match` also bounds a wait in time — pass `{ timeoutMs }`, and if the deadline passes first the call throws `SignalTimeoutError`, exactly like `waitForSignal`.
+
+### Reliable (buffered) events
+
+A publish that reaches **no** live recipient — no `waitForEvent` matched *and* no `onEvent` subscriber exists — is **buffered** rather than silently dropped: exactly **one** copy is kept, and the **first** future `ctx.waitForEvent(name, { match })` whose `match` accepts its payload consumes it. Redelivery is point-to-point — the buffered copy goes to one waiter, never to a later-registered `onEvent` subscriber. This is the events analog of signal buffering, and like signals it survives the register/publish race in both directions.
+
+This is the default. Opt out per-publish with `{ buffer: false }` when a publish that nobody's listening for should just be dropped (a live-only broadcast):
+
+```ts
+// Buffered (default): safe even if the order-run hasn't reached waitForEvent yet.
+await engine.publishEvent('payment.settled', { orderId, amount })
+
+// Live-only: fan out to whoever is waiting right now, drop if nobody is.
+await engine.publishEvent('metrics.tick', { at: Date.now() }, { buffer: false })
+```
+
+Buffered events are keyed by event **name** (many waiters can share a name with different `match`), so consumption is *list → evaluate the waiter's own match → claim*: a non-matching buffered event never blocks an earlier matching one behind it. On the [Lucid store](/docs/durable/stores/lucid) the copies live in the `durable_buffered_events` table.
+
+<Callout type="info">
+Because a buffered event holds only **one** copy per publish and is claimed by the first matching waiter, events are point-to-point on redelivery — not a durable broadcast log. If you need every future subscriber to see a past event, model it as workflow state (a run started with `onEvent`) rather than relying on the buffer.
+</Callout>
 
 For a validated, rejectable steering primitive (Temporal-style updates) and a side-effect-free way to read a live run's state, see [Queries & updates](/docs/durable/authoring/queries-and-updates). For the deterministic callback-URL pattern, see [Durable webhooks](/docs/durable/authoring/webhooks).

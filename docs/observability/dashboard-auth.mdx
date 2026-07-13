@@ -1,0 +1,72 @@
+---
+title: Dashboard login
+description: The dashboard's optional built-in login screen (dashboardAuth) — a server-rendered sign-in page backed by a signed HMAC session cookie, gating the HTML shell (302 to /login) and the JSON API (401) behind a host-supplied login hook. Opt-in, additive to authorize, fails closed at boot.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+By default the [dashboard](/docs/durable/observability/dashboard) is gated only by the per-request `authorize` guard — fine when you already have a bearer token or your own session middleware. When you'd rather hand operators a real **sign-in page**, opt into `dashboardAuth`: a built-in, server-rendered login screen backed by a signed session cookie. It ships in `@adonis-agora/durable` — nothing extra to install, and the bundled dashboard SPA is untouched.
+
+`dashboardAuth` is **additive**. It composes *with* `authorize` (both must pass) — it does not replace it. Omit it and the dashboard behaves exactly as before: no `/login` or `/logout` routes, no session cookie.
+
+## Enable it
+
+Add a `dashboardAuth` block to `config/durable_dashboard.ts`. Two fields are required — a signing `secret` and a `login` hook that validates credentials:
+
+```ts title="config/durable_dashboard.ts"
+import { defineConfig } from '@adonis-agora/durable/dashboard'
+import env from '#start/env'
+import User from '#models/user'
+
+export default defineConfig({
+  dashboardAuth: {
+    secret: env.get('DURABLE_DASHBOARD_SECRET'), // HMAC-SHA256 signing key, 32+ bytes
+    ttl: '8h',
+    login: async (username, password) => {
+      const user = await User.verifyCredentials(username, password).catch(() => null)
+      if (!user || !user.isAdmin) return null // return null to deny
+      return { id: String(user.id), name: user.fullName, roles: ['admin'] }
+    },
+  },
+})
+```
+
+The `login` hook is just a function — it may be `async` and close over your app's services (import them at the top of the config file), so there's nothing extra to wire for the "reach a DB / auth service" case.
+
+| Field | Required | Default | Description |
+| --- | --- | --- | --- |
+| `secret` | yes | — | HMAC-SHA256 key the session cookie is signed with. Missing/empty fails closed at boot. |
+| `login` | yes | — | `(username, password) => DashboardSessionUser \| null` (may be async). Return the session user to allow, `null` to deny. A thrown error is treated as a denial (logged once, never surfaced). |
+| `ttl` | no | `'8h'` | Cookie lifetime as a duration string (`'30m'`, `'8h'`, `'7d'`). |
+
+The `login` hook returns a session user shaped `{ id: string; name?: string; roles?: string[] }`. The password is forwarded **as-is** (empty string when blank) and the page marks it optional, so an email-only host (gate on username, ignore password) works with the same page — your hook alone decides whether a password matters.
+
+<Callout type="warn">
+`secret` and `login` are validated at **boot**: a missing secret or a missing `login` hook throws immediately (fail closed), so you can't accidentally ship an un-mintable gate. Keep `secret` out of source — read it from an env var.
+</Callout>
+
+## What it adds
+
+When `dashboardAuth` is configured, the provider mounts three **public** endpoints (they mint or clear the session the guard checks for, so they sit in front of the guard) under the dashboard's `path`:
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `GET` | `<path>/login` | the server-rendered sign-in page (`durable_dashboard.login.page`) |
+| `POST` | `<path>/login` | verifies credentials via your `login` hook and sets the session cookie (`durable_dashboard.login.submit`) |
+| `GET` | `<path>/logout` | clears the cookie and redirects back to `/login` (`durable_dashboard.logout`) |
+
+And it stamps a **session guard** onto every dashboard route:
+
+- an unauthenticated **page** navigation is redirected `302` to `<path>/login` (carrying a sanitized `returnTo`), and
+- an unauthenticated **API** request gets a plain `401`.
+
+The session is a stateless, signed HMAC-SHA256 cookie (`durable_dashboard_session`) — no server-side session store. It carries the user id, optional name, and roles, plus issued-at/expiry, and is rejected once tampered or expired.
+
+<Callout type="info">
+Every credential failure — unknown user, wrong password, or a throwing hook — returns the **same** uniform `401` ("Invalid username or password."), so the endpoint doesn't leak whether a username exists. A throwing hook is warn-logged once server-side but never changes the client-visible response.
+</Callout>
+
+## Choosing between the guards
+
+- Machine-to-machine or you already have app auth in front of the dashboard → keep the default `authorize` (or your own guard) and skip `dashboardAuth`. See [Authorization](/docs/durable/observability/dashboard#authorization).
+- You want operators to sign in with a username/password at a real page → add `dashboardAuth`. It layers on top of `authorize`, so you can still keep an IP allow-list or environment gate in `authorize` and require a login on top of it.

@@ -50,6 +50,8 @@ export default defineConfig({
 The dashboard exposes retry and cancel actions that mutate runs. Always front it with a real guard in production — the default token gate is a floor, not a substitute for your app's auth.
 </Callout>
 
+Prefer a real sign-in page over a bearer token? Opt into the built-in [dashboard login](/docs/durable/observability/dashboard-auth) (`dashboardAuth`) — a server-rendered login screen and signed session cookie that layers on top of `authorize`.
+
 ## Where it mounts
 
 All routes are relative to `path` (default `/durable`), each behind the `authorize` guard:
