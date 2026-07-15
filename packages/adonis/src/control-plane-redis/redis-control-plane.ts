@@ -22,12 +22,22 @@ export interface RedisPubSub {
    * the `@adonisjs/redis` connection takes a channel + a per-message handler.
    */
   subscribe(channel: string, handler?: (message: string, channel: string) => void): unknown;
-  /** ioredis-only: per-message event used when a dedicated subscriber connection is duplicated. */
-  on?(event: 'message', listener: (channel: string, message: string) => void): unknown;
+  /**
+   * ioredis-only: connection events. `message` delivers a payload on a duplicated subscriber;
+   * `error`/`ready`/`subscribe` are used by the watchdog (see {@link RedisControlPlaneOptions.pingIntervalMs}).
+   */
+  on?(event: string, listener: (...args: never[]) => void): unknown;
   /** ioredis-only: build a dedicated subscriber connection (pub/sub can't share a command client). */
   duplicate?(): RedisPubSub;
-  /** ioredis-only: tear down the duplicated subscriber connection. */
-  disconnect?(): void;
+  /**
+   * ioredis-only: tear down the duplicated subscriber connection. `disconnect(true)` reconnects
+   * (ioredis's `retryStrategy` + `autoResubscribe`) rather than closing for good.
+   */
+  disconnect?(reconnect?: boolean): void;
+  /** ioredis-only: liveness probe. Legal in subscriber mode (ioredis's `VALID_IN_SUBSCRIBER_MODE`). */
+  ping?(): Promise<unknown>;
+  /** ioredis-only: connection state — the watchdog skips anything that isn't `'ready'`. */
+  status?: string;
 }
 
 export interface RedisControlPlaneOptions {
@@ -39,6 +49,37 @@ export interface RedisControlPlaneOptions {
    * and a NestJS fleet sharing one Redis interoperate on the same control plane.
    */
   prefix?: string;
+  /**
+   * How often (ms) to PING the duplicated pub/sub subscriber connection to detect — and recover
+   * from — a silent connection loss. A subscriber connection never WRITEs on its own (it only
+   * receives PUBLISHed messages), so when a VPN/NAT/idle-timeout drops the underlying TCP
+   * connection, ioredis has nothing that would surface the loss: no write ever fails, no timeout
+   * ever fires, and the connection sits "subscribed" forever while the server's `PUBSUB NUMSUB`
+   * already shows 0 — cross-pod cancels and lifecycle events silently stop arriving until the
+   * process restarts. A PING rejection or timeout means the connection is dead, so we
+   * `disconnect(true)` it: ioredis's `retryStrategy` reconnects and `autoResubscribe` (default
+   * `true`) restores the channel automatically.
+   *
+   * Pass `0` or `false` to disable (e.g. a short-lived test where the interval would outlive it).
+   * Defaults to `30_000`. Only applies to the raw-ioredis path — an `@adonisjs/redis` connection
+   * manages its own subscriber connection and its own health.
+   */
+  pingIntervalMs?: number | false;
+}
+
+/** Default {@link RedisControlPlaneOptions.pingIntervalMs}. */
+const DEFAULT_PING_INTERVAL_MS = 30_000;
+/** How long a single watchdog PING may take before its subscriber is presumed dead. */
+const SUBSCRIBER_PING_TIMEOUT_MS = 5_000;
+
+/**
+ * Normalise `pingIntervalMs`: `undefined` → the default, `0`/`false` → disabled, any other number
+ * → itself verbatim (including a caller's smaller interval for short-lived tests).
+ */
+function normalizePingInterval(value: number | false | undefined): number | false {
+  if (value === undefined) return DEFAULT_PING_INTERVAL_MS;
+  if (value === false || value === 0) return false;
+  return value;
 }
 
 /**
@@ -58,10 +99,14 @@ export class RedisControlPlane implements ControlPlane {
   private readonly channel: string;
   private subscriber: RedisPubSub | undefined;
   private subscribed = false;
+  private readonly pingIntervalMs: number | false;
+  private pingWatchdogTimer: ReturnType<typeof setInterval> | undefined;
+  private closed = false;
 
   constructor(options: RedisControlPlaneOptions) {
     this.connection = options.connection;
     this.channel = `${options.prefix ?? 'durable'}-control`;
+    this.pingIntervalMs = normalizePingInterval(options.pingIntervalMs);
   }
 
   async publishControl(msg: ControlMessage): Promise<void> {
@@ -87,15 +132,93 @@ export class RedisControlPlane implements ControlPlane {
       const sub = this.connection.duplicate();
       this.subscriber = sub;
       void sub.subscribe(this.channel);
-      sub.on?.('message', (_channel, payload) => deliver(payload));
+      sub.on?.('message', ((_channel: string, payload: string) => deliver(payload)) as never);
+      this.trackSubscriber(sub);
     } else {
       // `@adonisjs/redis` connection: manages its own subscriber connection; handler gets the message.
       void this.connection.subscribe(this.channel, (payload) => deliver(payload));
     }
   }
 
-  /** Tear down the dedicated subscriber connection, if one was duplicated (ioredis path). */
+  /**
+   * Attach a de-duplicated `error` listener to the duplicated subscriber and start the ping
+   * watchdog. The `error` listener is not optional hygiene: an unhandled `error` event on an
+   * ioredis instance crashes the process in some setups, and a dead/reconnecting subscriber emits
+   * them in bursts — so this connection, which nothing else listens to, would take the app down.
+   */
+  private trackSubscriber(sub: RedisPubSub): void {
+    let loggedSinceReady = false;
+    sub.on?.('error', ((err: Error) => {
+      if (loggedSinceReady) return; // one line per reconnect burst, not one per retry
+      loggedSinceReady = true;
+      console.warn(`[adonis-durable] control-plane subscriber error: ${err.message}`);
+    }) as never);
+    sub.on?.('ready', (() => {
+      loggedSinceReady = false;
+    }) as never);
+    this.startPingWatchdog(sub);
+  }
+
+  /**
+   * Start the watchdog interval, unless it's disabled or already running (idempotent). Unref'd so
+   * it never keeps the process alive on its own; cleared in {@link close}.
+   */
+  private startPingWatchdog(sub: RedisPubSub): void {
+    if (this.pingWatchdogTimer || this.pingIntervalMs === false) return;
+    if (typeof sub.ping !== 'function') return; // not an ioredis-shaped connection — nothing to probe
+    this.pingWatchdogTimer = setInterval(() => {
+      void this.pingSubscriber(sub);
+    }, this.pingIntervalMs);
+    this.pingWatchdogTimer.unref?.();
+  }
+
+  /**
+   * PING the subscriber; on rejection or timeout, `disconnect(true)` so ioredis's `retryStrategy`
+   * reconnects and `autoResubscribe` restores the channel. Skips a connection that isn't `'ready'`
+   * — it's already mid-(re)connect, so a fresh ping would just race that cycle.
+   *
+   * The timeout is capped at `pingIntervalMs` itself (never above `SUBSCRIBER_PING_TIMEOUT_MS`):
+   * waiting longer than the gap between checks to declare one dead would just mean two checks race
+   * each other, and it lets a short interval shrink the whole detect → reconnect cycle instead of
+   * always eating the full multi-second default.
+   */
+  private async pingSubscriber(sub: RedisPubSub): Promise<void> {
+    if (sub.status !== undefined && sub.status !== 'ready') return;
+    const timeoutMs =
+      this.pingIntervalMs === false
+        ? SUBSCRIBER_PING_TIMEOUT_MS
+        : Math.min(SUBSCRIBER_PING_TIMEOUT_MS, this.pingIntervalMs);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('ping timed out')), timeoutMs);
+        sub
+          .ping?.()
+          .then(() => {
+            clearTimeout(timer);
+            resolve();
+          })
+          .catch((err: unknown) => {
+            clearTimeout(timer);
+            reject(err instanceof Error ? err : new Error(String(err)));
+          });
+      });
+    } catch (err) {
+      // A ping in flight when close() lands would otherwise RESURRECT the connection we just tore
+      // down: disconnect(true) reconnects rather than closes. Re-check after the await.
+      if (this.closed) return;
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[adonis-durable] control-plane subscriber unresponsive (${message}) — reconnecting to restore its subscription`,
+      );
+      sub.disconnect?.(true);
+    }
+  }
+
+  /** Stop the watchdog and tear down the dedicated subscriber connection (ioredis path). */
   async close(): Promise<void> {
+    this.closed = true;
+    if (this.pingWatchdogTimer) clearInterval(this.pingWatchdogTimer);
+    this.pingWatchdogTimer = undefined;
     this.subscriber?.disconnect?.();
     this.subscriber = undefined;
   }

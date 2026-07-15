@@ -29,9 +29,9 @@ import type {
   SignalWaiter,
   StateStore,
   StepCheckpoint,
+  StepDef,
   StepError,
   StepEvent,
-  StepDef,
   StepInterceptor,
   StepInvocation,
   StepKind,
@@ -53,13 +53,13 @@ import { RemoteWorkflowExecutor } from './remote-workflow-executor.js';
 import { SingletonGate } from './singleton-gate.js';
 import { sanitizeQueueToken, tenantGroup } from './tenant-group.js';
 import { TransportPool } from './transport-pool.js';
+import { workflowAls } from './workflow-als.js';
 import {
   type Compensation,
   type CtxHost,
   type StepRecord,
   createWorkflowCtx,
 } from './workflow-ctx.js';
-import { workflowAls } from './workflow-als.js';
 import {
   type WorkflowClass,
   type WorkflowInputOf,
@@ -905,7 +905,13 @@ export class WorkflowEngine {
         if (run.createdAt.getTime() > deadline) continue;
         const error = { message: 'execution timeout', code: 'execution_timeout' };
         await this.store.updateRun(run.id, { status: 'cancelled', error, updatedAt: new Date() });
-        this.emit({ type: 'run.failed', runId: run.id, workflow: run.workflow, namespace: run.namespace, error });
+        this.emit({
+          type: 'run.failed',
+          runId: run.id,
+          workflow: run.workflow,
+          namespace: run.namespace,
+          error,
+        });
       }
     }
   }
@@ -957,7 +963,13 @@ export class WorkflowEngine {
       };
       await this.store.updateRun(run.id, { status: 'dead', error, updatedAt: new Date() });
       await this.store.releaseRunLock(run.id);
-      this.emit({ type: 'run.failed', runId: run.id, workflow: run.workflow, namespace: run.namespace, error });
+      this.emit({
+        type: 'run.failed',
+        runId: run.id,
+        workflow: run.workflow,
+        namespace: run.namespace,
+        error,
+      });
       this.notifyDead({ ...run, status: 'dead', error, recoveryAttempts: attempts });
       return { runId: run.id, status: 'dead', error };
     }
@@ -1331,7 +1343,7 @@ export class WorkflowEngine {
    * correctly observes the failed start.
    */
   private startChildDeferred(
-    workflow: WorkflowRef,
+    workflow: string,
     input: unknown,
     childId: string,
     opts?: StartOptions,
@@ -1342,7 +1354,7 @@ export class WorkflowEngine {
           const message = err instanceof Error ? err.message : String(err);
           this.notifyParent(childId, {
             ok: false,
-            error: `child workflow "${workflowName(workflow)}" failed to start: ${message}`,
+            error: `child workflow "${workflow}" failed to start: ${message}`,
           });
         }),
     );
@@ -1384,7 +1396,13 @@ export class WorkflowEngine {
     }
     const error = { message: 'cancelled' };
     await this.store.updateRun(runId, { status: 'cancelled', error, updatedAt: new Date() });
-    this.emit({ type: 'run.failed', runId, workflow: run.workflow, namespace: run.namespace, error });
+    this.emit({
+      type: 'run.failed',
+      runId,
+      workflow: run.workflow,
+      namespace: run.namespace,
+      error,
+    });
     await this.cancelChildren(runId, opts);
     // Notify local cancel listeners now (a worker on this pod), and broadcast so the instance/worker
     // actually running this run learns of it and can abort cooperatively (the store already records
@@ -1760,7 +1778,12 @@ export class WorkflowEngine {
       return { runId: run.id, status: 'cancelled', error: latest.error };
     }
     await this.store.updateRun(run.id, { status: 'suspended', wakeAt: outcome.wakeAt, updatedAt });
-    this.emit({ type: 'run.suspended', runId: run.id, workflow: run.workflow, namespace: run.namespace });
+    this.emit({
+      type: 'run.suspended',
+      runId: run.id,
+      workflow: run.workflow,
+      namespace: run.namespace,
+    });
     return { runId: run.id, status: 'suspended' };
   }
 
@@ -1772,12 +1795,22 @@ export class WorkflowEngine {
     if (run.status === 'pending') {
       await this.store.updateRun(run.id, { status: 'running', updatedAt: new Date() });
       run.status = 'running';
-      this.emit({ type: 'run.started', runId: run.id, workflow: run.workflow, namespace: run.namespace });
+      this.emit({
+        type: 'run.started',
+        runId: run.id,
+        workflow: run.workflow,
+        namespace: run.namespace,
+      });
     }
     if (registered.singleton && !(await this.singletons.admit(run, registered.singleton))) {
       const wakeAt = this.singletons.retryWakeAt();
       await this.store.updateRun(run.id, { status: 'suspended', wakeAt, updatedAt: new Date() });
-      this.emit({ type: 'run.suspended', runId: run.id, workflow: run.workflow, namespace: run.namespace });
+      this.emit({
+        type: 'run.suspended',
+        runId: run.id,
+        workflow: run.workflow,
+        namespace: run.namespace,
+      });
       await this.store.releaseRunLock(run.id);
       return { runId: run.id, status: 'suspended' };
     }
@@ -1792,7 +1825,13 @@ export class WorkflowEngine {
         stack: err instanceof Error ? err.stack : undefined,
       };
       await this.store.updateRun(run.id, { status: 'failed', error, updatedAt: new Date() });
-      this.emit({ type: 'run.failed', runId: run.id, workflow: run.workflow, namespace: run.namespace, error });
+      this.emit({
+        type: 'run.failed',
+        runId: run.id,
+        workflow: run.workflow,
+        namespace: run.namespace,
+        error,
+      });
       return { runId: run.id, status: 'failed', error };
     }
 
@@ -2063,14 +2102,24 @@ export class WorkflowEngine {
     if (run.status === 'pending') {
       await this.store.updateRun(run.id, { status: 'running', updatedAt: new Date() });
       run.status = 'running';
-      this.emit({ type: 'run.started', runId: run.id, workflow: run.workflow, namespace: run.namespace });
+      this.emit({
+        type: 'run.started',
+        runId: run.id,
+        workflow: run.workflow,
+        namespace: run.namespace,
+      });
     }
     // Singleton admission gate: if this run shares its key with `limit` older in-flight runs, wait
     // (suspend on a short timer) until a slot frees instead of running now. Re-checked on each resume.
     if (registered?.singleton && !(await this.singletons.admit(run, registered.singleton))) {
       const wakeAt = this.singletons.retryWakeAt();
       await this.store.updateRun(run.id, { status: 'suspended', wakeAt, updatedAt: new Date() });
-      this.emit({ type: 'run.suspended', runId: run.id, workflow: run.workflow, namespace: run.namespace });
+      this.emit({
+        type: 'run.suspended',
+        runId: run.id,
+        workflow: run.workflow,
+        namespace: run.namespace,
+      });
       await this.store.releaseRunLock(run.id);
       return { runId: run.id, status: 'suspended' };
     }
@@ -2102,7 +2151,12 @@ export class WorkflowEngine {
           error: undefined,
           updatedAt: new Date(),
         });
-        this.emit({ type: 'run.completed', runId: run.id, workflow: run.workflow, namespace: run.namespace });
+        this.emit({
+          type: 'run.completed',
+          runId: run.id,
+          workflow: run.workflow,
+          namespace: run.namespace,
+        });
         void this.notifyParent(run.id, { ok: true, value: undefined });
         const nextId = nextContinuationId(run.id);
         queueMicrotask(
@@ -2121,7 +2175,13 @@ export class WorkflowEngine {
           }
           const error = { message: 'cancelled' };
           await this.store.updateRun(run.id, { status: 'cancelled', error, updatedAt: new Date() });
-          this.emit({ type: 'run.failed', runId: run.id, workflow: run.workflow, namespace: run.namespace, error });
+          this.emit({
+            type: 'run.failed',
+            runId: run.id,
+            workflow: run.workflow,
+            namespace: run.namespace,
+            error,
+          });
           return { runId: run.id, status: 'cancelled', error };
         }
         return this.settleRun(run, { kind: 'suspended', wakeAt: err.wakeAt });
@@ -2547,7 +2607,9 @@ export class WorkflowEngine {
         const resolution = step.timeoutMs
           ? await this.awaitWithHeartbeat(id, resultPromise, step.timeoutMs)
           : await resultPromise;
-        const output = (step.output ? step.output.parse(resolution.output) : resolution.output) as TOutput;
+        const output = (
+          step.output ? step.output.parse(resolution.output) : resolution.output
+        ) as TOutput;
         // The worker reports when it actually picked the task up; fall back to dispatch time if a
         // transport doesn't carry it (queue-wait then reads as zero rather than going negative).
         const startedAt = resolution.startedAt ? new Date(resolution.startedAt) : enqueuedAt;
