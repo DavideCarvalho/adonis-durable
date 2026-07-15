@@ -13,6 +13,10 @@ concurrency:
 permissions:
   contents: write
   pull-requests: write
+  # Lets the job mint an OIDC token for npm trusted publishing, so a release needs no
+  # long-lived NPM_TOKEN. changesets/action probes for this; without it the run logs
+  # "No NPM_TOKEN or OIDC available" and never attempts OIDC at all.
+  id-token: write
 
 jobs:
   release:
@@ -22,13 +26,22 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
           registry-url: 'https://registry.npmjs.org'
+
+      # Trusted publishing needs npm CLI >= 11.5.1; Node 22 still bundles npm 10.x.
+      #
+      # Pinned to 11.x, NOT @latest: npm 12 changed `npm info <pkg> --json` to return an
+      # array of manifests where 11 returned a single packument object. Changesets reads
+      # `pkgInfo.versions` off that value, which is `undefined` for an array, so on npm 12
+      # EVERY package looks unpublished and it republishes already-live versions, which npm
+      # rejects -- turning a fine release red. Revisit when changesets supports npm 12.
+      - run: npm install -g 'npm@^11.5.1'
 
       - run: pnpm install --frozen-lockfile
 
