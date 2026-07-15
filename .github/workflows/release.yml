@@ -54,4 +54,9 @@ jobs:
           title: 'chore: version packages'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # Deliberadamente vazio: o setup-node escreve o .npmrc com
+          # _authToken=${NODE_AUTH_TOKEN}, e um token de verdade ali GANHA do OIDC -- o npm
+          # usa o token e nunca troca o id-token por credencial. Vazio, o npm ve que nao ha
+          # auth e cai no trusted publishing. O secret NPM_TOKEN segue existindo; basta
+          # devolver `${{ secrets.NPM_TOKEN }}` aqui pra reverter pro token.
+          NODE_AUTH_TOKEN: ''
