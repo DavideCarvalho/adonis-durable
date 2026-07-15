@@ -1,7 +1,12 @@
 packages:
   - "packages/*"
+# pnpm >= 10 nao roda build script de dependencia sem permissao explicita, e em CI ele
+# ERRA (ERR_PNPM_IGNORED_BUILDS) em vez de so avisar -- o release morre no
+# `pnpm install --frozen-lockfile` antes de chegar no changesets. Todos estes ja rodavam
+# sob o pnpm 9 (biome/swc/esbuild/better-sqlite3/sharp compilam ou baixam binario), entao
+# liberar preserva o comportamento; nao e permissao nova.
 allowBuilds:
-  '@biomejs/biome': set this to true or false
-  '@swc/core': set this to true or false
-  better-sqlite3: set this to true or false
-  esbuild: set this to true or false
+  '@biomejs/biome': true
+  '@swc/core': true
+  better-sqlite3: true
+  esbuild: true
