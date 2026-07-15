@@ -47,10 +47,14 @@ describe('WorkflowEngine routes flow-control through an injected AdmissionBacken
     const engine = new WorkflowEngine({ store, transport, admission: backend });
     engine.registerQueue({ name: 'charges', concurrency: 1 });
     engine.register('checkout', '1', async (ctx) => {
-      const c = await ctx.step<{ chargeId: string }>('payments.charge-card', { amount: 42 }, {
-        queue: 'charges',
-        priority: 5,
-      });
+      const c = await ctx.step<{ chargeId: string }>(
+        'payments.charge-card',
+        { amount: 42 },
+        {
+          queue: 'charges',
+          priority: 5,
+        },
+      );
       return c.chargeId;
     });
 

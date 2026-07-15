@@ -323,12 +323,14 @@ export class LucidStateStore implements StateStore {
     id: string;
     publishedAt: number;
   }): Promise<void> {
-    await this.client().table(DURABLE_TABLES.bufferedEvents).insert({
-      id: input.id,
-      name: input.name,
-      payload: input.payload === undefined ? null : JSON.stringify(input.payload),
-      published_at: input.publishedAt,
-    });
+    await this.client()
+      .table(DURABLE_TABLES.bufferedEvents)
+      .insert({
+        id: input.id,
+        name: input.name,
+        payload: input.payload === undefined ? null : JSON.stringify(input.payload),
+        published_at: input.publishedAt,
+      });
   }
 
   async listBufferedEvents(
@@ -340,13 +342,13 @@ export class LucidStateStore implements StateStore {
       .where('name', name)
       .orderBy('published_at', 'asc') // oldest first
       .limit(limit);
-    return (rows as Array<{ id: string; payload: string | null; published_at: number | string }>).map(
-      (r) => ({
-        id: r.id,
-        payload: r.payload == null ? undefined : (JSON.parse(r.payload) as unknown),
-        publishedAt: Number(r.published_at),
-      }),
-    );
+    return (
+      rows as Array<{ id: string; payload: string | null; published_at: number | string }>
+    ).map((r) => ({
+      id: r.id,
+      payload: r.payload == null ? undefined : (JSON.parse(r.payload) as unknown),
+      publishedAt: Number(r.published_at),
+    }));
   }
 
   async removeBufferedEvent(id: string): Promise<boolean> {

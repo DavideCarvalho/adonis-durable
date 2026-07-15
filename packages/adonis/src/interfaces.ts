@@ -941,7 +941,9 @@ export interface WorkflowCtx {
   step<TOutput = unknown>(
     name: string,
     input: unknown,
-    opts?: StepDispatchOpts & { compensate?: StepRef<StepUndo<unknown, TOutput>, unknown> | string },
+    opts?: StepDispatchOpts & {
+      compensate?: StepRef<StepUndo<unknown, TOutput>, unknown> | string;
+    },
   ): Promise<TOutput>;
   /**
    * Run an **in-process** local durable step: executed once IN THE ENGINE, then its result is

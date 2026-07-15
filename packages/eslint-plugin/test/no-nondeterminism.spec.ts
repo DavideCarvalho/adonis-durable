@@ -45,7 +45,9 @@ ruleTester.run('no-nondeterminism', noNondeterminism, {
     // Non-determinism inside a ctx.localStep / ctx.task / ctx.sideEffect callback is checkpointed
     // (run once, then replayed) — replay-safe, so it is NOT flagged.
     {
-      code: wfClass("const s = await ctx.localStep('setup', async () => new Date().toISOString());"),
+      code: wfClass(
+        "const s = await ctx.localStep('setup', async () => new Date().toISOString());",
+      ),
     },
     { code: wfFn("await ctx.localStep('setup', async () => { const r = Math.random(); });") },
     { code: wfFn("await ctx.task('t', async () => Date.now());") },

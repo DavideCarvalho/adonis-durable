@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { WorkflowEngine } from '../../src/engine.js';
-import { registerSteps, registerStep, collectSteps } from '../../src/step-discovery.js';
+import { collectSteps, registerStep, registerSteps } from '../../src/step-discovery.js';
 import { stepConfigOf, stepNameOf } from '../../src/step-name-symbol.js';
 import { Step, defineStep, stepMetaOf } from '../../src/step-ref.js';
 import { startRun } from '../../src/test-helpers.js';

@@ -54,7 +54,9 @@ describe('session cookie sign/verify (round-trip)', () => {
   it('accepts a cookie just past expiry but within the 30s clock-skew grace', () => {
     const now = Date.now();
     const cookie = signSessionCookie({ id: 'ops' }, { secret: SECRET, ttlMs: 1000, now });
-    expect(verifySessionCookie(cookie, { secret: SECRET, now: now + 1000 + 10_000 })).not.toBeNull();
+    expect(
+      verifySessionCookie(cookie, { secret: SECRET, now: now + 1000 + 10_000 }),
+    ).not.toBeNull();
   });
 
   it('never throws on garbage input', () => {

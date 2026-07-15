@@ -28,7 +28,11 @@ describe('resolveDashboardAuth', () => {
   });
 
   it('falls back to the 8h default on a malformed ttl', () => {
-    const resolved = resolveDashboardAuth({ secret: 's', ttl: 'not-a-duration', login: () => null });
+    const resolved = resolveDashboardAuth({
+      secret: 's',
+      ttl: 'not-a-duration',
+      login: () => null,
+    });
     expect(resolved?.ttlMs).toBe(8 * 60 * 60 * 1000);
   });
 
@@ -120,7 +124,10 @@ describe('performLogin', () => {
 
   it('forwards an empty password to the hook verbatim (password is optional)', async () => {
     const loginSpy = vi.fn().mockReturnValue(null);
-    const spyAuth = resolveDashboardAuth({ secret: SECRET, login: loginSpy }) as ResolvedDashboardAuth;
+    const spyAuth = resolveDashboardAuth({
+      secret: SECRET,
+      login: loginSpy,
+    }) as ResolvedDashboardAuth;
     await performLogin(spyAuth, { username: 'ops', password: '' }, BASE_PATH);
     expect(loginSpy).toHaveBeenCalledWith('ops', '');
   });
@@ -151,11 +158,14 @@ describe('readSession', () => {
 
   it('returns the session for a valid cookie', () => {
     const now = Date.now();
-    const cookie = signSessionCookie({ id: 'ops', roles: ['admin'] }, {
-      secret: SECRET,
-      ttlMs: 60_000,
-      now,
-    });
+    const cookie = signSessionCookie(
+      { id: 'ops', roles: ['admin'] },
+      {
+        secret: SECRET,
+        ttlMs: 60_000,
+        now,
+      },
+    );
     expect(readSession(auth, cookie, now)).toMatchObject({ sub: 'ops', roles: ['admin'] });
   });
 

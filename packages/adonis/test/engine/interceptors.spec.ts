@@ -15,7 +15,9 @@ describe('step interceptors (engine.use)', () => {
     });
 
     engine.register('greet', '1', async (ctx, input) => {
-      const name = await ctx.localStep('upper', async () => (input as { n: string }).n.toUpperCase());
+      const name = await ctx.localStep('upper', async () =>
+        (input as { n: string }).n.toUpperCase(),
+      );
       return `hi ${name}`;
     });
     const res = await startRun(engine, 'greet', { n: 'ada' }, 'r1');

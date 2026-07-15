@@ -31,7 +31,11 @@ describe('ctx.step — dispatched saga compensation', () => {
 
     const engine = new WorkflowEngine({ store, transport });
     engine.register('checkout', '1', async (ctx) => {
-      await ctx.step<{ chargeId: string }>('billing:charge', { amount: 42 }, { compensate: refund });
+      await ctx.step<{ chargeId: string }>(
+        'billing:charge',
+        { amount: 42 },
+        { compensate: refund },
+      );
       await ctx.localStep('boom', async () => {
         throw new Error('downstream failure');
       });

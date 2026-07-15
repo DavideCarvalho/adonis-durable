@@ -26,7 +26,12 @@ describe('static workflow config', () => {
 
   it('carries version/tags/onEvent through the metadata', () => {
     class Order {
-      static workflow = { name: 'order', version: '2', tags: ['billing'], onEvent: ['order.placed'] };
+      static workflow = {
+        name: 'order',
+        version: '2',
+        tags: ['billing'],
+        onEvent: ['order.placed'],
+      };
       async run() {
         return 'done';
       }

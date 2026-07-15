@@ -97,6 +97,7 @@ export abstract class BaseWorkflow {
     if (ctx) {
       // INSIDE: linked child. Pass opts?.runId as the childId; when absent, ctx.child derives a
       // deterministic, replay-stable id from call position — never generate one here.
+      // biome-ignore lint/complexity/noThisInStatic: `this` is the polymorphic subclass, declared as `this: C` above — it is the dispatch mechanism. Naming the class here would always start BaseWorkflow instead of the caller's workflow.
       return ctx.child(this, input, opts?.runId) as Promise<WorkflowOutputOf<C>>;
     }
     // OUTSIDE: enqueue on the engine, then block until the run reaches a TERMINAL state. `runId` is a
@@ -105,6 +106,7 @@ export abstract class BaseWorkflow {
       const engine = await resolveEngine();
       const { runId: _runId, ...startOpts } = opts ?? {};
       const runId = opts?.runId ?? globalThis.crypto.randomUUID();
+      // biome-ignore lint/complexity/noThisInStatic: see .start's child branch — `this` is the polymorphic subclass (`this: C`), not BaseWorkflow.
       await engine.start(this, input, runId, startOpts);
       // `terminal: true` so a workflow that suspends (sleep/waitForSignal/waitForEvent/async step)
       // keeps blocking through the suspension and returns the real output — the ".start = I want the
@@ -127,6 +129,7 @@ export abstract class BaseWorkflow {
     const ctx = getCurrentWorkflowCtx();
     if (ctx) {
       // INSIDE: fire-and-forget child. Same childId rule as .start — let ctx derive it when absent.
+      // biome-ignore lint/complexity/noThisInStatic: see .start — `this` is the polymorphic subclass (`this: C`), not BaseWorkflow.
       return ctx.startChild(this, input, opts?.runId).then((runId) => ({ runId }));
     }
     // OUTSIDE: enqueue and return the id without blocking on the settle. `runId` is a BaseWorkflow-only
@@ -135,6 +138,7 @@ export abstract class BaseWorkflow {
       const engine = await resolveEngine();
       const { runId: _runId, ...startOpts } = opts ?? {};
       const runId = opts?.runId ?? globalThis.crypto.randomUUID();
+      // biome-ignore lint/complexity/noThisInStatic: see .start — `this` is the polymorphic subclass (`this: C`), not BaseWorkflow.
       await engine.start(this, input, runId, startOpts);
       return { runId };
     })();

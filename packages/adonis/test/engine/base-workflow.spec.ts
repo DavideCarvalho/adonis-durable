@@ -317,7 +317,7 @@ describe('getCurrentWorkflowCtx — ALS isolation', () => {
     expect(getCurrentWorkflowCtx()).toBeUndefined();
   });
 
-  it('exposes the running run\'s ctx (equals the explicit param) and is scoped per run', async () => {
+  it("exposes the running run's ctx (equals the explicit param) and is scoped per run", async () => {
     const store = new InMemoryStateStore();
     const engine = new WorkflowEngine({ store });
 

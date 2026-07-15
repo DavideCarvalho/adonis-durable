@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  CONTROL_FLOW_SIGNAL,
-  isWorkflowControlFlowSignal,
-} from '../../src/control-flow-signal.js';
+import { CONTROL_FLOW_SIGNAL, isWorkflowControlFlowSignal } from '../../src/control-flow-signal.js';
 import { ContinueAsNew, FatalError, WorkflowSuspended } from '../../src/errors.js';
 
 describe('isWorkflowControlFlowSignal', () => {

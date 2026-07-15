@@ -220,11 +220,7 @@ export default class DashboardProvider {
    * `HttpOnly` + `SameSite=Lax` (blocks cross-site POSTs carrying the cookie — CSRF coverage) +
    * `Secure` on https. `Path=/` so it reaches both the UI and API mounts regardless of prefix.
    */
-  private writeSessionCookie(
-    ctx: HttpContext,
-    auth: ResolvedDashboardAuth,
-    value: string,
-  ): void {
+  private writeSessionCookie(ctx: HttpContext, auth: ResolvedDashboardAuth, value: string): void {
     ctx.response.plainCookie(SESSION_COOKIE_NAME, value, {
       httpOnly: true,
       sameSite: 'lax',

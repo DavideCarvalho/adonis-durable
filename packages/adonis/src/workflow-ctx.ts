@@ -29,8 +29,8 @@ import type {
   WorkflowCtx,
 } from './interfaces.js';
 import { breakpointToken } from './protocol.js';
-import { type StepConfig, type StepRef, stepConfigOf, stepNameOf } from './step-name-symbol.js';
 import { createStepLogger } from './step-logger.js';
+import { type StepConfig, type StepRef, stepConfigOf, stepNameOf } from './step-name-symbol.js';
 import { type WorkflowRef, workflowName } from './workflow-ref.js';
 
 /**
