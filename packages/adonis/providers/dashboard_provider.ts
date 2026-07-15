@@ -1,6 +1,5 @@
 import type { HttpContext } from '@adonisjs/core/http';
-import router from '@adonisjs/core/services/router';
-import type { ApplicationService } from '@adonisjs/core/types';
+import type { ApplicationService, HttpRouterService } from '@adonisjs/core/types';
 import {
   type ResolvedDashboardAuth,
   SESSION_COOKIE_NAME,
@@ -52,10 +51,28 @@ export default class DashboardProvider {
     );
     if (!config.enabled) return;
 
-    this.registerRoutes(config);
+    // Route registration can't happen synchronously in `boot()`: at this point in the AdonisJS
+    // lifecycle the HTTP server/router binding may not be resolvable yet (bindings from other
+    // providers' `boot()` methods can still be pending), and — critically — the *documented*
+    // `@adonisjs/core/services/router` singleton is only assigned once the app's "booted" hooks run
+    // (`await app.booted(async () => { router = ... })` inside that service module itself), which
+    // fire strictly AFTER every provider's own `boot()`. A provider that imports that singleton and
+    // calls `router.get(...)` directly inside `boot()` crashes every entrypoint (serve/ace/tests)
+    // that registers it, because `router` is still `undefined` at that point.
+    //
+    // Deferring to `app.booted(...)` runs our route registration as another "booted" hook — the
+    // same mechanism the router service uses to become available in the first place — which is
+    // guaranteed to fire BEFORE `app.start()`'s callback boots the HTTP server and commits the
+    // router (the last point at which routes can still be added). Resolving `router` fresh from the
+    // container here (rather than depending on that service singleton) is also the same pattern
+    // `@adonisjs/core`'s own `AppServiceProvider` uses internally.
+    await this.app.booted(async () => {
+      const router = await this.app.container.make('router');
+      this.registerRoutes(router, config);
+    });
   }
 
-  private registerRoutes(config: ResolvedDurableDashboardConfig): void {
+  private registerRoutes(router: HttpRouterService, config: ResolvedDurableDashboardConfig): void {
     const apiBase = `${config.path}/api`;
 
     // Resolve the engine lazily per request: the singleton is built by
@@ -72,7 +89,7 @@ export default class DashboardProvider {
     // stay reachable while unauthenticated — including in production, where the default `authorize`
     // hook would otherwise deny it.
     if (config.dashboardAuth) {
-      this.registerAuthRoutes(config, config.dashboardAuth);
+      this.registerAuthRoutes(router, config, config.dashboardAuth);
     }
 
     // The HTML page.
@@ -124,6 +141,7 @@ export default class DashboardProvider {
    *    (idempotent, only ever destroys the caller's own session) so a simple `<a href>` works.
    */
   private registerAuthRoutes(
+    router: HttpRouterService,
     config: ResolvedDurableDashboardConfig,
     auth: ResolvedDashboardAuth,
   ): void {
