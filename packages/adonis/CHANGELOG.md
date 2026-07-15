@@ -1,5 +1,22 @@
 # @adonis-agora/durable
 
+## 0.8.1
+
+### Patch Changes
+
+- [#8](https://github.com/DavideCarvalho/adonis-durable/pull/8) [`9e3d803`](https://github.com/DavideCarvalho/adonis-durable/commit/9e3d803258986ffe27f9136bce5200f0d6bbdf00) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Fix DashboardProvider crashing every entrypoint on boot
+
+  `DashboardProvider#boot()` resolved the router while the container was still
+  booting, so `router` came back `undefined` and every entrypoint — `node ace`
+  included — died before reaching user code. Any app that registered the
+  provider could not boot at all.
+
+  The router is now resolved inside `app.booted()`, once the container can
+  actually hand it over.
+
+  Shipped in [#7](https://github.com/DavideCarvalho/adonis-durable/issues/7) without a changeset, so the fix sat on master unreleased; this
+  changeset carries it to npm.
+
 ## 0.8.0
 
 ### Minor Changes
