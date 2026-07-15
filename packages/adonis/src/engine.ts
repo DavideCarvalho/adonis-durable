@@ -1319,6 +1319,36 @@ export class WorkflowEngine {
   }
 
   /**
+   * Deferred child start shared by the in-process ctx host and the remote `startChild` command.
+   * Deferred (microtask) so a fast child can't reentrantly resume a still-suspending parent. A start
+   * that THROWS (unregistered/unroutable workflow, input validation, singleton back-pressure, store
+   * failure) must NOT be swallowed: the parent is already suspended on `child:<childId>` (the waiter
+   * is put BEFORE start on every path), so a silent drop parks it in suspended-forever, invisibly
+   * re-attempting on every recovery wake — a misconfigured remote child looks exactly like a healthy
+   * long wait. Instead the failure is delivered to that waiter like a failed child (notifyParent):
+   * the parent resumes and fails loudly with the cause. For a fire-and-forget `ctx.startChild`
+   * (spawn — no waiter) the completion is buffered; a later join by the same id consumes it and
+   * correctly observes the failed start.
+   */
+  private startChildDeferred(
+    workflow: WorkflowRef,
+    input: unknown,
+    childId: string,
+    opts?: StartOptions,
+  ): void {
+    queueMicrotask(
+      () =>
+        void this.start(workflow, input, childId, opts).catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          this.notifyParent(childId, {
+            ok: false,
+            error: `child workflow "${workflowName(workflow)}" failed to start: ${message}`,
+          });
+        }),
+    );
+  }
+
+  /**
    * Cancel a run (e.g. from the dashboard). Returns null if the run does not exist. Pass
    * `{ compensate: true }` to undo the saga first: the suspended run is resumed so its completed
    * steps' compensations run in reverse (visible as `compensate:<step>` events), then it's marked
@@ -2010,9 +2040,7 @@ export class WorkflowEngine {
           parallelGroup: cmd.parallelGroup,
         });
         if (!(await this.store.getRun(childId))) {
-          queueMicrotask(
-            () => void this.start(cmd.workflow, cmd.input, childId).catch(() => undefined),
-          );
+          this.startChildDeferred(cmd.workflow, cmd.input, childId);
         }
       } else {
         throw new Error(
@@ -2218,9 +2246,7 @@ export class WorkflowEngine {
         this.callRemote(runId, seq, step, input, queue, transport, replay, admission),
       // Defer so a fast child can't reentrantly resume a still-running parent.
       startChild: (workflow, input, id, priority) => {
-        queueMicrotask(
-          () => void this.start(workflow, input, id, { priority }).catch(() => undefined),
-        );
+        this.startChildDeferred(workflow, input, id, { priority });
       },
       // Shallow-merge into the run's searchAttributes (the ctx primitive makes this exactly-once).
       upsertSearchAttributes: async (runId, attrs) => {
