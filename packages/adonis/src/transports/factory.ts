@@ -1,5 +1,7 @@
+import type { Database } from '@adonisjs/lucid/database';
 import type { AdapterFactory } from '@adonisjs/queue/types';
 import type { ControlPlane, Transport } from '../interfaces.js';
+import { resolveLucidDatabase } from '../resolve-lucid-db.js';
 import { InMemoryTransport } from '../testing/in-memory-transport.js';
 
 /**
@@ -183,8 +185,8 @@ export const transports = {
 
   /** Run remote steps cross-process over the app's database, using `@adonisjs/lucid` — no broker. */
   db(config: DbTransportConfig = {}): TransportFactory {
-    return async () => {
-      const db = (await import('@adonisjs/lucid/services/db')).default;
+    return async (ctx) => {
+      const db = (await resolveLucidDatabase(ctx)) as Database;
       const { DbTransport } = await import('./db.js');
       return new DbTransport({
         db,

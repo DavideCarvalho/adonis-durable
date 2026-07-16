@@ -75,13 +75,13 @@ export class LucidStateStore implements StateStore {
 
   /** Idempotently provision the durable tables (called on boot when `autoSchema` is on). */
   async ensureSchema(): Promise<void> {
-    await createDurableTables(this.db);
+    await createDurableTables(this.db, this.connectionName);
   }
 
   // --- runs ---------------------------------------------------------------
 
   async createRun(run: WorkflowRun): Promise<void> {
-    await this.db.transaction(async (trx) => {
+    await this.client().transaction(async (trx) => {
       await trx.table(DURABLE_TABLES.runs).insert(runToRow(run));
       await this.reindexAttributes(trx, run.id, run.searchAttributes);
     });
@@ -89,7 +89,7 @@ export class LucidStateStore implements StateStore {
 
   async updateRun(runId: string, patch: Partial<WorkflowRun>): Promise<void> {
     const row = runPatchToRow(patch);
-    await this.db.transaction(async (trx) => {
+    await this.client().transaction(async (trx) => {
       // Knex throws on an empty `.update({})`; skip the UPDATE when no mapped column changed.
       if (Object.keys(row).length) {
         await trx.from(DURABLE_TABLES.runs).where('id', runId).update(row);
