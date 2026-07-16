@@ -1,7 +1,7 @@
 import { Redis } from 'ioredis';
 import { afterAll, beforeAll, describe } from 'vitest';
 import { RedisAdmissionBackend } from '../../src/admission-redis/index.js';
-import { runAdmissionBackendContract } from '../../src/testing-kit/index.js';
+import { runAdmissionBackendContract } from '../../src/testing-kit/conformance.js';
 
 /**
  * Run the shared cross-backend admission contract against a REAL Redis (set REDIS_URL), so the Redis
