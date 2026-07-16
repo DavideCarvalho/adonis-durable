@@ -2506,11 +2506,21 @@ export class WorkflowEngine {
   /**
    * Complete a durable remote step from its worker result and resume the run — runs on whichever
    * instance receives the result (the dispatching one may be gone), so the run is crash/scale-safe.
-   * A no-op if the checkpoint isn't `pending` (a duplicate or late delivery).
    */
   private async completeRemoteResult(result: StepResult): Promise<void> {
     const cp = await this.store.getCheckpoint(result.runId, result.seq);
-    if (!cp || cp.status !== 'pending') return;
+    if (!cp) return;
+    // This does TWO durable things — settle the checkpoint, then resume the run — and only the first
+    // is idempotent by its own state. So an already-settled checkpoint does NOT mean the resume half
+    // also happened: the instance that settled it may have died in between, or thrown on the resume
+    // (a pod without this workflow registered), and a run suspended on a remote step carries no
+    // `wakeAt` — no timer or recovery sweep would ever pick it up again. A redelivered result must
+    // therefore re-drive the resume rather than be dropped. Resuming twice is safe (the run lease
+    // admits one executor and replay is positional); dropping the last copy is not.
+    if (cp.status !== 'pending') {
+      await this.resume(result.runId);
+      return;
+    }
     // A result settling this step frees its flow-control slot (no-op if it wasn't queued). Done
     // before the cancelled-run early-return below, so a cancellation can't leak the slot.
     await this.releaseQueueSlot(cp.stepId);
