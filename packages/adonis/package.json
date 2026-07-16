@@ -58,6 +58,11 @@
       "import": "./dist/src/testing-kit/index.js",
       "default": "./dist/src/testing-kit/index.js"
     },
+    "./testing/conformance": {
+      "types": "./dist/src/testing-kit/conformance.d.ts",
+      "import": "./dist/src/testing-kit/conformance.js",
+      "default": "./dist/src/testing-kit/conformance.js"
+    },
     "./hooks/workflows": {
       "types": "./dist/src/hooks/workflows.d.ts",
       "import": "./dist/src/hooks/workflows.js",

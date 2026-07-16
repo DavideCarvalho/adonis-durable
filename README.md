@@ -12,7 +12,7 @@ are installed only when used.
 
 | Package | Status | What |
 |---|---|---|
-| [`@adonis-agora/durable`](./packages/adonis) | ✅ shipped | the whole library — engine + AdonisJS binding (`.`), plus subpaths: `./otel`, `./telescope`, `./dashboard` (+ `./dashboard_provider`), `./commands` (ace commands), `./testing`, `./admission-redis` |
+| [`@adonis-agora/durable`](./packages/adonis) | ✅ shipped | the whole library — engine + AdonisJS binding (`.`), plus subpaths: `./otel`, `./telescope`, `./dashboard` (+ `./dashboard_provider`), `./commands` (ace commands), `./testing` (+ `./testing/conformance`), `./admission-redis` |
 | [`@adonis-agora/durable-eslint-plugin`](./packages/eslint-plugin) | ✅ shipped | ESLint rules enforcing workflow determinism (resolved by name; kept standalone) |
 
 ### Subpaths
@@ -24,7 +24,8 @@ are installed only when used.
 | `@adonis-agora/durable/telescope` | a `@adonis-agora/telescope` extension — a Workflows health dashboard (golden signals) |
 | `@adonis-agora/durable/dashboard` | a self-contained web dashboard + JSON API for inspecting/operating runs (wire `@adonis-agora/durable/dashboard_provider`) |
 | `@adonis-agora/durable/commands` | the ace commands — `durable:work`, `durable:runs`, `durable:retry` |
-| `@adonis-agora/durable/testing` | test harness + cross-backend conformance suites (needs `vitest`) |
+| `@adonis-agora/durable/testing` | test harness + asserts + fault injection + deterministic replay — no `vitest` required, importable from any test runner |
+| `@adonis-agora/durable/testing/conformance` | cross-backend conformance suite generators for custom store/backend implementations (needs `vitest`) |
 | `@adonis-agora/durable/admission-redis` | Redis-backed global admission backend for fleet-wide concurrency/rate/priority/fairness (needs `@adonisjs/redis` + `ioredis`) |
 
 Defaults to an in-process store + transport (single-process). For cross-process /
