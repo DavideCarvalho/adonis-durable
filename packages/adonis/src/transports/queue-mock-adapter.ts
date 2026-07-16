@@ -2,13 +2,17 @@ import type { AcquiredJob, Adapter, JobData } from '@adonisjs/queue/types';
 
 /**
  * A tiny in-memory `@adonisjs/queue` adapter for tests — implements just the surface the
- * `QueueTransport` touches (push/pop/complete/fail/destroy) as plain FIFO queues, plus throwing
+ * `QueueTransport` touches (push/pop/complete/fail/retry/destroy) as plain FIFO queues, plus throwing
  * stubs for the rest of the contract. No Redis, no Knex. `popFrom` mimics the real adapters'
- * atomic move (pending → active) so two transports sharing one instance never double-consume.
+ * atomic move (pending → active) so two transports sharing one instance never double-consume, and
+ * the delayed → pending promotion a `retryJob(…, retryAt)` relies on.
  */
 export class MockAdapter implements Adapter {
   readonly pending = new Map<string, JobData[]>();
   readonly active = new Map<string, AcquiredJob>();
+  /** Jobs awaiting their `readyAt`, per queue — promoted into `pending` by `popFrom`, as the real
+   *  adapters' acquire script does. Keyed the same way so a delayed retry isn't lost. */
+  readonly delayed = new Map<string, { job: JobData; readyAt: number }[]>();
   workerId = '';
   destroyed = false;
 
@@ -27,6 +31,7 @@ export class MockAdapter implements Adapter {
   }
 
   async popFrom(queue: string): Promise<AcquiredJob | null> {
+    this.#promoteDelayed(queue);
     const list = this.pending.get(queue);
     if (!list || list.length === 0) return null;
     // Mirror the real adapters' priority ordering: lower `priority` number runs first (default 5 when
@@ -60,6 +65,45 @@ export class MockAdapter implements Adapter {
     this.active.delete(jobId);
   }
 
+  /**
+   * Move an active job back for redelivery, counting the attempt — `retryAt` in the future parks it
+   * in `delayed` until `popFrom` promotes it, exactly as the real adapters' retry script does. A job
+   * that is no longer active (already completed) is a no-op.
+   */
+  async retryJob(jobId: string, queue: string, retryAt?: Date): Promise<void> {
+    const job = this.active.get(jobId);
+    if (!job) return;
+    this.active.delete(jobId);
+    const { acquiredAt: _acquiredAt, ...data } = job;
+    const next: JobData = { ...data, attempts: (data.attempts ?? 0) + 1 };
+    const readyAt = retryAt?.getTime() ?? 0;
+    if (readyAt > Date.now()) {
+      const waiting = this.delayed.get(queue) ?? [];
+      waiting.push({ job: next, readyAt });
+      this.delayed.set(queue, waiting);
+      return;
+    }
+    await this.pushOn(queue, next);
+  }
+
+  /** Promote every delayed job of `queue` whose `readyAt` has passed into `pending` (see popFrom). */
+  #promoteDelayed(queue: string): void {
+    const waiting = this.delayed.get(queue);
+    if (!waiting || waiting.length === 0) return;
+    const now = Date.now();
+    const stillWaiting: { job: JobData; readyAt: number }[] = [];
+    for (const entry of waiting) {
+      if (entry.readyAt <= now) {
+        const list = this.pending.get(queue) ?? [];
+        list.push(entry.job);
+        this.pending.set(queue, list);
+      } else {
+        stillWaiting.push(entry);
+      }
+    }
+    this.delayed.set(queue, stillWaiting);
+  }
+
   async sizeOf(queue: string): Promise<number> {
     return this.pending.get(queue)?.length ?? 0;
   }
@@ -79,7 +123,6 @@ export class MockAdapter implements Adapter {
   pushMany = this.#unsupported('pushMany');
   pushManyOn = this.#unsupported('pushManyOn');
   recoverStalledJobs = this.#unsupported('recoverStalledJobs');
-  retryJob = this.#unsupported('retryJob');
   getJob = this.#unsupported('getJob');
   upsertSchedule = this.#unsupported('upsertSchedule');
   createSchedule = this.#unsupported('createSchedule');

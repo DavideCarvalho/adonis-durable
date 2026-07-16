@@ -43,6 +43,10 @@ export type ControlPayload = ControlMessage;
 /** How often the engine-side / worker-side poll loops ask the adapter for the next job. */
 const DEFAULT_POLL_INTERVAL_MS = 200;
 
+/** Where a poll-loop failure goes when the caller doesn't supply an `onError`. Mirrors `DbTransport`:
+ *  a transport error must never vanish — an invisible one is how a stalled run stays invisible. */
+const DEFAULT_LOG = (err: unknown): void => console.error('[QueueTransport] poll failed', err);
+
 // `@adonisjs/queue` job priority is the INVERSE of the durable engine's: a queue job runs the LOWEST
 // number first (1..10, default 5), while the engine's admission `priority` is "higher wins". We map
 // so one convention ("higher = more urgent") holds end-to-end. `BASELINE - p` keeps relative order (a
@@ -98,6 +102,11 @@ export interface QueueTransportOptions {
   pollIntervalMs?: number;
   /** Stable id for this process (stamped on heartbeats / control `from`). Default a random id. */
   instanceId?: string;
+  /**
+   * Where a poll-loop failure is reported — a job whose handler threw, or a throwing tick. Default
+   * `console.error`. Point it at your app's logger to route transport failures into your logs.
+   */
+  onError?: (err: unknown) => void;
 }
 
 /**
@@ -130,6 +139,7 @@ export class QueueTransport implements Transport, ControlPlane {
   readonly #explicitNamespace: boolean;
   readonly #pollIntervalMs: number;
   readonly #instanceId: string;
+  readonly #onError: (err: unknown) => void;
   readonly #handlers = new Map<string, StepHandler>();
   readonly #pollers: Pollers;
   /** One task poll loop per subscribed routing token (`tenantGroup(sanitizeQueueToken(name), partition)`)
@@ -144,9 +154,10 @@ export class QueueTransport implements Transport, ControlPlane {
     this.#explicitNamespace = options.namespace !== undefined;
     this.#pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.#instanceId = options.instanceId ?? randomUUID();
+    this.#onError = options.onError ?? DEFAULT_LOG;
     // pop()/popFrom() require a worker id be set on the adapter before consuming.
     this.#adapter.setWorkerId(this.#instanceId);
-    this.#pollers = new Pollers(this.#pollIntervalMs);
+    this.#pollers = new Pollers(this.#pollIntervalMs, this.#onError);
   }
 
   /** Stable id stamped on heartbeats and control `from`. */
@@ -281,10 +292,19 @@ export class QueueTransport implements Transport, ControlPlane {
   // ---------------------------------------------------------------------------
 
   /**
-   * Poll `queue`, handing each popped job to `onJob` then marking it complete. A throwing `onJob`
-   * fails the job (so it is not silently lost) and polling continues. One job is popped per tick;
-   * core's {@link Pollers} drains a burst (re-ticking while a job was found) before sleeping, and
-   * owns the stop-all bookkeeping. Returns a handle that stops just this loop.
+   * Poll `queue`, handing each popped job to `onJob` then marking it complete. One job is popped per
+   * tick; core's {@link Pollers} drains a burst (re-ticking while a job was found) before sleeping,
+   * and owns the stop-all bookkeeping. Returns a handle that stops just this loop.
+   *
+   * A throwing `onJob` did NOT do the job's work, so the job is REDELIVERED (`retryJob`, delayed one
+   * poll interval) rather than destroyed, and the error is reported to `onError`. This matters most
+   * for the results queue, which is point-to-point: every engine instance polls it, so a result can
+   * be popped by one that cannot act on it (a pod mid-rolling-deploy without the workflow registered,
+   * a stale process from an older build). Failing the job there dropped the ONLY copy of the result —
+   * the run stayed `suspended` with no `wakeAt`, unreachable by every recovery path, forever and
+   * silently. Redelivery hands it to an instance that CAN resume it; a job nobody can handle now
+   * loops at the poll rate and says so on every attempt, which is the failure we want — loud, not
+   * invisible.
    */
   #startLoop(queue: string, onJob: (job: JobData) => Promise<void>): PollLoop {
     return this.#pollers.start(async () => {
@@ -300,9 +320,12 @@ export class QueueTransport implements Transport, ControlPlane {
         await onJob(job);
         await this.#adapter.completeJob(job.id, queue);
       } catch (err) {
+        this.#onError(err);
+        // Delay the redelivery by one poll interval: it keeps a job nobody can handle from spinning
+        // the burst-drain loop hot (a ready job makes every tick report work and never sleep).
         await this.#adapter
-          .failJob(job.id, queue, err instanceof Error ? err : new Error(String(err)))
-          .catch(() => {});
+          .retryJob(job.id, queue, new Date(Date.now() + this.#pollIntervalMs))
+          .catch((retryErr) => this.#onError(retryErr));
       }
       return true;
     });
