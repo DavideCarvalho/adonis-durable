@@ -1,4 +1,6 @@
+import type { Database } from '@adonisjs/lucid/database';
 import type { StateStore } from '../interfaces.js';
+import { resolveLucidDatabase } from '../resolve-lucid-db.js';
 import type { TransportContext } from '../transports/factory.js';
 
 /**
@@ -42,8 +44,8 @@ export interface LucidStoreConfig {
 export const stores = {
   /** Persist runs/checkpoints/timers/signals in SQL via `@adonisjs/lucid`. */
   lucid(config: LucidStoreConfig = {}): StoreFactory {
-    return async () => {
-      const db = (await import('@adonisjs/lucid/services/db')).default;
+    return async (ctx) => {
+      const db = (await resolveLucidDatabase(ctx)) as Database;
       const { LucidStateStore } = await import('./lucid.js');
       return new LucidStateStore(
         db,

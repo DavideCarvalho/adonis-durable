@@ -24,11 +24,16 @@ export const DURABLE_TABLES = {
  * Call this on boot (e.g. from a `StateStore.ensureSchema`) or once at deploy time. For an AdonisJS app
  * prefer the published migration (`node ace configure @adonis-agora/durable`); this helper is for standalone
  * use, tests, and `ensureSchema`.
+ *
+ * Pass `connectionName` to provision the tables on a dedicated Lucid connection — it must match the
+ * connection the store reads/writes on, or `ensureSchema` would create the tables where the store
+ * never looks. Omit it to use the `Database` default connection.
  */
-export async function createDurableTables(db: Database): Promise<void> {
+export async function createDurableTables(db: Database, connectionName?: string): Promise<void> {
   // Knex's schema builder is stateful — operations chained on one instance run together. Take a FRESH
-  // `db.connection().schema` for every hasTable/createTable so each DDL statement executes exactly once.
-  const conn = () => db.connection().schema;
+  // `db.connection(connectionName).schema` for every hasTable/createTable so each DDL statement executes
+  // exactly once, all on the store's own connection.
+  const conn = () => db.connection(connectionName).schema;
 
   if (!(await conn().hasTable(DURABLE_TABLES.runs))) {
     await conn().createTable(DURABLE_TABLES.runs, (table) => {
@@ -58,13 +63,13 @@ export async function createDurableTables(db: Database): Promise<void> {
     // Auto-migrate an older runs table by adding any columns introduced after its creation. Each is
     // applied independently so a table missing several catches up. Mirrors the in-place pattern other
     // adapters use; new columns are nullable / carry a DEFAULT so existing rows read back unchanged.
-    if (!(await db.connection().schema.hasColumn(DURABLE_TABLES.runs, 'priority'))) {
+    if (!(await conn().hasColumn(DURABLE_TABLES.runs, 'priority'))) {
       // Nullable (no default) so existing rows read back as "unprioritised" and the FIFO path is unchanged.
       await conn().alterTable(DURABLE_TABLES.runs, (table) => {
         table.integer('priority');
       });
     }
-    if (!(await db.connection().schema.hasColumn(DURABLE_TABLES.runs, 'namespace'))) {
+    if (!(await conn().hasColumn(DURABLE_TABLES.runs, 'namespace'))) {
       // DEFAULT 'default' so every pre-namespace row reads back in the reserved 'default' partition —
       // byte-identical behavior for a single-pool deploy that adds the column.
       await conn().alterTable(DURABLE_TABLES.runs, (table) => {
@@ -96,9 +101,7 @@ export async function createDurableTables(db: Database): Promise<void> {
       table.primary(['run_id', 'seq']);
       table.index(['run_id', 'name'], 'durable_checkpoints_name_idx');
     });
-  } else if (
-    !(await db.connection().schema.hasColumn(DURABLE_TABLES.checkpoints, 'parallel_group'))
-  ) {
+  } else if (!(await conn().hasColumn(DURABLE_TABLES.checkpoints, 'parallel_group'))) {
     // Auto-migrate an older checkpoints table: add the nullable `parallel_group` column in place.
     // Nullable (no default) so a legacy (non-parallel) checkpoint reads back untagged.
     await conn().alterTable(DURABLE_TABLES.checkpoints, (table) => {
@@ -125,9 +128,7 @@ export async function createDurableTables(db: Database): Promise<void> {
       table.integer('seq').notNullable();
       table.string('parallel_group');
     });
-  } else if (
-    !(await db.connection().schema.hasColumn(DURABLE_TABLES.signalWaiters, 'parallel_group'))
-  ) {
+  } else if (!(await conn().hasColumn(DURABLE_TABLES.signalWaiters, 'parallel_group'))) {
     // Auto-migrate an older signal_waiters table: add the nullable `parallel_group` column in place.
     // Nullable (no default) so a legacy (non-fan) waiter reads back untagged and the await is unchanged.
     await conn().alterTable(DURABLE_TABLES.signalWaiters, (table) => {
@@ -160,8 +161,8 @@ export async function createDurableTables(db: Database): Promise<void> {
 }
 
 /** Drop every durable table (reverse FK order). Used by tests and migration `down`. */
-export async function dropDurableTables(db: Database): Promise<void> {
-  const conn = () => db.connection().schema;
+export async function dropDurableTables(db: Database, connectionName?: string): Promise<void> {
+  const conn = () => db.connection(connectionName).schema;
   await conn().dropTableIfExists(DURABLE_TABLES.bufferedEvents);
   await conn().dropTableIfExists(DURABLE_TABLES.bufferedSignals);
   await conn().dropTableIfExists(DURABLE_TABLES.signalWaiters);
