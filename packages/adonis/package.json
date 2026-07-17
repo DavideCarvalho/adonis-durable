@@ -23,6 +23,11 @@
       "import": "./dist/src/services/main.js",
       "default": "./dist/src/services/main.js"
     },
+    "./worker": {
+      "types": "./dist/src/worker-runtime/index.d.ts",
+      "import": "./dist/src/worker-runtime/index.js",
+      "default": "./dist/src/worker-runtime/index.js"
+    },
     "./durable_provider": {
       "types": "./dist/providers/durable_provider.d.ts",
       "import": "./dist/providers/durable_provider.js",
