@@ -219,6 +219,19 @@ export interface WorkflowEngineDeps {
    */
   maxRecoveryAttempts?: number | undefined;
   /**
+   * Fallback re-drive window (ms) for a run that SUSPENDS with no natural timer — i.e. it's waiting on
+   * an EVENT to wake it (a child's completion, a signal, a remote step with no `timeoutMs`) rather than
+   * a `ctx.sleep`. Those events re-drive the run directly; but if the wake is LOST (the delivering pod
+   * crashed / rolled mid-handoff), the run would otherwise sit `suspended` forever with `wakeAt: null` —
+   * invisible to both the timer poller (no `wakeAt`) and crash-recovery (no lease). This stamps a
+   * fallback `wakeAt` so {@link resumeDueTimers} re-drives it after the window; the re-drive is an
+   * idempotent replay (a still-pending dependency re-suspends via the checkpoint guard, a settled one
+   * advances), so it's a safe self-heal, not a retry that can double-dispatch. The primary event path
+   * still wins first for a healthy run (it re-drives long before this fires), so this only ever fires
+   * for a genuinely-orphaned run. Default 5min; set `0` to disable (the prior wake-forever behavior).
+   */
+  reconcileMs?: number | undefined;
+  /**
    * Build the public callback URL for a `ctx.webhook()` token (e.g.
    * ``(t) => `https://api.example.com/durable/webhooks/${t}` ``). Populates
    * {@link DurableWebhook.url}. Omit if you build URLs yourself from the token.
@@ -315,6 +328,7 @@ export class WorkflowEngine {
   private readonly namespace: string;
   private readonly leaseMs: number;
   private readonly maxRecoveryAttempts?: number | undefined;
+  private readonly reconcileMs: number | undefined;
   private readonly webhookUrl?: ((token: string) => string) | undefined;
   private readonly traceparent?: (() => string | undefined) | undefined;
   private readonly context?: (() => Record<string, unknown> | undefined) | undefined;
@@ -386,6 +400,8 @@ export class WorkflowEngine {
     this.pool.useNamespace(this.namespace);
     this.leaseMs = deps.leaseMs ?? 30_000;
     this.maxRecoveryAttempts = deps.maxRecoveryAttempts;
+    // Default 5min; an explicit 0 disables the fallback (opt back into wake-forever-on-lost-event).
+    this.reconcileMs = deps.reconcileMs === undefined ? 300_000 : deps.reconcileMs || undefined;
     this.webhookUrl = deps.webhookUrl;
     this.traceparent = deps.traceparent;
     this.context = deps.context;
@@ -1808,7 +1824,11 @@ export class WorkflowEngine {
     if (latest?.status === 'cancelled') {
       return { runId: run.id, status: 'cancelled', error: latest.error };
     }
-    await this.store.updateRun(run.id, { status: 'suspended', wakeAt: outcome.wakeAt, updatedAt });
+    await this.store.updateRun(run.id, {
+      status: 'suspended',
+      wakeAt: this.reconcileWakeAt(outcome.wakeAt),
+      updatedAt,
+    });
     this.emit({
       type: 'run.suspended',
       runId: run.id,
@@ -1816,6 +1836,17 @@ export class WorkflowEngine {
       namespace: run.namespace,
     });
     return { runId: run.id, status: 'suspended' };
+  }
+
+  /**
+   * A wakeAt to persist on a suspend: the natural timer if the turn produced one (a `ctx.sleep`, a
+   * remote-step deadline), else the {@link reconcileMs} fallback so an event-waiting run (child/signal/
+   * timeout-less remote step) can't be orphaned forever if its wake is lost. `undefined` only when the
+   * fallback is disabled (`reconcileMs: 0`). See {@link WorkflowEngineDeps.reconcileMs}.
+   */
+  private reconcileWakeAt(wakeAt: number | undefined): number | undefined {
+    if (wakeAt != null) return wakeAt;
+    return this.reconcileMs != null ? this.clock() + this.reconcileMs : undefined;
   }
 
   private async runRemoteExecution(
