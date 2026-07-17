@@ -1,0 +1,13 @@
+{
+  "requestId": "run-checkout-1",
+  "result": {
+    "ok": true,
+    "data": {
+      "runId": "run-checkout-1",
+      "status": "completed",
+      "output": {
+        "orderId": "order-42"
+      }
+    }
+  }
+}

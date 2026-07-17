@@ -1,5 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Heartbeat, RemoteTask, StepResult } from '../../../../src/interfaces.js';
+import type {
+  Heartbeat,
+  RemoteTask,
+  RunReply,
+  RunRequest,
+  StartRunMessage,
+  StepResult,
+  TenantEvent,
+} from '../../../../src/interfaces.js';
 import { BullMQTransport } from '../../../../src/transports/bullmq/bullmq-transport.js';
 import type {
   BullMQDeps,
@@ -329,6 +337,131 @@ describe('BullMQTransport', () => {
       expect(broker.workers.get('durable-results')?.closed).toBe(true);
       expect(broker.queues.get('durable-tasks-proc')?.closed).toBe(true);
       expect(broker.redis.disconnected).toBeGreaterThan(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // P4 — store-less read/control/start protocol (spec §6.2)
+  // ---------------------------------------------------------------------------
+  describe('P4 start-run / run-request queues', () => {
+    const startMsg: StartRunMessage = {
+      tenant: 'acme',
+      workflow: 'checkout',
+      input: { c: 1 },
+      runId: 'r1',
+    };
+    const runReq: RunRequest = {
+      requestId: 'req-1',
+      tenant: 'acme',
+      body: { kind: 'getRun', runId: 'r1' },
+    };
+
+    it('dispatchStartRun adds a `startRun` job to `durable-start-run` with non-task opts', async () => {
+      await transport.dispatchStartRun(startMsg);
+      const add = broker.queues.get('durable-start-run')?.adds[0];
+      expect(add?.name).toBe('startRun');
+      expect(add?.data).toEqual(startMsg);
+      expect(add?.opts).toEqual({ removeOnComplete: true, removeOnFail: true });
+    });
+
+    it('onStartRun consumes `durable-start-run`, handing job.data to the handler', async () => {
+      const handler = vi.fn(async () => {});
+      transport.onStartRun(handler);
+      const w = broker.workers.get('durable-start-run');
+      expect(w).toBeDefined();
+      await w!.process({ data: startMsg });
+      expect(handler).toHaveBeenCalledWith(startMsg);
+    });
+
+    it('dispatchRunRequest adds a `runRequest` job to `durable-run-request`', async () => {
+      await transport.dispatchRunRequest(runReq);
+      const add = broker.queues.get('durable-run-request')?.adds[0];
+      expect(add?.name).toBe('runRequest');
+      expect(add?.data).toEqual(runReq);
+      expect(add?.opts).toEqual({ removeOnComplete: true, removeOnFail: true });
+    });
+
+    it('onRunRequest consumes `durable-run-request`, handing job.data to the handler', async () => {
+      const handler = vi.fn(async () => {});
+      transport.onRunRequest(handler);
+      const w = broker.workers.get('durable-run-request');
+      expect(w).toBeDefined();
+      await w!.process({ data: runReq });
+      expect(handler).toHaveBeenCalledWith(runReq);
+    });
+
+    it('onStartRun / onRunRequest are idempotent (a second call does not replace the worker)', () => {
+      const first = vi.fn(async () => {});
+      const second = vi.fn(async () => {});
+      transport.onStartRun(first);
+      transport.onStartRun(second);
+      transport.onRunRequest(first);
+      transport.onRunRequest(second);
+      // Exactly one worker each; the first handler stays wired.
+      expect([...broker.workers.keys()].filter((k) => k === 'durable-start-run')).toHaveLength(1);
+      expect([...broker.workers.keys()].filter((k) => k === 'durable-run-request')).toHaveLength(1);
+    });
+  });
+
+  describe('P4 run-reply / tenant-events pub/sub', () => {
+    it('publishRunReply publishes JSON on `durable-run-reply`; onRunReply receives it', async () => {
+      const reply: RunReply = { requestId: 'req-1', result: { ok: true, data: { n: 1 } } };
+      const received: RunReply[] = [];
+      transport.onRunReply((r) => received.push(r));
+      expect(broker.redis.subscribed).toContain('durable-run-reply');
+      await transport.publishRunReply(reply);
+      expect(received).toEqual([reply]);
+    });
+
+    it('onRunReply ignores messages from OTHER channels (filters by channel on a shared connection)', async () => {
+      const received: RunReply[] = [];
+      transport.onRunReply((r) => received.push(r));
+      // A tenant-event on a different channel must not reach the run-reply handler.
+      await transport.publishTenantEvent({
+        tenant: 'acme',
+        event: { type: 'run.completed', runId: 'r1', at: new Date() },
+      });
+      expect(received).toEqual([]);
+    });
+
+    it('publishTenantEvent fans out on `durable-tenant-events-<tenant>`; onTenantEvent(tenant) receives ITS OWN only', async () => {
+      const acme: TenantEvent[] = [];
+      const other: TenantEvent[] = [];
+      transport.onTenantEvent('acme', (e) => acme.push(e));
+      transport.onTenantEvent('other', (e) => other.push(e));
+      expect(broker.redis.subscribed).toContain('durable-tenant-events-acme');
+      const evt: TenantEvent = {
+        tenant: 'acme',
+        event: { type: 'run.started', runId: 'r1', namespace: 'acme', at: new Date() },
+      };
+      await transport.publishTenantEvent(evt);
+      // The event crosses the pub/sub as JSON, so its `at` Date arrives as an ISO string — compare
+      // against the JSON-roundtripped form (the §6.3 date rule), not the original Date object.
+      expect(acme).toEqual([JSON.parse(JSON.stringify(evt))]);
+      expect(other).toEqual([]); // a different tenant's channel never sees acme's event
+    });
+
+    it('onTenantEvent returns an unsubscribe fn that stops delivery', async () => {
+      const seen: TenantEvent[] = [];
+      const off = transport.onTenantEvent('acme', (e) => seen.push(e));
+      const evt: TenantEvent = {
+        tenant: 'acme',
+        event: { type: 'run.started', runId: 'r1', namespace: 'acme', at: new Date() },
+      };
+      await transport.publishTenantEvent(evt);
+      off();
+      await transport.publishTenantEvent(evt);
+      expect(seen).toHaveLength(1); // only the pre-unsubscribe event
+    });
+
+    it('namespace folding applies to the P4 channels (an explicit namespace wins)', async () => {
+      const t = new BullMQTransport({ deps: broker, instanceId: 'i', namespace: 'ns1' });
+      await t.dispatchStartRun({ tenant: 'acme', workflow: 'w', input: null, runId: 'r' });
+      t.onRunReply(() => {});
+      t.onTenantEvent('acme', () => {});
+      expect(broker.queues.has('durable-ns1-start-run')).toBe(true);
+      expect(broker.redis.subscribed).toContain('durable-ns1-run-reply');
+      expect(broker.redis.subscribed).toContain('durable-ns1-tenant-events-acme');
     });
   });
 });

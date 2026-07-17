@@ -2,7 +2,11 @@ import type {
   GroupHealth,
   Heartbeat,
   RemoteTask,
+  RunReply,
+  RunRequest,
+  StartRunMessage,
   StepResult,
+  TenantEvent,
   Transport,
   WorkerHeartbeat,
   WorkflowDecision,
@@ -17,8 +21,12 @@ import {
   heartbeatChannel,
   resultsName,
   routingToken,
+  runReplyChannel,
+  runRequestName,
+  startRunName,
   stepEventsName,
   tasksName,
+  tenantEventsChannel,
   workerHeartbeatKey,
   workerHeartbeatKeyPrefix,
 } from './naming.js';
@@ -96,6 +104,18 @@ export class BullMQTransport implements Transport {
   #workerRedis: RedisLike | undefined;
   #workerHeartbeatTimer: ReturnType<typeof setInterval> | undefined;
   readonly #heartbeatTokens = new Set<string>();
+
+  // P4 store-less protocol: start-run / run-request queues + consumers, run-reply / tenant-events pub/sub.
+  #startRunWorker: WorkerLike | undefined;
+  #runRequestWorker: WorkerLike | undefined;
+  #runReplyPub: RedisLike | undefined;
+  #runReplySub: RedisLike | undefined;
+  #tenantEventPub: RedisLike | undefined;
+  // ONE shared subscriber for every tenant-events channel; a message is routed to the channel's
+  // handler set, so `onTenantEvent` can be called for several tenants (or several times per tenant).
+  #tenantEventSub: RedisLike | undefined;
+  readonly #tenantEventChannels = new Set<string>();
+  readonly #tenantEventHandlers = new Map<string, Set<(evt: TenantEvent) => void>>();
 
   constructor(options: BullMQTransportOptions) {
     this.#deps = options.deps;
@@ -388,6 +408,123 @@ export class BullMQTransport implements Transport {
   }
 
   // ---------------------------------------------------------------------------
+  // P4 — store-less read/control/start protocol (spec §6.2, §8)
+  //
+  // start-run & run-request ride BullMQ QUEUES (durable, single consumer on the control plane); the DTO
+  // is the raw job data (no envelope), job name `startRun`/`runRequest`, options `jobOptions()`
+  // (removeOnComplete/removeOnFail: true) — byte-identical to aviary. run-reply & tenant-events ride
+  // Redis PUB/SUB (fan-out) over the transport's own `makeRedis()` clients — the SAME substrate the
+  // shipped `RedisControlPlane` uses (spec §6 note: fan-out "rides the shared ControlPlane pub/sub"),
+  // kept on the transport so the whole P4 wire surface is one cohesive object and every channel name
+  // lives with the rest of the naming contract in `naming.ts`.
+  // ---------------------------------------------------------------------------
+
+  /** tenant → control plane: enqueue a {@link StartRunMessage} on `${P}-start-run` (job `startRun`). */
+  async dispatchStartRun(msg: StartRunMessage): Promise<void> {
+    await this.#queue(startRunName(this.#effectivePrefix())).add('startRun', msg, jobOptions());
+  }
+
+  /** control plane ← tenant: consume {@link StartRunMessage}s. Idempotent — a second call is a no-op. */
+  onStartRun(handler: (msg: StartRunMessage) => Promise<void>): void {
+    if (this.#startRunWorker) return;
+    this.#startRunWorker = this.#deps.makeWorker(startRunName(this.#effectivePrefix()), (job) =>
+      handler(job.data as StartRunMessage),
+    );
+  }
+
+  /** tenant → control plane: enqueue a {@link RunRequest} on `${P}-run-request` (job `runRequest`). */
+  async dispatchRunRequest(msg: RunRequest): Promise<void> {
+    await this.#queue(runRequestName(this.#effectivePrefix())).add('runRequest', msg, jobOptions());
+  }
+
+  /** control plane ← tenant: consume {@link RunRequest}s. Idempotent — a second call is a no-op. */
+  onRunRequest(handler: (msg: RunRequest) => Promise<void>): void {
+    if (this.#runRequestWorker) return;
+    this.#runRequestWorker = this.#deps.makeWorker(runRequestName(this.#effectivePrefix()), (job) =>
+      handler(job.data as RunRequest),
+    );
+  }
+
+  /** control plane → tenant: publish a correlated {@link RunReply} on `${P}-run-reply` (pub/sub). */
+  async publishRunReply(reply: RunReply): Promise<void> {
+    if (!this.#runReplyPub) this.#runReplyPub = this.#deps.makeRedis();
+    await this.#runReplyPub.publish(
+      runReplyChannel(this.#effectivePrefix()),
+      JSON.stringify(reply),
+    );
+  }
+
+  /** tenant ← control plane: consume {@link RunReply}s (the proxy filters by `requestId`). Idempotent. */
+  onRunReply(handler: (reply: RunReply) => void): void {
+    if (this.#runReplySub) return; // one subscription per transport
+    const channel = runReplyChannel(this.#effectivePrefix());
+    const sub = this.#deps.makeRedis();
+    this.#runReplySub = sub;
+    void sub.subscribe(channel);
+    sub.on('message', ((msgChannel: string, payload: string) => {
+      // Filter by channel: a shared pub/sub connection may also carry other channels' messages.
+      if (msgChannel !== channel) return;
+      try {
+        handler(JSON.parse(payload) as RunReply);
+      } catch {
+        /* ignore malformed run replies */
+      }
+    }) as never);
+  }
+
+  /** control plane → tenant: re-publish a lifecycle {@link TenantEvent} on `${P}-tenant-events-<tenant>`. */
+  async publishTenantEvent(evt: TenantEvent): Promise<void> {
+    if (!this.#tenantEventPub) this.#tenantEventPub = this.#deps.makeRedis();
+    await this.#tenantEventPub.publish(
+      tenantEventsChannel(this.#effectivePrefix(), evt.tenant),
+      JSON.stringify(evt),
+    );
+  }
+
+  /**
+   * tenant ← control plane: subscribe to THIS tenant's event channel. Returns an unsubscribe fn that
+   * detaches only this handler (the shared subscriber connection and channel subscription stay for any
+   * other listeners; both are torn down in {@link close}). Several tenants — or several callers for one
+   * tenant — may subscribe independently, each routed by channel through the ONE shared subscriber.
+   */
+  onTenantEvent(tenant: string, handler: (evt: TenantEvent) => void): () => void {
+    const channel = tenantEventsChannel(this.#effectivePrefix(), tenant);
+    const sub = this.#tenantEventSubscriber();
+    if (!this.#tenantEventChannels.has(channel)) {
+      this.#tenantEventChannels.add(channel);
+      void sub.subscribe(channel);
+    }
+    let handlers = this.#tenantEventHandlers.get(channel);
+    if (!handlers) {
+      handlers = new Set();
+      this.#tenantEventHandlers.set(channel, handlers);
+    }
+    handlers.add(handler);
+    return () => {
+      this.#tenantEventHandlers.get(channel)?.delete(handler);
+    };
+  }
+
+  /** The ONE shared tenant-events subscriber, created lazily with a single channel-routing listener. */
+  #tenantEventSubscriber(): RedisLike {
+    if (this.#tenantEventSub) return this.#tenantEventSub;
+    const sub = this.#deps.makeRedis();
+    this.#tenantEventSub = sub;
+    sub.on('message', ((msgChannel: string, payload: string) => {
+      const handlers = this.#tenantEventHandlers.get(msgChannel);
+      if (!handlers || handlers.size === 0) return;
+      let evt: TenantEvent;
+      try {
+        evt = JSON.parse(payload) as TenantEvent;
+      } catch {
+        return; // ignore malformed tenant events
+      }
+      for (const h of handlers) h(evt);
+    }) as never);
+    return sub;
+  }
+
+  // ---------------------------------------------------------------------------
   // shutdown
   // ---------------------------------------------------------------------------
 
@@ -399,10 +536,16 @@ export class BullMQTransport implements Transport {
     await this.#resultsWorker?.close();
     await this.#decisionsWorker?.close();
     await this.#stepEventsWorker?.close();
+    await this.#startRunWorker?.close();
+    await this.#runRequestWorker?.close();
     await Promise.all([...this.#queues.values()].map((q) => q.close()));
     this.#heartbeatPub?.disconnect();
     this.#heartbeatSub?.disconnect();
     this.#workerRedis?.disconnect();
+    this.#runReplyPub?.disconnect();
+    this.#runReplySub?.disconnect();
+    this.#tenantEventPub?.disconnect();
+    this.#tenantEventSub?.disconnect();
   }
 }
 

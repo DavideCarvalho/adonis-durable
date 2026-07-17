@@ -2,9 +2,15 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type {
+  EngineEvent,
   Heartbeat,
   RemoteTask,
+  RunReply,
+  RunRequest,
+  RunResult,
+  StartRunMessage,
   StepResult,
+  TenantEvent,
   WorkflowTask,
 } from '../../../../src/interfaces.js';
 
@@ -122,6 +128,81 @@ describe('bullmq wire fixtures (byte-compat with aviary)', () => {
       expect(JSON.stringify(failed)).toBe(
         '{"runId":"r","seq":1,"stepId":"r:1","status":"failed","error":{"message":"card declined","code":"declined","retryable":false}}',
       );
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // P4 — store-less read/control/start DTOs (spec §8, Appendix A/B)
+  // ---------------------------------------------------------------------------
+  describe('P4 store-less protocol DTOs', () => {
+    it('start-run — a StartRunMessage serializes to and parses from the golden bytes', () => {
+      const f = fixture('start-run.json');
+      const msg: StartRunMessage = {
+        tenant: 'acme',
+        workflow: 'checkout',
+        input: { cartId: 'cart-9' },
+        runId: 'run-checkout-1',
+        tags: ['priority', 'vip'],
+        searchAttributes: { amount: 1200, tier: 'pro' },
+      };
+      expect(JSON.stringify(msg)).toBe(canonical(f)); // byte-exact
+      expect(msg).toEqual(f.value); // semantic
+    });
+
+    it('run-request — a RunRequest (listRuns) serializes to and parses from the golden bytes', () => {
+      const f = fixture('run-request.json');
+      const req: RunRequest = {
+        requestId: 'req-1',
+        tenant: 'acme',
+        body: { kind: 'listRuns', query: { workflow: 'checkout', status: 'running', limit: 20 } },
+      };
+      expect(JSON.stringify(req)).toBe(canonical(f));
+      expect(req).toEqual(f.value);
+    });
+
+    it('run-reply.ok — a success RunReply (RunResult data) serializes to and parses from the golden bytes', () => {
+      const f = fixture('run-reply.ok.json');
+      const data: RunResult = {
+        runId: 'run-checkout-1',
+        status: 'completed',
+        output: { orderId: 'order-42' },
+      };
+      const reply: RunReply = { requestId: 'run-checkout-1', result: { ok: true, data } };
+      expect(JSON.stringify(reply)).toBe(canonical(f));
+      expect(reply).toEqual(f.value);
+    });
+
+    it('run-reply.err — a failure RunReply carries {message, code}, no data', () => {
+      const f = fixture('run-reply.err.json');
+      const reply: RunReply = {
+        requestId: 'req-1',
+        result: {
+          ok: false,
+          error: { message: 'run belongs to another tenant', code: 'cross-tenant' },
+        },
+      };
+      expect(JSON.stringify(reply)).toBe(canonical(f));
+      expect(reply).toEqual(f.value);
+      expect(Object.keys((f.value as { result: object }).result)).not.toContain('data');
+    });
+
+    it('tenant-event — a TenantEvent serializes nested EngineEvent dates as ISO strings (§6.3)', () => {
+      const f = fixture('tenant-event.json');
+      const event: EngineEvent = {
+        type: 'run.completed',
+        runId: 'run-checkout-1',
+        workflow: 'checkout',
+        namespace: 'acme',
+        output: { orderId: 'order-42' },
+        durationMs: 1234,
+        at: new Date('2025-07-17T00:00:00.000Z'),
+      };
+      const evt: TenantEvent = { tenant: 'acme', event };
+      // Byte-exact: the `Date` serializes to its ISO string (Date.toJSON) — the §6.3 rule for dates
+      // nested in an EngineEvent carried by a TenantEvent — matching the golden bytes exactly.
+      expect(JSON.stringify(evt)).toBe(canonical(f));
+      // And the fixture's `at` is that ISO string (not an epoch-ms number, unlike the task/result DTOs).
+      expect((f.value as { event: { at: unknown } }).event.at).toBe('2025-07-17T00:00:00.000Z');
     });
   });
 });

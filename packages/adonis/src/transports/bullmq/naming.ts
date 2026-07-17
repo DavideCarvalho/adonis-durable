@@ -68,6 +68,28 @@ export function controlChannel(effPrefix: string): string {
   return `${effPrefix}-control`;
 }
 
+/** `${P}-start-run` — the queue a store-less tenant enqueues start-run requests on (job `startRun`). */
+export function startRunName(effPrefix: string): string {
+  return `${effPrefix}-start-run`;
+}
+
+/** `${P}-run-request` — the queue a store-less tenant enqueues read/control requests on (job `runRequest`). */
+export function runRequestName(effPrefix: string): string {
+  return `${effPrefix}-run-request`;
+}
+
+/** `${P}-run-reply` — the shared pub/sub channel the control plane publishes {@link RunReply}s on;
+ *  every tenant subscribes and filters by `requestId` client-side. */
+export function runReplyChannel(effPrefix: string): string {
+  return `${effPrefix}-run-reply`;
+}
+
+/** `${P}-tenant-events-${tenant}` — the per-tenant pub/sub channel the control plane re-publishes a
+ *  tenant's lifecycle events on, so a store-less tenant live-tails only ITS OWN runs. */
+export function tenantEventsChannel(effPrefix: string, tenant: string): string {
+  return `${effPrefix}-tenant-events-${tenant}`;
+}
+
 /** Common prefix of every worker-liveness key (used to SCAN for live routing tokens). */
 export function workerHeartbeatKeyPrefix(effPrefix: string): string {
   return `${effPrefix}-worker-heartbeat:`;

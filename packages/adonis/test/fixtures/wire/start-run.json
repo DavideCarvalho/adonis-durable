@@ -1,0 +1,13 @@
+{
+  "tenant": "acme",
+  "workflow": "checkout",
+  "input": {
+    "cartId": "cart-9"
+  },
+  "runId": "run-checkout-1",
+  "tags": ["priority", "vip"],
+  "searchAttributes": {
+    "amount": 1200,
+    "tier": "pro"
+  }
+}
