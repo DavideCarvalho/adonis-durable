@@ -1,4 +1,6 @@
 import type { z } from 'zod';
+import type { DispatchDiagnostics } from './dispatch-routing.js';
+import type { WorkerDescriptor } from './handshake/descriptor.js';
 import type { StepRef } from './step-name-symbol.js';
 import type { WorkflowClass, WorkflowInputOf, WorkflowOutputOf } from './workflow-ref.js';
 
@@ -18,6 +20,14 @@ export type RunStatus =
   | 'pending'
   | 'running'
   | 'suspended'
+  /**
+   * Parked because NO live worker can run the next dispatch — a required capability is unadvertised,
+   * or every live worker is protocol-incompatible (design §7.5/§7.6). NOT terminal and NOT a silent
+   * hang: it carries a human `error.message` reason + fires a `capability.unavailable`/
+   * `protocol.incompatible` diagnostics event, and the blocked-recovery poll re-drives it (via
+   * `wakeAt`) so it proceeds the moment a capable+compatible worker appears.
+   */
+  | 'blocked'
   | 'completed'
   | 'failed'
   | 'cancelled'
@@ -808,6 +818,17 @@ export interface Transport {
    *  keyspace, so a group with workers but no engine-side registration (e.g. a local-step group)
    *  still surfaces. Pairs with {@link groupHealth}. */
   listWorkerGroups?(): Promise<string[]>;
+  /**
+   * The LIVE worker handshake descriptors advertised on a routing `token` — read from the
+   * `${P}-worker-descriptor:<token>:*` keys a {@link WorkerDescriptor}-publishing worker runtime
+   * writes (design §7.2). The control-plane consults these BEFORE dispatch to route capability-aware
+   * and negotiate protocol compatibility (design §7.5): if none is capable/compatible the run parks
+   * `blocked` instead of hanging. OPTIONAL and additive — a transport that can't introspect the
+   * descriptor keyspace (in-process, or a pre-handshake broker) simply omits it, and the engine then
+   * skips the guard and dispatches as before (legacy assume-compatible, design §7.7). MUST degrade to
+   * `[]` (never throw) when the keyspace is empty or unreadable. Pairs with {@link listWorkerGroups}.
+   */
+  listWorkerDescriptors?(token: string): Promise<WorkerDescriptor[]>;
 
   // -------------------------------------------------------------------------
   // P4 — store-less read/control/start protocol (spec §6.2, §8). All OPTIONAL:
@@ -937,6 +958,14 @@ export interface StepOptions {
    * remote workers can use it as the idempotency key, so there's no separate key option.
    */
   compensate?: () => Promise<void>;
+  /**
+   * Capabilities a live worker must advertise (in its handshake descriptor) to run this step
+   * (design §7.5). The control-plane dispatches only to workers whose descriptor advertises EVERY
+   * name here; if no live capable+protocol-compatible worker exists the run parks `blocked` with a
+   * precise reason instead of dispatching into a queue nobody consumes. Absent/empty = "runs
+   * anywhere" (the backward-compatible default — no requirement). Order-insensitive (a set).
+   */
+  requires?: string[] | undefined;
 }
 
 /**
@@ -992,6 +1021,11 @@ export interface StepDispatchOpts {
   /** Liveness window for this dispatched step (ms): presume the worker dead and re-dispatch on
    *  timeout (retryable per `retries`). Omit to wait indefinitely. Overrides the `@Step` value. */
   timeoutMs?: number;
+  /** Capabilities a live worker must advertise to run this step (design §7.5). Overrides/augments the
+   *  `@Step`-declared `requires`. If no live capable+compatible worker exists the run parks `blocked`
+   *  with a precise reason rather than dispatching into a queue nobody consumes. Absent = no
+   *  requirement (runs anywhere) — the backward-compatible default. */
+  requires?: string[];
 }
 
 /** What a saga undo handler receives: the compensated step's original input and its result — the
@@ -1312,7 +1346,13 @@ export type EngineEventType =
   // A single step event (log line / sub-process outcome) emitted WHILE a step is still running, so
   // observers tail a long step's progress live instead of waiting for `step.completed` to deliver
   // the whole `events` array at once. Carries `event`; never persisted (live-tail only).
-  | 'step.progress';
+  | 'step.progress'
+  // The run parked `blocked`: no live worker advertised a capability it required (design §7.5/§7.6).
+  // Carries `error` (the human reason) + `diagnostics` (the missing-capability delta + descriptors).
+  | 'capability.unavailable'
+  // The run parked `blocked`: a capable worker existed but every live one is protocol-incompatible
+  // (no common major, design §7.4/§7.6). Carries `error` + `diagnostics` (the protocol-range delta).
+  | 'protocol.incompatible';
 
 /**
  * A lifecycle event emitted by the engine. The observability surfaces (dashboard, OTel, the
@@ -1337,6 +1377,11 @@ export interface EngineEvent {
   /** The live step event carried by a `step.progress` (the single log line / sub-process outcome a
    *  running step just emitted). Absent on lifecycle events. */
   event?: StepEvent | undefined;
+  /** The structured routing delta carried by a `capability.unavailable`/`protocol.incompatible`
+   *  diagnostics event (design §7.6): required capabilities, the live descriptors considered and the
+   *  control-plane descriptor negotiated against — enough to render WHY the run parked. Absent on all
+   *  other event types. */
+  diagnostics?: DispatchDiagnostics | undefined;
   at: Date;
 }
 
