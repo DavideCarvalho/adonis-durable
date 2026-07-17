@@ -129,6 +129,15 @@ export interface CtxHost {
   ): Promise<TOutput>;
   /** Start a child run once, deferred so it can't reentrantly resume a still-running parent. */
   startChild(workflow: string, input: unknown, id: string, priority?: number): void;
+  /**
+   * Best-effort cancel of a child run — deferred for the SAME reason as `startChild` (so ctx code
+   * can't reentrantly mutate engine state while the parent's own step is still executing
+   * synchronously). Plain cancel, no saga undo; used by `ctx.all`'s `failFast` mode to stop the
+   * surviving siblings once one has failed. Cancelling an already-terminal/cancelled run is a no-op
+   * (`engine.cancel`'s own idempotency guard), so a replay that re-issues the same calls is safe.
+   * Optional: hosts that never construct a `ctx.all` failFast call (e.g. test fakes) can omit it.
+   */
+  cancelChild?(childId: string): void;
   /** Shallow-merge `attrs` into the run's `searchAttributes` (see {@link WorkflowCtx.upsertSearchAttributes}). */
   upsertSearchAttributes(runId: string, attrs: SearchAttributes): Promise<void>;
   /** Deliver an op to a durable entity (deferred), optionally with a `reply` token for the result. */
@@ -390,6 +399,33 @@ export function createWorkflowCtx(
     return null;
   };
 
+  // Durably stamp the deadline for a BOUNDED wait, ONCE: the first run computes `clock() + timeoutMs`
+  // and records it as a timer checkpoint at `deadlineSeq`; every later replay reads the SAME recorded
+  // `wakeAt` back instead of recomputing it — so a slow replay (or a clock that moved between the
+  // original run and the replay) can never shift an already-scheduled deadline. `label` only affects
+  // the checkpoint's `name` (cosmetic, for the dashboard timeline) — the shared mechanic behind every
+  // bounded-wait primitive (`waitForSignal`, `waitForEvent`, `DurableWebhook.wait`).
+  const stampDeadline = async (
+    deadlineSeq: number,
+    label: string,
+    timeoutMs: number,
+  ): Promise<number> => {
+    const recorded = await readCheckpoint(deadlineSeq);
+    const deadline = recorded?.wakeAt ?? host.clock() + timeoutMs;
+    if (!recorded) {
+      await writeCheckpoint(
+        instantCheckpoint({
+          runId,
+          seq: deadlineSeq,
+          name: `timeout:${label}`,
+          kind: 'sleep',
+          wakeAt: deadline,
+        }),
+      );
+    }
+    return deadline;
+  };
+
   const waitForSignal = async <T>(token: string, opts?: { timeoutMs?: number }): Promise<T> => {
     if (opts?.timeoutMs == null) {
       const current = pos.next();
@@ -422,21 +458,9 @@ export function createWorkflowCtx(
     const timeoutMs = opts.timeoutMs;
     const deadlineSeq = pos.next();
     const waitSeq = pos.next();
-    // The deadline is recorded durably as a timer checkpoint so replay knows it; the run also gets a
-    // run-level wakeAt (via WorkflowSuspended) so the timer poller resumes it at the deadline.
-    const recorded = await readCheckpoint(deadlineSeq);
-    const deadline = recorded?.wakeAt ?? host.clock() + timeoutMs;
-    if (!recorded) {
-      await writeCheckpoint(
-        instantCheckpoint({
-          runId,
-          seq: deadlineSeq,
-          name: `timeout:${token}`,
-          kind: 'sleep',
-          wakeAt: deadline,
-        }),
-      );
-    }
+    // The run also gets a run-level wakeAt (via WorkflowSuspended) so the timer poller resumes it at
+    // the deadline.
+    const deadline = await stampDeadline(deadlineSeq, token, timeoutMs);
     const waited = await readCheckpoint(waitSeq);
     if (waited && waited.status === 'completed') return waited.output as T;
     const buffered = await consumeBuffered<T>(token, waitSeq);
@@ -491,19 +515,7 @@ export function createWorkflowCtx(
     const deadlineSeq = pos.next();
     const waitSeq = pos.next();
     const token = eventToken(name, opts.match, runId, waitSeq);
-    const recorded = await readCheckpoint(deadlineSeq);
-    const deadline = recorded?.wakeAt ?? host.clock() + timeoutMs;
-    if (!recorded) {
-      await writeCheckpoint(
-        instantCheckpoint({
-          runId,
-          seq: deadlineSeq,
-          name: `timeout:event:${name}`,
-          kind: 'sleep',
-          wakeAt: deadline,
-        }),
-      );
-    }
+    const deadline = await stampDeadline(deadlineSeq, `event:${name}`, timeoutMs);
     const waited = await readCheckpoint(waitSeq);
     if (waited && waited.status === 'completed') return waited.output as T;
     if (host.clock() >= deadline) {
@@ -613,6 +625,15 @@ export function createWorkflowCtx(
         const c =
           cp?.status === 'completed' ? (cp.output as { ok?: boolean; error?: string }) : null;
         if (c && c.ok === false) {
+          // Cancel every sibling that hasn't completed yet — plain cancel, no saga undo. Best-effort:
+          // a sibling mid-step only observes the cancellation at its NEXT checkpoint (it isn't
+          // force-killed mid-synchronous-execution), so a fast-enough sibling can still slip through
+          // and complete before it notices. `cancelChild` is deferred (like `startChild`), and
+          // cancelling an already-terminal/cancelled run is a no-op, so replaying this branch after a
+          // resume (which re-executes this loop and re-issues the same cancels) is safe.
+          for (let j = 0; j < inputs.length; j += 1) {
+            if (j !== i && existing[j]?.status !== 'completed') host.cancelChild?.(id(j));
+          }
           throw new GatherError(
             [{ index: i, id: id(i), error: c.error ?? 'unknown' }],
             inputs.length,
@@ -788,15 +809,35 @@ export function createWorkflowCtx(
 
   // A durable webhook reserves a logical position NOW to mint a stable token, so the url can be
   // handed to a third party before `wait()` suspends. `wait()` then parks on that same position
-  // until the callback lands as engine.signal(token, body) — single position, replay-safe.
+  // until the callback lands as engine.signal(token, body) — single position, replay-safe. The
+  // deadline (when `wait({ timeoutMs })` is used) is a SEPARATE, later position — reserved lazily by
+  // `wait()` itself, not at mint time, since the mint site has no `opts` to know a timeout was
+  // requested. That's fine: `wait()` runs in the same deterministic order on every replay, so the
+  // deadline seq it claims is stable too.
   const webhook = <T>(): DurableWebhook<T> => {
     const current = pos.next();
     const token = `wh:${runId}:${current}`;
-    const wait = async (): Promise<T> => {
+    const wait = async (opts?: { timeoutMs?: number }): Promise<T> => {
+      // A bounded wait claims its deadline position UNCONDITIONALLY, before the completed-replay
+      // early return: the same `wait({ timeoutMs })` call re-runs on every replay, so the position
+      // walk must be identical whether the callback has landed yet or not. (Claiming it lazily after
+      // the early return would shift every later primitive by one on the post-callback replay and
+      // trip the NonDeterminism guard on the stamped `timeout:*` checkpoint.)
+      const timeoutMs = opts?.timeoutMs;
+      const deadlineSeq = timeoutMs == null ? -1 : pos.next();
       const existing = await readCheckpoint(current);
       if (existing && existing.status === 'completed') return existing.output as T;
+      if (timeoutMs == null) {
+        await store.putSignalWaiter({ token, runId, seq: current });
+        throw new WorkflowSuspended();
+      }
+      const deadline = await stampDeadline(deadlineSeq, token, timeoutMs);
+      if (host.clock() >= deadline) {
+        await store.takeSignalWaiter(token).catch(() => undefined);
+        throw new SignalTimeoutError(token, timeoutMs);
+      }
       await store.putSignalWaiter({ token, runId, seq: current });
-      throw new WorkflowSuspended();
+      throw new WorkflowSuspended(deadline);
     };
     return { token, url: host.webhookUrl?.(token), wait };
   };

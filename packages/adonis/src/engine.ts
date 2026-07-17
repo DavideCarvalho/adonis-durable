@@ -2486,6 +2486,12 @@ export class WorkflowEngine {
       startChild: (workflow, input, id, priority) => {
         this.startChildDeferred(workflow, input, id, { priority });
       },
+      // Deferred for the same reentrancy reason as `startChild` above. `cancel()` is already
+      // idempotent on a terminal/cancelled run (returns its existing status without side effects), so
+      // no extra guard is needed here for the failFast replay case (re-issuing the same cancel calls).
+      cancelChild: (childId) => {
+        queueMicrotask(() => void this.cancel(childId).catch(() => undefined));
+      },
       // Shallow-merge into the run's searchAttributes (the ctx primitive makes this exactly-once).
       upsertSearchAttributes: async (runId, attrs) => {
         const run = await this.store.getRun(runId);

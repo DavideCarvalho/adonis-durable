@@ -902,8 +902,14 @@ export interface DurableWebhook<TPayload = unknown> {
    * build your own).
    */
   readonly url?: string | undefined;
-  /** Suspend until the callback arrives, then resume with its payload. */
-  wait(): Promise<TPayload>;
+  /**
+   * Suspend until the callback arrives, then resume with its payload. Waits indefinitely by default —
+   * no compute consumed. Pass `{ timeoutMs }` to bound the wait: if the deadline passes first the call
+   * throws a `SignalTimeoutError` (catch it in the workflow to branch) — same timeout semantics as
+   * {@link WorkflowCtx.waitForSignal}. The deadline is computed once (on the first call) and persisted,
+   * so a replay reuses the recorded deadline rather than recomputing it from the current clock.
+   */
+  wait(opts?: { timeoutMs?: number }): Promise<TPayload>;
 }
 
 /**
@@ -1071,9 +1077,12 @@ export interface WorkflowCtx {
    * placeholders share a `parallelGroup` tag so the dashboard renders the fan-out as one group.
    *
    * `mode` (default `waitAll`): `waitAll` waits for all then throws an aggregate {@link GatherError}
-   * if any failed; `failFast` throws as soon as a failed child is seen (siblings are not cancelled in
-   * v1 — their eventual results are ignored). Empty `inputs` returns `[]` with no side effects. The
-   * wait-all / fan-out counterpart to {@link child}; parity with the Python SDK's `gather_children`.
+   * if any failed; `failFast` throws as soon as a failed child is seen, and requests cancellation of
+   * every sibling that hasn't completed yet (best-effort, plain cancel — no saga undo; a sibling
+   * mid-step only observes it at its next checkpoint, it isn't force-killed mid-synchronous-execution,
+   * so a fast sibling can still slip through and complete). Empty `inputs` returns `[]` with no side
+   * effects. The wait-all / fan-out counterpart to {@link child}; parity with the Python SDK's
+   * `gather_children`.
    */
   all<C extends WorkflowClass>(
     workflow: C,
