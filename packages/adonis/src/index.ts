@@ -126,3 +126,4 @@ export { signTenantToken, hmacTenantVerifier } from './run-gateway/tenant-auth.j
 export * from './handshake/descriptor.js';
 export * from './handshake/negotiate.js';
 export * from './handshake/routing.js';
+export * from './dispatch-routing.js';

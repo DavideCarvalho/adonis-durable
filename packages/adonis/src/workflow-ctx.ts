@@ -56,6 +56,8 @@ function resolveStepPolicy(
   if (jitter !== undefined) policy.jitter = jitter;
   const timeoutMs = opts?.timeoutMs ?? config?.timeoutMs;
   if (timeoutMs !== undefined) policy.timeoutMs = timeoutMs;
+  const requires = opts?.requires ?? config?.requires;
+  if (requires !== undefined) policy.requires = requires;
   return policy;
 }
 

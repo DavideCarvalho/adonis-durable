@@ -45,6 +45,10 @@ export interface StepDecoratorOptions {
   jitter?: boolean;
   /** Liveness window for the dispatched step (ms): presume the worker dead and re-dispatch on timeout. */
   timeoutMs?: number;
+  /** Capabilities a live worker must advertise to run this step (design §7.5). The control-plane
+   *  routes only to workers whose handshake descriptor advertises every name here; if none is live +
+   *  protocol-compatible the run parks `blocked` with a precise reason. Absent/empty = runs anywhere. */
+  requires?: string[];
 }
 
 /** Build the {@link StepConfig} to stamp from options — omitting every unset field, so a bare
@@ -58,6 +62,7 @@ function stepConfigFrom(options: StepDecoratorOptions): StepConfig | undefined {
   if (options.backoffMaxMs !== undefined) config.backoffMaxMs = options.backoffMaxMs;
   if (options.jitter !== undefined) config.jitter = options.jitter;
   if (options.timeoutMs !== undefined) config.timeoutMs = options.timeoutMs;
+  if (options.requires !== undefined) config.requires = options.requires;
   return Object.keys(config).length > 0 ? config : undefined;
 }
 

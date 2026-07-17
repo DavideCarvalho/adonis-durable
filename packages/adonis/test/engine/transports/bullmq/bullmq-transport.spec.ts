@@ -307,6 +307,36 @@ describe('BullMQTransport', () => {
       expect(health.depth).toBe(6);
       expect(health.liveWorkers.map((w) => w.instanceId)).toEqual(['ts-box-1']);
     });
+
+    it('listWorkerDescriptors SCANs the `${P}-worker-descriptor:<token>:*` keys and parses each', async () => {
+      const d1 = {
+        instanceId: 'w1',
+        runtime: 'node',
+        sdk: { name: 'x', version: '1' },
+        protocol: { version: 1, range: [1, 1] },
+        capabilities: ['saga'],
+        workflows: [],
+        steps: ['proc'],
+        startedAt: 1,
+      };
+      const d2 = { ...d1, instanceId: 'w2', capabilities: ['saga', 'signals'] };
+      broker.redis.store.set('durable-worker-descriptor:proc:w1', JSON.stringify(d1));
+      broker.redis.store.set('durable-worker-descriptor:proc:w2', JSON.stringify(d2));
+      // A descriptor on a DIFFERENT token must not leak into this token's read.
+      broker.redis.store.set('durable-worker-descriptor:other:w3', JSON.stringify(d1));
+
+      const descriptors = await transport.listWorkerDescriptors('proc');
+      expect(descriptors.map((d) => d.instanceId).sort()).toEqual(['w1', 'w2']);
+      expect(descriptors.find((d) => d.instanceId === 'w2')?.capabilities).toEqual([
+        'saga',
+        'signals',
+      ]);
+    });
+
+    it('listWorkerDescriptors degrades to [] and never throws on a malformed value', async () => {
+      broker.redis.store.set('durable-worker-descriptor:proc:bad', '{not json');
+      expect(await transport.listWorkerDescriptors('proc')).toEqual([]);
+    });
   });
 
   describe('namespace folding', () => {

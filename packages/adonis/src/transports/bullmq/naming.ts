@@ -104,3 +104,14 @@ export function workerHeartbeatKeyPrefix(effPrefix: string): string {
 export function workerHeartbeatKey(effPrefix: string, token: string, instanceId: string): string {
   return `${workerHeartbeatKeyPrefix(effPrefix)}${token}:${instanceId}`;
 }
+
+/**
+ * Prefix of every full-descriptor key on a routing `token`: `${P}-worker-descriptor:${token}:` —
+ * used to SCAN the live {@link import('../../handshake/descriptor.js').WorkerDescriptor}s a worker
+ * runtime publishes per token (design §7.2). BYTE-IDENTICAL to the worker-runtime's `workerDescriptorKey`
+ * layout (`${P}-worker-descriptor:<token>:<instance>`), computed here too so the transport reads the
+ * descriptor keyspace without reaching into the worker subpath.
+ */
+export function workerDescriptorTokenPrefix(effPrefix: string, token: string): string {
+  return `${effPrefix}-worker-descriptor:${token}:`;
+}

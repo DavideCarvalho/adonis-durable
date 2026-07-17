@@ -1,3 +1,4 @@
+import type { WorkerDescriptor } from '../../handshake/descriptor.js';
 import type {
   GroupHealth,
   Heartbeat,
@@ -27,6 +28,7 @@ import {
   stepEventsName,
   tasksName,
   tenantEventsChannel,
+  workerDescriptorTokenPrefix,
   workerHeartbeatKey,
   workerHeartbeatKeyPrefix,
 } from './naming.js';
@@ -371,6 +373,39 @@ export class BullMQTransport implements Transport {
       }
     } while (cursor !== '0');
     return [...groups];
+  }
+
+  /** The LIVE worker descriptors advertised on `token` — SCAN the `${P}-worker-descriptor:<token>:*`
+   *  keys a worker runtime publishes (design §7.2), GET + parse each. Degrades gracefully to `[]`: a
+   *  missing/unreadable/malformed key is skipped (never throws), so a broker without descriptor
+   *  advertisement (or a scan that races a key's expiry) reads as "no descriptors" and the control-plane
+   *  falls back to legacy assume-compatible dispatch. Never uses KEYS (it blocks Redis). */
+  async listWorkerDescriptors(token: string): Promise<WorkerDescriptor[]> {
+    const client = this.#workerRedisClient();
+    const prefix = workerDescriptorTokenPrefix(this.#effectivePrefix(), token);
+    const descriptors: WorkerDescriptor[] = [];
+    try {
+      let cursor = '0';
+      do {
+        const [next, keys] = await client.scan(cursor, 'MATCH', `${prefix}*`, 'COUNT', 100);
+        cursor = next;
+        for (const key of keys) {
+          const raw = await client.get(key);
+          if (raw == null) continue; // expired between SCAN and GET — just skip it
+          try {
+            descriptors.push(JSON.parse(raw) as WorkerDescriptor);
+          } catch {
+            /* a malformed descriptor value never blocks routing — treat it as absent */
+          }
+        }
+      } while (cursor !== '0');
+    } catch (err) {
+      // A backend that can't SCAN/GET the descriptor keyspace degrades to "no descriptors" — the
+      // engine then dispatches legacy assume-compatible rather than parking every run.
+      this.#onError(err);
+      return [];
+    }
+    return descriptors;
   }
 
   /** Per-group worker-health: queue depth (waiting+active+delayed+prioritized) + live workers (their
