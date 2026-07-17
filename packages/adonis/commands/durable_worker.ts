@@ -2,6 +2,7 @@ import { BaseCommand } from '@adonisjs/core/ace';
 import type { CommandOptions } from '@adonisjs/core/types/ace';
 import type { DurableConfig } from '../src/define_config.js';
 import type { ControlPlane, Transport } from '../src/interfaces.js';
+import { DURABLE_WORKER_RUNTIME } from '../src/role_bindings.js';
 import { InMemoryTransport } from '../src/testing/in-memory-transport.js';
 import { NoopWorkerRegistry } from '../src/worker-runtime/index.js';
 import { registerStepsFromDir } from '../src/worker-runtime/index.js';
@@ -11,18 +12,17 @@ import { discoverWorkflows } from '../src/workflow-discovery.js';
 /**
  * `node ace durable:worker` — the **store-less** task-consumer loop for a `role: 'tenant'` worker pod
  * (design §3). Distinct from `durable:work` (the store-backed dispatch/recovery/timers loop, which
- * this command deliberately does NOT clobber): a store-less worker owns no durable state — it builds a
- * transport from `config/durable.ts`, registers `app/steps` (and advertises `app/workflows` names) on a
- * {@link WorkerRuntime}, then consumes `${P}-tasks-<token>` tasks (executed through the shared
- * `runStepHandler`, results published) and advertises its {@link import('../src/handshake/descriptor.js').WorkerDescriptor}
- * + heartbeat. Stays alive until SIGINT/SIGTERM, then drains.
+ * this command deliberately does NOT clobber): a store-less worker owns no durable state — it consumes
+ * `${P}-tasks-<token>` tasks (executed through the shared `runStepHandler`, results published) and
+ * advertises its {@link import('../src/handshake/descriptor.js').WorkerDescriptor} + heartbeat. Stays
+ * alive until SIGINT/SIGTERM, then drains.
  *
- * NOTE for the integrator (wave-3 provider branch): this command constructs its own transport +
- * runtime from config so it works standalone today. Once the provider grows a `role: 'tenant'` branch
- * that (a) does NOT build a store-backed `WorkflowEngine` and (b) binds a ready `WorkerRuntime` (with a
- * `RedisWorkerRegistry` keyed off the tenant transport's Redis connection), prefer resolving that bound
- * runtime here. Until then descriptor advertising uses {@link NoopWorkerRegistry} unless a registry is
- * wired — see the TODO below.
+ * On a `role: 'tenant'` pod it resolves the **container-bound {@link WorkerRuntime}** the provider wired
+ * (design §5): that runtime shares the tenant transport with the `ProxyRunGateway` and carries a
+ * `RedisWorkerRegistry` built from the transport's Redis connection, so descriptor + heartbeat are
+ * actually published on the shared Redis. Only when no bound runtime exists (a non-tenant role, or a
+ * misconfigured pod) does it fall back to building a self-contained runtime from `config/durable.ts`
+ * with a {@link NoopWorkerRegistry} (advertising is then a no-op).
  */
 export default class DurableWorker extends BaseCommand {
   static override commandName = 'durable:worker';
@@ -38,31 +38,7 @@ export default class DurableWorker extends BaseCommand {
       );
     }
 
-    const transport = await this.#resolveTransport(config);
-    if (typeof (transport as Partial<WorkerTransport>).handle !== 'function') {
-      throw new Error(
-        `@agora/durable: the selected transport ("${config.transport ?? 'memory'}") cannot serve handlers (no handle()), so a store-less worker has nothing to consume.`,
-      );
-    }
-    transport.useNamespace?.(config.namespace ?? 'default');
-
-    const partition = (config as { partition?: string }).partition ?? config.namespace ?? 'default';
-
-    // TODO(integrator): pass a `RedisWorkerRegistry` (built from the same connection the tenant
-    // transport uses) so the descriptor + heartbeat are actually published on the shared Redis. Until
-    // the wave-3 tenant provider branch exposes that connection, advertising is a no-op.
-    const runtime = new WorkerRuntime({
-      transport: transport as WorkerTransport,
-      partition,
-      ...(config.namespace !== undefined ? { namespace: config.namespace } : {}),
-      ...(config.instanceId !== undefined ? { instanceId: config.instanceId } : {}),
-      ...((config as { capabilities?: string[] }).capabilities !== undefined
-        ? { capabilities: (config as { capabilities?: string[] }).capabilities }
-        : {}),
-      registry: new NoopWorkerRegistry(),
-      logger: { info: (m) => this.logger.info(m), error: (m) => this.logger.error(m) },
-      onError: (err) => this.logger.error(`worker-runtime advertisement error: ${String(err)}`),
-    });
+    const { runtime, partition } = await this.#resolveRuntime(config);
 
     // Register `app/steps` (served by the transport) + advertise `app/workflows` names.
     if (config.stepsPath !== false) {
@@ -100,6 +76,54 @@ export default class DurableWorker extends BaseCommand {
     process.off('SIGINT', onSignal);
     process.off('SIGTERM', onSignal);
     await this.terminate();
+  }
+
+  /**
+   * Prefer the provider-bound {@link WorkerRuntime} (the `role: 'tenant'` branch of `durable_provider`):
+   * it shares the tenant transport with the `ProxyRunGateway` and advertises through a real
+   * `RedisWorkerRegistry`. Fall back to a self-built runtime (a {@link NoopWorkerRegistry}) only when the
+   * container has no bound runtime — a non-tenant role, or a pod running this command by mistake.
+   */
+  async #resolveRuntime(
+    config: DurableConfig,
+  ): Promise<{ runtime: WorkerRuntime; partition: string }> {
+    if (this.app.container.hasBinding(DURABLE_WORKER_RUNTIME)) {
+      const runtime = await this.app.container.make(DURABLE_WORKER_RUNTIME);
+      const partition =
+        (config as { partition?: string }).partition ?? config.namespace ?? 'default';
+      return { runtime, partition };
+    }
+    return this.#buildFallbackRuntime(config);
+  }
+
+  /** Build a self-contained runtime from `config/durable.ts` (no bound runtime available). Advertising is
+   *  a no-op ({@link NoopWorkerRegistry}) — the descriptor is still built + observable, just unpublished. */
+  async #buildFallbackRuntime(
+    config: DurableConfig,
+  ): Promise<{ runtime: WorkerRuntime; partition: string }> {
+    const transport = await this.#resolveTransport(config);
+    if (typeof (transport as Partial<WorkerTransport>).handle !== 'function') {
+      throw new Error(
+        `@agora/durable: the selected transport ("${config.transport ?? 'memory'}") cannot serve handlers (no handle()), so a store-less worker has nothing to consume.`,
+      );
+    }
+    transport.useNamespace?.(config.namespace ?? 'default');
+
+    const partition = (config as { partition?: string }).partition ?? config.namespace ?? 'default';
+
+    const runtime = new WorkerRuntime({
+      transport: transport as WorkerTransport,
+      partition,
+      ...(config.namespace !== undefined ? { namespace: config.namespace } : {}),
+      ...(config.instanceId !== undefined ? { instanceId: config.instanceId } : {}),
+      ...((config as { capabilities?: string[] }).capabilities !== undefined
+        ? { capabilities: (config as { capabilities?: string[] }).capabilities }
+        : {}),
+      registry: new NoopWorkerRegistry(),
+      logger: { info: (m) => this.logger.info(m), error: (m) => this.logger.error(m) },
+      onError: (err) => this.logger.error(`worker-runtime advertisement error: ${String(err)}`),
+    });
+    return { runtime, partition };
   }
 
   /** Build the transport from `config/durable.ts` — the same resolution the provider uses, so the
