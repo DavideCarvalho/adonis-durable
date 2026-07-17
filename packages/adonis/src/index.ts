@@ -110,6 +110,17 @@ export {
   type RunGatewayEngine,
   type StoreRunGatewayOptions,
 } from './run-gateway/store-run-gateway.js';
+export {
+  ProxyRunGateway,
+  type ProxyTransport,
+  type ProxyRunGatewayOptions,
+} from './run-gateway/proxy-run-gateway.js';
+export {
+  RunRequestResponder,
+  type ResponderTransport,
+  type RunRequestResponderOptions,
+} from './run-gateway/run-request-responder.js';
+export { signTenantToken, hmacTenantVerifier } from './run-gateway/tenant-auth.js';
 
 // --- store-less cluster: handshake & capability negotiation -----------------
 export * from './handshake/descriptor.js';
