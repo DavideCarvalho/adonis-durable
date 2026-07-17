@@ -1,0 +1,334 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Heartbeat, RemoteTask, StepResult } from '../../../../src/interfaces.js';
+import { BullMQTransport } from '../../../../src/transports/bullmq/bullmq-transport.js';
+import type {
+  BullMQDeps,
+  JobLike,
+  ProcessFn,
+  QueueLike,
+  RedisLike,
+  WorkerLike,
+} from '../../../../src/transports/bullmq/deps.js';
+
+// ---------------------------------------------------------------------------
+// In-memory fake broker — proves naming + job shape + the heartbeat registry with no Redis.
+// ---------------------------------------------------------------------------
+
+interface AddCall {
+  name: string;
+  data: unknown;
+  opts: unknown;
+}
+class FakeQueue implements QueueLike {
+  adds: AddCall[] = [];
+  counts: Record<string, number> = {};
+  closed = false;
+  constructor(readonly name: string) {}
+  async add(name: string, data: unknown, opts?: unknown): Promise<unknown> {
+    this.adds.push({ name, data, opts });
+    return { id: `${this.adds.length}` };
+  }
+  async getJobCounts(...types: string[]): Promise<Record<string, number>> {
+    return Object.fromEntries(types.map((t) => [t, this.counts[t] ?? 0]));
+  }
+  async close(): Promise<unknown> {
+    this.closed = true;
+    return undefined;
+  }
+}
+
+class FakeWorker implements WorkerLike {
+  failedListener?: (job: JobLike | undefined, err: Error) => void;
+  closed = false;
+  constructor(
+    readonly name: string,
+    readonly process: ProcessFn,
+  ) {}
+  on(_event: 'failed', listener: (job: JobLike | undefined, err: Error) => void): unknown {
+    this.failedListener = listener;
+    return this;
+  }
+  async close(): Promise<unknown> {
+    this.closed = true;
+    return undefined;
+  }
+}
+
+interface SetCall {
+  key: string;
+  value: string;
+  mode: string;
+  ttl: number;
+}
+class FakeRedis implements RedisLike {
+  store = new Map<string, string>();
+  setCalls: SetCall[] = [];
+  subscribed: string[] = [];
+  disconnected = 0;
+  messageListeners: Array<(channel: string, payload: string) => void> = [];
+  async publish(channel: string, message: string): Promise<unknown> {
+    for (const l of this.messageListeners) l(channel, message);
+    return 1;
+  }
+  async subscribe(channel: string): Promise<unknown> {
+    this.subscribed.push(channel);
+    return 1;
+  }
+  on(event: string, listener: (...args: never[]) => void): unknown {
+    if (event === 'message') {
+      this.messageListeners.push(listener as unknown as (c: string, p: string) => void);
+    }
+    return this;
+  }
+  async set(key: string, value: string, mode: 'EX', ttl: number): Promise<unknown> {
+    this.setCalls.push({ key, value, mode, ttl });
+    this.store.set(key, value);
+    return 'OK';
+  }
+  async scan(cursor: string | number, ...args: (string | number)[]): Promise<[string, string[]]> {
+    // args = ['MATCH', pattern, 'COUNT', n]
+    const pattern = String(args[1] ?? '*');
+    const prefix = pattern.endsWith('*') ? pattern.slice(0, -1) : pattern;
+    const keys = [...this.store.keys()].filter((k) => k.startsWith(prefix));
+    return ['0', keys];
+  }
+  async get(key: string): Promise<string | null> {
+    return this.store.get(key) ?? null;
+  }
+  disconnect(): void {
+    this.disconnected += 1;
+  }
+}
+
+class FakeBroker implements BullMQDeps {
+  queues = new Map<string, FakeQueue>();
+  workers = new Map<string, FakeWorker>();
+  redis = new FakeRedis();
+  makeQueue(name: string): QueueLike {
+    let q = this.queues.get(name);
+    if (!q) {
+      q = new FakeQueue(name);
+      this.queues.set(name, q);
+    }
+    return q;
+  }
+  makeWorker(name: string, process: ProcessFn): WorkerLike {
+    const w = new FakeWorker(name, process);
+    this.workers.set(name, w);
+    return w;
+  }
+  makeRedis(): RedisLike {
+    return this.redis; // shared, so pub/sub + heartbeat keys connect in-memory
+  }
+}
+
+const task = (over: Partial<RemoteTask> = {}): RemoteTask => ({
+  runId: 'r1',
+  seq: 2,
+  name: 'payments.charge',
+  stepId: 'r1:2',
+  group: 'payments.charge',
+  input: { amount: 100 },
+  attempt: 0,
+  ...over,
+});
+
+describe('BullMQTransport', () => {
+  let broker: FakeBroker;
+  let transport: BullMQTransport;
+
+  beforeEach(() => {
+    broker = new FakeBroker();
+    transport = new BullMQTransport({ deps: broker, instanceId: 'ts-box-1' });
+  });
+
+  describe('dispatch (engine → worker)', () => {
+    it('adds a `task` job to `durable-tasks-<group>` with the raw DTO (no envelope) + task opts', async () => {
+      await transport.dispatch(task({ group: 'payments.charge', priority: 5 }));
+      const q = broker.queues.get('durable-tasks-payments.charge');
+      expect(q).toBeDefined();
+      expect(q?.adds).toHaveLength(1);
+      const add = q!.adds[0]!;
+      expect(add.name).toBe('task');
+      expect(add.data).toEqual(task({ group: 'payments.charge', priority: 5 }));
+      expect(add.opts).toEqual({
+        removeOnComplete: true,
+        removeOnFail: { age: 86_400 },
+        priority: 1_048_571,
+      });
+    });
+
+    it('targets the FINAL routing token carried on task.group (tenant-suffixed queue)', async () => {
+      await transport.dispatch(task({ group: 'payments.charge@acme' }));
+      expect(broker.queues.has('durable-tasks-payments.charge@acme')).toBe(true);
+    });
+
+    it('dispatchWorkflowTask adds a `workflow` job with the non-task opts', async () => {
+      await transport.dispatchWorkflowTask({
+        taskId: 't1',
+        runId: 'r1',
+        workflow: 'checkout',
+        workflowVersion: '1.0.0',
+        input: {},
+        history: [],
+        group: 'checkout',
+        attempt: 0,
+      });
+      const add = broker.queues.get('durable-tasks-checkout')?.adds[0];
+      expect(add?.name).toBe('workflow');
+      expect(add?.opts).toEqual({ removeOnComplete: true, removeOnFail: true });
+    });
+  });
+
+  describe('worker → engine consumers', () => {
+    it('onResult starts a worker on `durable-results` that hands job.data to the handler', async () => {
+      const handler = vi.fn(async () => {});
+      transport.onResult(handler);
+      const w = broker.workers.get('durable-results');
+      expect(w).toBeDefined();
+      const result: StepResult = { runId: 'r1', seq: 2, stepId: 'r1:2', status: 'completed' };
+      await w!.process({ data: result });
+      expect(handler).toHaveBeenCalledWith(result);
+    });
+
+    it('onDecision consumes `durable-decisions`; onStepEvent consumes `durable-step-events`', async () => {
+      transport.onDecision(async () => {});
+      transport.onStepEvent(async () => {});
+      expect(broker.workers.has('durable-decisions')).toBe(true);
+      expect(broker.workers.has('durable-step-events')).toBe(true);
+    });
+
+    it('dispatchStepEvent adds a `stepEvent` job with non-task opts', async () => {
+      await transport.dispatchStepEvent({
+        runId: 'r1',
+        seq: 2,
+        name: 'x',
+        phase: 'running',
+        startedAt: 1,
+      });
+      const add = broker.queues.get('durable-step-events')?.adds[0];
+      expect(add?.name).toBe('stepEvent');
+      expect(add?.opts).toEqual({ removeOnComplete: true, removeOnFail: true });
+    });
+  });
+
+  describe('handle (worker side)', () => {
+    it("starts a dedicated task worker on the name's routing-token queue", () => {
+      transport.handle('extraction:page', async () => 'ok');
+      // ':' sanitized to '-'
+      expect(broker.workers.has('durable-tasks-extraction-page')).toBe(true);
+    });
+
+    it('runs the handler and adds a completed StepResult to `durable-results`', async () => {
+      transport.handle('payments.charge', async (input) => ({ ok: input }));
+      const w = broker.workers.get('durable-tasks-payments.charge')!;
+      await w.process({ data: task() });
+      const add = broker.queues.get('durable-results')?.adds[0];
+      expect(add?.name).toBe('result');
+      const result = add?.data as StepResult;
+      expect(result.status).toBe('completed');
+      expect(result.output).toEqual({ ok: { amount: 100 } });
+      expect(result.runId).toBe('r1');
+      expect(result.seq).toBe(2);
+      expect(result.stepId).toBe('r1:2');
+    });
+
+    it("stamps a TTL'd worker-liveness key immediately: SET durable-worker-heartbeat:<token>:<instance> EX 35", () => {
+      transport.handle('proc', async () => {});
+      const call = broker.redis.setCalls.at(-1);
+      expect(call?.key).toBe('durable-worker-heartbeat:proc:ts-box-1');
+      expect(call?.mode).toBe('EX');
+      expect(call?.ttl).toBe(35);
+      expect(JSON.parse(call!.value)).toMatchObject({ ts: expect.any(Number) });
+    });
+  });
+
+  describe('terminal-failure bridge', () => {
+    it('publishes a RETRYABLE failed StepResult when a task job reaches terminal `failed`', async () => {
+      transport.handle('proc', async () => {});
+      const w = broker.workers.get('durable-tasks-proc')!;
+      w.failedListener?.({ data: task(), failedReason: 'stalled' }, new Error('boom'));
+      await Promise.resolve();
+      const add = broker.queues.get('durable-results')?.adds.at(-1);
+      const result = add?.data as StepResult;
+      expect(result.status).toBe('failed');
+      expect(result.error?.retryable).toBe(true);
+      expect(result.error?.message).toContain('stalled');
+      // correlation only — no `name` invented
+      expect(result).not.toHaveProperty('name');
+    });
+
+    it("no-ops when the failed job payload was GC'd/malformed (nothing safe to publish)", async () => {
+      transport.handle('proc', async () => {});
+      const w = broker.workers.get('durable-tasks-proc')!;
+      w.failedListener?.(undefined, new Error('boom'));
+      await Promise.resolve();
+      expect(broker.queues.get('durable-results')?.adds ?? []).toHaveLength(0);
+    });
+  });
+
+  describe('long-step heartbeat pub/sub', () => {
+    it('heartbeat() publishes JSON on `durable-heartbeat`; onHeartbeat receives it', async () => {
+      const received: Heartbeat[] = [];
+      transport.onHeartbeat(async (b) => {
+        received.push(b);
+      });
+      expect(broker.redis.subscribed).toContain('durable-heartbeat');
+      const beat: Heartbeat = { runId: 'r1', seq: 2, stepId: 'r1:2', group: 'proc' };
+      await transport.heartbeat(beat);
+      await Promise.resolve();
+      expect(received).toEqual([beat]);
+    });
+  });
+
+  describe('worker-health registry', () => {
+    it('listWorkerGroups discovers distinct tokens from the heartbeat keyspace', async () => {
+      transport.handle('proc', async () => {});
+      transport.handle('extraction:page', async () => {});
+      expect(await transport.listWorkerGroups()).toEqual(
+        expect.arrayContaining(['proc', 'extraction-page']),
+      );
+    });
+
+    it('groupHealth sums queue depth + lists live workers from the keyspace', async () => {
+      transport.handle('proc', async () => {});
+      const q = broker.makeQueue('durable-tasks-proc') as FakeQueue;
+      q.counts = { waiting: 2, active: 1, delayed: 0, prioritized: 3 };
+      const health = await transport.groupHealth('proc');
+      expect(health.group).toBe('proc');
+      expect(health.depth).toBe(6);
+      expect(health.liveWorkers.map((w) => w.instanceId)).toEqual(['ts-box-1']);
+    });
+  });
+
+  describe('namespace folding', () => {
+    it('useNamespace segments every name; an explicit constructor namespace wins', async () => {
+      const t = new BullMQTransport({ deps: broker, instanceId: 'i', namespace: 'explicit' });
+      t.useNamespace('ignored');
+      await t.dispatch(task({ group: 'g' }));
+      expect(broker.queues.has('durable-explicit-tasks-g')).toBe(true);
+    });
+
+    it('useNamespace applies when no explicit namespace was set', async () => {
+      await transport.dispatch(task({ group: 'g' })); // no ns
+      transport.useNamespace('ns1');
+      await transport.dispatch(task({ group: 'g2' }));
+      expect(broker.queues.has('durable-tasks-g')).toBe(true);
+      expect(broker.queues.has('durable-ns1-tasks-g2')).toBe(true);
+    });
+  });
+
+  describe('close', () => {
+    it('closes workers/queues and disconnects the redis client', async () => {
+      transport.handle('proc', async () => {});
+      transport.onResult(async () => {});
+      transport.onHeartbeat(async () => {});
+      await transport.dispatch(task({ group: 'proc' }));
+      await transport.close();
+      expect(broker.workers.get('durable-tasks-proc')?.closed).toBe(true);
+      expect(broker.workers.get('durable-results')?.closed).toBe(true);
+      expect(broker.queues.get('durable-tasks-proc')?.closed).toBe(true);
+      expect(broker.redis.disconnected).toBeGreaterThan(0);
+    });
+  });
+});

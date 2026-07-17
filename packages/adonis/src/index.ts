@@ -52,6 +52,7 @@ export type {
   MemoryTransportConfig,
   EventEmitterTransportConfig,
   QueueTransportConfig,
+  BullMQTransportConfig,
   DbTransportConfig,
 } from './transports/factory.js';
 export {
@@ -60,6 +61,12 @@ export {
 } from './transports/event-emitter.js';
 export { QueueTransport, type QueueTransportOptions } from './transports/queue.js';
 export { DbTransport, type DbTransportOptions } from './transports/db.js';
+export {
+  BullMQTransport,
+  type BullMQTransportOptions,
+  type BullMQDeps,
+  createBullMQDeps,
+} from './transports/bullmq/index.js';
 export {
   TRANSPORT_TABLES,
   createDurableTransportTables,
@@ -88,3 +95,23 @@ export {
 // --- AdonisJS integration ---------------------------------------------------
 export { defineConfig } from './define_config.js';
 export type { DurableConfig } from './define_config.js';
+export type {
+  StandaloneConfig,
+  ControlPlaneConfig,
+  TenantConfig,
+  TenantVerifier,
+  VerifiedTenant,
+} from './config_types.js';
+
+// --- store-less cluster: RunGateway (read/control surface) ------------------
+export type { RunGateway, DurableTopology, StartRunOptions } from './run-gateway/interface.js';
+export {
+  StoreRunGateway,
+  type RunGatewayEngine,
+  type StoreRunGatewayOptions,
+} from './run-gateway/store-run-gateway.js';
+
+// --- store-less cluster: handshake & capability negotiation -----------------
+export * from './handshake/descriptor.js';
+export * from './handshake/negotiate.js';
+export * from './handshake/routing.js';

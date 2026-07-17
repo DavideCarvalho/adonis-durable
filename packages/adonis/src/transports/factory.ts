@@ -69,6 +69,30 @@ export interface QueueTransportConfig {
   instanceId?: string;
 }
 
+/** Options for the aviary-compatible BullMQ transport (the cross-ecosystem interop path). */
+export interface BullMQTransportConfig {
+  /**
+   * ioredis connection — `ConnectionOptions` (host/port/…) or a `Redis` instance — handed straight to
+   * BullMQ and ioredis. Required: this transport talks to a real Redis (that is the whole point of the
+   * cross-language path). Typed loosely (`unknown`) so the `bullmq`/`ioredis` types are not pulled into
+   * the config surface of a fleet that never selects this transport.
+   */
+  connection: unknown;
+  /**
+   * Logical isolation partition suffixing every per-handler tasks queue this instance subscribes to.
+   * Unset routes each handler to the bare (sanitized) handler name.
+   */
+  partition?: string;
+  /** Key prefix namespacing the durable queues. Default `durable`. */
+  prefix?: string;
+  /** Logical deployment namespace, segmenting every queue/channel/key. `"default"`/absent = unchanged. */
+  namespace?: string;
+  /** How many tasks a worker runs concurrently from each of its queues (BullMQ `Worker` concurrency). Default 1. */
+  concurrency?: number;
+  /** Stable id for this process (stamped on the worker-liveness keys). Default `ts-<host>-<pid>`. */
+  instanceId?: string;
+}
+
 /** Options for the DB-table-backed (`@adonisjs/lucid`) transport. */
 export interface DbTransportConfig {
   /** Worker group this instance serves (required on a worker process to register handlers). */
@@ -178,6 +202,28 @@ export const transports = {
         ...(config.group !== undefined ? { group: config.group } : {}),
         ...(config.prefix !== undefined ? { prefix: config.prefix } : {}),
         ...(config.pollIntervalMs !== undefined ? { pollIntervalMs: config.pollIntervalMs } : {}),
+        ...(config.instanceId !== undefined ? { instanceId: config.instanceId } : {}),
+      });
+    };
+  },
+
+  /**
+   * Run remote steps + workflow tasks cross-process AND cross-ecosystem over the real `bullmq` npm
+   * package, byte-compatible with the aviary (`nestjs-durable`) BullMQ transport and its Python
+   * raw-redis worker — so an Adonis engine and a Python/NestJS worker interoperate on one Redis. Pair
+   * it with `controlPlanes.redis(...)` for the `${prefix}-control` broadcast (this transport does not
+   * reimplement the control plane). `bullmq`/`ioredis` are imported lazily, only when selected.
+   */
+  bullmq(config: BullMQTransportConfig): TransportFactory {
+    return async () => {
+      const { BullMQTransport } = await import('./bullmq/bullmq-transport.js');
+      const { createBullMQDeps } = await import('./bullmq/deps.js');
+      const deps = await createBullMQDeps(config.connection, config.concurrency ?? 1);
+      return new BullMQTransport({
+        deps,
+        ...(config.partition !== undefined ? { partition: config.partition } : {}),
+        ...(config.prefix !== undefined ? { prefix: config.prefix } : {}),
+        ...(config.namespace !== undefined ? { namespace: config.namespace } : {}),
         ...(config.instanceId !== undefined ? { instanceId: config.instanceId } : {}),
       });
     };
