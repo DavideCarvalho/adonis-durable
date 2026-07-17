@@ -6,6 +6,7 @@ import {
   getRun,
   health,
   listRuns,
+  redispatchPendingRun,
   retryRun,
 } from '../../src/dashboard/handlers.js';
 import { InMemoryStateStore, InMemoryTransport, WorkflowEngine } from '../../src/index.js';
@@ -124,6 +125,22 @@ describe('JSON handlers', () => {
 
   it('retryRun 404s for an unknown run', async () => {
     const res = await retryRun(deps, req({ params: { id: 'ghost' } }));
+    expect(res.status).toBe(404);
+  });
+
+  it('redispatchPendingRun returns the run status and a redispatched count', async () => {
+    await deps.engine.start('greet', {}, 'run-done'); // no remote steps → redispatched: 0
+    await deps.engine.waitForRun('run-done');
+
+    const res = await redispatchPendingRun(deps, req({ params: { id: 'run-done' } }));
+    expect(res.status).toBe(200);
+    const body = res.body as { result: { runId: string; redispatched: number } };
+    expect(body.result.runId).toBe('run-done');
+    expect(body.result.redispatched).toBe(0);
+  });
+
+  it('redispatchPendingRun 404s for an unknown run', async () => {
+    const res = await redispatchPendingRun(deps, req({ params: { id: 'ghost' } }));
     expect(res.status).toBe(404);
   });
 

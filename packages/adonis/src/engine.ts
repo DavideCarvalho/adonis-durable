@@ -232,6 +232,27 @@ export interface WorkflowEngineDeps {
    */
   reconcileMs?: number | undefined;
   /**
+   * Opt-in self-heal window (ms) for a remote step with NO `timeoutMs` whose dispatched job was LOST —
+   * the worker crashed mid-step leaving no result, or the transport dropped the job (a Redis
+   * flush/eviction, or a broker moving a stalled job to `failed` and removing it). The `pending`
+   * checkpoint then has no result to resume on, and — BY DESIGN (see {@link reconcileMs}) — the
+   * reconcile re-drive re-suspends a still-pending step rather than re-dispatching, so a slow-but-live
+   * worker is never double-run. That safety means a genuinely-lost dispatch would otherwise hang
+   * forever. When set, a reconcile re-drive that finds a remote step still `pending` PAST this window
+   * re-dispatches it (bumping `attempts`, bounded by {@link remoteRedispatchMax}). Off by default:
+   * re-dispatch can double-run a step whose original job is merely slow, so the window MUST exceed the
+   * longest such step and the step MUST be idempotent. Prefer a per-step `timeoutMs` (tighter,
+   * heartbeat-aware) where you can; this is the store-driven net for no-timeout steps that must
+   * survive a lost dispatch. {@link WorkflowEngine.redispatchPending} is the manual counterpart.
+   */
+  remoteRedispatchMs?: number | undefined;
+  /**
+   * Max times {@link remoteRedispatchMs} re-dispatches one lost remote step before giving up and
+   * failing it as a {@link RemoteStepError} (`code: 'remote_step_lost'`), so the run fails / dead-letters
+   * instead of re-dispatching forever. Default 10. Ignored when `remoteRedispatchMs` is unset.
+   */
+  remoteRedispatchMax?: number | undefined;
+  /**
    * Build the public callback URL for a `ctx.webhook()` token (e.g.
    * ``(t) => `https://api.example.com/durable/webhooks/${t}` ``). Populates
    * {@link DurableWebhook.url}. Omit if you build URLs yourself from the token.
@@ -329,6 +350,8 @@ export class WorkflowEngine {
   private readonly leaseMs: number;
   private readonly maxRecoveryAttempts?: number | undefined;
   private readonly reconcileMs: number | undefined;
+  private readonly remoteRedispatchMs: number | undefined;
+  private readonly remoteRedispatchMax: number;
   private readonly webhookUrl?: ((token: string) => string) | undefined;
   private readonly traceparent?: (() => string | undefined) | undefined;
   private readonly context?: (() => Record<string, unknown> | undefined) | undefined;
@@ -402,6 +425,9 @@ export class WorkflowEngine {
     this.maxRecoveryAttempts = deps.maxRecoveryAttempts;
     // Default 5min; an explicit 0 disables the fallback (opt back into wake-forever-on-lost-event).
     this.reconcileMs = deps.reconcileMs === undefined ? 300_000 : deps.reconcileMs || undefined;
+    // Opt-in: unset (or 0) leaves the by-design "re-suspend a lost dispatch, never re-dispatch" behavior.
+    this.remoteRedispatchMs = deps.remoteRedispatchMs || undefined;
+    this.remoteRedispatchMax = Math.max(1, deps.remoteRedispatchMax ?? 10);
     this.webhookUrl = deps.webhookUrl;
     this.traceparent = deps.traceparent;
     this.context = deps.context;
@@ -1071,6 +1097,48 @@ export class WorkflowEngine {
     await this.store.updateRun(runId, { status: 'pending', updatedAt: new Date() });
     await this.runDispatcher.dispatch(runId);
     return { runId, status: 'pending' };
+  }
+
+  /**
+   * Explicitly re-dispatch every remote step of `runId` stuck `pending` — the OPERATOR escape hatch for
+   * a run whose dispatched step job was LOST (worker crashed with no result, or a transport that dropped
+   * the job). No automatic recovery re-drives these: a reconcile re-drive re-suspends a still-pending
+   * step by design (unless `remoteRedispatchMs` is set), `recoverIncomplete` only reclaims LEASED runs,
+   * and `requeue` just replays back to the pending guard. This re-enqueues the same `stepId` so the
+   * (idempotent) step re-runs and its result resumes the run. Safe to call on a healthy run — it re-runs
+   * only in-flight `pending` remote steps, which are idempotent by the durable contract. Returns the
+   * run's current status (with the count re-dispatched), or null if the run is unknown.
+   */
+  async redispatchPending(runId: string): Promise<(RunResult & { redispatched: number }) | null> {
+    const run = await this.store.getRun(runId);
+    if (!run) return null;
+    const pending = (await this.store.listCheckpoints(runId)).filter(
+      (cp) => cp.kind === 'remote' && cp.status === 'pending',
+    );
+    let redispatched = 0;
+    for (const cp of pending) {
+      if (!cp.stepId) continue;
+      const reAttempt = cp.attempts + 1;
+      const reEnqueuedAt = new Date();
+      await this.store.saveCheckpoint({
+        ...cp,
+        attempts: reAttempt,
+        enqueuedAt: reEnqueuedAt,
+        startedAt: reEnqueuedAt,
+        finishedAt: reEnqueuedAt,
+      });
+      await this.dispatchRemoteTask({
+        runId,
+        seq: cp.seq,
+        name: cp.name,
+        stepId: cp.stepId,
+        group: cp.workerGroup ?? sanitizeQueueToken(cp.name),
+        input: cp.input,
+        attempt: reAttempt,
+      });
+      redispatched += 1;
+    }
+    return { runId, status: run.status, redispatched };
   }
 
   /**
@@ -2478,7 +2546,55 @@ export class WorkflowEngine {
     // checkpoint, and let the result resume the run on whichever instance receives it — so a worker
     // pod can scale down or crash mid-step without losing the run or re-running completed work.
     if (step.timeoutMs) return this.callRemoteInMemory(runId, seq, step, input, transport);
-    if (existing?.status === 'pending') throw new WorkflowSuspended(); // dispatched; keep waiting
+    if (existing?.status === 'pending') {
+      // Dispatched; normally we just keep waiting for the result to resume the run. But a LOST dispatch
+      // (worker crashed with no result, or the transport dropped the job) would hang here forever — a
+      // reconcile re-drive replays straight back to this guard. Opt-in self-heal: once the step has been
+      // pending longer than `remoteRedispatchMs`, re-dispatch the same stepId (the idempotent step
+      // re-runs, its result resumes the run), bounded by `remoteRedispatchMax` so a never-settling step
+      // fails instead of looping. Unset (default) keeps the by-design "re-suspend, never re-dispatch".
+      if (this.remoteRedispatchMs == null) throw new WorkflowSuspended();
+      // Stamp a redispatch deadline (clock-space, persisted) the first time we see this pending step,
+      // stable across replays and crashes — mirrors the failed-retry backoff below. The run's wakeAt
+      // becomes this deadline, so a reconcile re-drive lands exactly when it's due to re-dispatch.
+      if (existing.wakeAt == null) {
+        const wakeAt = this.clock() + this.remoteRedispatchMs;
+        await this.store.saveCheckpoint({ ...existing, wakeAt });
+        throw new WorkflowSuspended(wakeAt);
+      }
+      if (this.clock() < existing.wakeAt) throw new WorkflowSuspended(existing.wakeAt);
+      // Past the deadline with no result — the dispatch is presumed lost. Re-dispatch (bounded by
+      // `remoteRedispatchMax` so a step that never settles fails the run instead of looping forever).
+      if (existing.attempts >= this.remoteRedispatchMax) {
+        throw new RemoteStepError({
+          message: `remote step "${step.name}" lost — no result after ${existing.attempts} re-dispatch(es)`,
+          code: 'remote_step_lost',
+        });
+      }
+      const reAttempt = existing.attempts + 1;
+      const nextDeadline = this.clock() + this.remoteRedispatchMs;
+      const reEnqueuedAt = new Date();
+      await this.store.saveCheckpoint({
+        ...existing,
+        attempts: reAttempt,
+        wakeAt: nextDeadline,
+        enqueuedAt: reEnqueuedAt,
+        startedAt: reEnqueuedAt,
+        finishedAt: reEnqueuedAt,
+      });
+      await this.dispatchRemoteTask({
+        runId,
+        seq,
+        name: step.name,
+        stepId: existing.stepId ?? stepId(runId, seq),
+        group: existing.workerGroup ?? tenantGroup(sanitizeQueueToken(step.name), step.partition),
+        input: existing.input,
+        priority: admission?.priority,
+        attempt: reAttempt,
+        transport,
+      });
+      throw new WorkflowSuspended(nextDeadline);
+    }
 
     // Durable retry: a failed attempt re-dispatches up to `retries`, spacing attempts by `backoff` —
     // unless the worker marked the error non-retryable (a deterministic verdict like a declined card).
@@ -2546,23 +2662,52 @@ export class WorkflowEngine {
       startedAt: enqueuedAt, // placeholders until the worker result lands
       finishedAt: enqueuedAt,
     });
-    await this.pool.dispatch(
-      {
-        runId,
-        seq,
-        name: step.name,
-        stepId: id,
-        group: token,
-        input: validInput,
-        traceparent: this.traceparent?.(),
-        context: this.context?.(),
-        priority: admission?.priority,
-        attempt,
-      },
+    await this.dispatchRemoteTask({
+      runId,
+      seq,
+      name: step.name,
+      stepId: id,
+      group: token,
+      input: validInput,
+      priority: admission?.priority,
+      attempt,
       transport,
-    );
+    });
     this.emit({ type: 'step.started', runId, seq, name: step.name, kind: 'remote' });
     throw new WorkflowSuspended();
+  }
+
+  /**
+   * Enqueue a remote step task to its worker group via the transport pool. Shared by the initial
+   * dispatch, the opt-in self-heal re-dispatch (see `remoteRedispatchMs`), and the explicit
+   * {@link redispatchPending}. Carries the current trace/context so a re-dispatch is traceable.
+   */
+  private dispatchRemoteTask(task: {
+    runId: string;
+    seq: number;
+    name: string;
+    stepId: string;
+    group: string;
+    input: unknown;
+    attempt: number;
+    priority?: number | undefined;
+    transport?: string | undefined;
+  }): Promise<void> {
+    return this.pool.dispatch(
+      {
+        runId: task.runId,
+        seq: task.seq,
+        name: task.name,
+        stepId: task.stepId,
+        group: task.group,
+        input: task.input,
+        traceparent: this.traceparent?.(),
+        context: this.context?.(),
+        priority: task.priority,
+        attempt: task.attempt,
+      },
+      task.transport,
+    );
   }
 
   /**

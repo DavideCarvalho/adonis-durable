@@ -19,6 +19,7 @@ import {
   getRun,
   health,
   listRuns,
+  redispatchPendingRun,
   retryRun,
 } from '../src/dashboard/handlers.js';
 import { renderDashboard } from '../src/dashboard/html.js';
@@ -36,6 +37,7 @@ import { WorkflowEngine } from '../src/index.js';
  * - `GET  /api/runs`          → list runs (status/workflow/tag filters, paged)
  * - `GET  /api/runs/:id`      → run detail (run + step timeline + children)
  * - `POST /api/runs/:id/retry`  → re-enqueue the run
+ * - `POST /api/runs/:id/redispatch` → re-dispatch a run's lost pending remote steps
  * - `POST /api/runs/:id/cancel` → cancel the run
  * - `GET  /api/health`        → worker-group health
  */
@@ -119,6 +121,9 @@ export default class DashboardProvider {
     router.get(`${apiBase}/runs`, json(listRuns)).as('durable_dashboard.runs.index');
     router.get(`${apiBase}/runs/:id`, json(getRun)).as('durable_dashboard.runs.show');
     router.post(`${apiBase}/runs/:id/retry`, json(retryRun)).as('durable_dashboard.runs.retry');
+    router
+      .post(`${apiBase}/runs/:id/redispatch`, json(redispatchPendingRun))
+      .as('durable_dashboard.runs.redispatch');
     router.post(`${apiBase}/runs/:id/cancel`, json(cancelRun)).as('durable_dashboard.runs.cancel');
     router
       .get(

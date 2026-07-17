@@ -11,6 +11,7 @@ export {
   listRuns,
   getRun,
   retryRun,
+  redispatchPendingRun,
   cancelRun,
   health,
 } from './handlers.js';
