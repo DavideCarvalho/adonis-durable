@@ -1059,7 +1059,10 @@ export class WorkflowEngine {
    * inline — or null if the run is unknown. The dashboard "retry" goes through here so it can't block
    * the HTTP request on workflow execution.
    */
-  async requeue(runId: string): Promise<RunResult | null> {
+  async requeue(runId: string, _seen?: Set<string>): Promise<RunResult | null> {
+    const seen = _seen ?? new Set<string>();
+    if (seen.has(runId)) return null;
+    seen.add(runId);
     const run = await this.store.getRun(runId);
     if (!run) return null;
     // A FAILED/DEAD run's replay deterministically re-throws its recorded failures — an exhausted
@@ -1090,11 +1093,47 @@ export class WorkflowEngine {
           isFailureCompletion(cp.output)
         ) {
           await this.store.saveCheckpoint({ ...cp, status: 'running', output: undefined });
+          // CASCADE: retrying only the parent is useless in a live engine — replay re-registers
+          // the `child:<id>` waiter and the reconciler re-delivers the child's still-FAILED
+          // terminal state within seconds, re-failing the parent with the same error. Requeue the
+          // failed child too so the pair converges: whichever finishes the handshake last (waiter
+          // registered vs completion buffered) resumes the parent.
+          //
+          // Exception: a SUCCESS already buffered on this token (a completed `~retry~` fix of the
+          // child — see notifyParent's origin delivery) is the outcome the replay will consume, so
+          // re-running the failed origin would be pure waste. Peek = take + re-buffer.
+          const childId = cp.name.slice('signal:child:'.length);
+          // Drain-and-restore keeps relative order (a partial take+re-buffer would rotate it).
+          const parked: unknown[] = [];
+          for (;;) {
+            const buffered = await this.store.takeBufferedSignal(`child:${childId}`);
+            if (!buffered) break;
+            parked.push(buffered.payload);
+          }
+          for (const payload of parked) await this.store.bufferSignal(`child:${childId}`, payload);
+          const bufferedSuccess = parked.some(
+            (payload) =>
+              typeof payload === 'object' &&
+              payload !== null &&
+              (payload as { ok?: unknown }).ok === true,
+          );
+          if (!bufferedSuccess) {
+            const child = await this.store.getRun(childId);
+            if (child && (child.status === 'failed' || child.status === 'dead')) {
+              await this.requeue(childId, seen);
+            }
+          }
         }
       }
     }
     await this.store.releaseRunLock(runId);
-    await this.store.updateRun(runId, { status: 'pending', updatedAt: new Date() });
+    // Explicit `error: undefined` CLEARS the stale failure (the store spreads the patch over the
+    // run) — otherwise the dashboard keeps showing the old error while the run is re-executing.
+    await this.store.updateRun(runId, {
+      status: 'pending',
+      error: undefined,
+      updatedAt: new Date(),
+    });
     await this.runDispatcher.dispatch(runId);
     return { runId, status: 'pending' };
   }
@@ -1443,6 +1482,15 @@ export class WorkflowEngine {
    */
   private notifyParent(runId: string, completion: Completion<unknown>): void {
     void this.signal(`child:${runId}`, completion).catch(() => undefined);
+    // A fix-and-replay run (`<origin>~retry~<hash>`) is standalone, but its SUCCESS is the
+    // origin's outcome for all practical purposes: deliver it on the ORIGIN's token too, so a
+    // parent that failed on that child and is retried later consumes this success (buffered or
+    // live) instead of waiting on a child nobody re-runs. Failures stay retry-only — a failed
+    // fix attempt must not poison the origin's token.
+    const at = runId.lastIndexOf('~retry~');
+    if (at !== -1 && completion.ok) {
+      void this.signal(`child:${runId.slice(0, at)}`, completion).catch(() => undefined);
+    }
   }
 
   /**
