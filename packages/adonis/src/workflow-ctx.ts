@@ -545,6 +545,26 @@ export function createWorkflowCtx(
       return unwrapCompletion<T>(existing.output, `child "${id}"`);
     }
     await store.putSignalWaiter({ token: `child:${id}`, runId, seq: current });
+    // Lost-wake guard (mirrors the engine's remote `startChild` command path): the child may have
+    // ALREADY completed while no waiter was registered — e.g. this run failed on the child's
+    // failure, the child was retried to completion, and this run is now being retried — leaving its
+    // completion BUFFERED. Consume it here or the re-registered waiter waits forever for a signal
+    // that already fired. Resolve exactly as engine.signal would: overwrite the placeholder with
+    // the completed signal checkpoint, then unwrap.
+    const buffered = await store.takeBufferedSignal(`child:${id}`);
+    if (buffered) {
+      await store.removeSignalWaiter({ token: `child:${id}`, runId, seq: current });
+      await writeCheckpoint(
+        instantCheckpoint({
+          runId,
+          seq: current,
+          name: `signal:child:${id}`,
+          kind: 'signal',
+          output: buffered.payload,
+        }),
+      );
+      return unwrapCompletion<T>(buffered.payload, `child "${id}"`);
+    }
     if (!(await store.getRun(id))) host.startChild(workflowName(workflow), input, id, priority);
     // Make the awaited child visible in the parent's timeline WHILE it runs: a `running` placeholder
     // at this seq with the same `signal:child:<id>` name the signal resolution later overwrites as

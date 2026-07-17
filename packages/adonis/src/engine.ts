@@ -1020,6 +1020,37 @@ export class WorkflowEngine {
   async requeue(runId: string): Promise<RunResult | null> {
     const run = await this.store.getRun(runId);
     if (!run) return null;
+    // A FAILED/DEAD run's replay deterministically re-throws its recorded failures — an exhausted
+    // failed checkpoint rethrows, and an awaited child's failure completion rethrows through
+    // unwrapCompletion — so "retry" without resetting that state is a no-op that re-fails in
+    // milliseconds. Reset the failure state first so replay RE-EXECUTES the failed parts:
+    // - a `failed` checkpoint becomes retryable-now (attempts 0, wake immediately, `retryable`
+    //   forced back on): the durable-retry machinery re-dispatches it as a fresh first attempt;
+    // - an awaited-child `signal:child:` checkpoint holding a FAILURE completion returns to its
+    //   live `running` placeholder, so replay re-registers the `child:<id>` waiter — a separately
+    //   retried child's completion (already buffered, or still to come) then resumes this run.
+    //   Retry child and parent in either order; signal buffering makes it converge.
+    if (run.status === 'failed' || run.status === 'dead') {
+      const isFailureCompletion = (v: unknown): boolean =>
+        typeof v === 'object' && v !== null && (v as { ok?: unknown }).ok === false;
+      for (const cp of await this.store.listCheckpoints(runId)) {
+        if (cp.status === 'failed') {
+          await this.store.saveCheckpoint({
+            ...cp,
+            attempts: 0,
+            wakeAt: this.clock(),
+            ...(cp.error ? { error: { ...cp.error, retryable: true } } : {}),
+          });
+        } else if (
+          cp.kind === 'signal' &&
+          cp.name.startsWith('signal:child:') &&
+          cp.status === 'completed' &&
+          isFailureCompletion(cp.output)
+        ) {
+          await this.store.saveCheckpoint({ ...cp, status: 'running', output: undefined });
+        }
+      }
+    }
     await this.store.releaseRunLock(runId);
     await this.store.updateRun(runId, { status: 'pending', updatedAt: new Date() });
     await this.runDispatcher.dispatch(runId);
