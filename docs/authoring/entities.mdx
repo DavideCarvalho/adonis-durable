@@ -1,0 +1,221 @@
+---
+title: Durable entities
+description: Keyed virtual actors — engine.registerEntity defines a named entity whose handlers run serialized per key over durable state (exactly once). Drive it with engine.signalEntity / ctx.callEntity, read it with engine.getEntityState. The durable answer to a per-user counter or per-account balance without DB locks.
+icon: Boxes
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+A workflow models *a process with a start and an end* — a checkout, an onboarding, a nightly batch. But some state has **no natural end**: a shopping cart, a per-user rate-limit counter, an account balance, a device's last-seen shadow. You keep mutating it, from many places, for as long as the thing exists. Modelling that as a workflow is awkward; modelling it as a plain database row reintroduces exactly the concurrency problem durable execution exists to remove — two requests read the same balance, both add to it, one write is lost.
+
+A **durable entity** is the answer. It is a *keyed virtual actor*: a named object, addressed by a key you choose (a user id, an account number, a device id), whose operations run **serialized per key** over **durable state**, **exactly once**. No two operations on the same key ever interleave, so the read-modify-write race disappears — without a single `SELECT … FOR UPDATE`. This is the same primitive as Temporal/Dapr *virtual actors* and Azure Durable *entities*, expressed in the durable engine you already run.
+
+<Callout type="info">
+**When to reach for an entity vs a workflow.** A **workflow** orchestrates a finite process and its steps. An **entity** holds long-lived, concurrently-mutated state keyed by an id. They compose: a workflow calls entities the way a request handler calls a row — except the entity serializes the writes for you.
+</Callout>
+
+## How it works
+
+Under the hood an entity is not magic — it is one **long-lived run per key**. When you first touch `('account', 'acc_42')`, the engine starts a run with the id `entity:account:acc_42` whose body is a built-in loop:
+
+1. Wait (with zero compute) for the next operation to arrive as a signal.
+2. Run the matching handler over the current in-memory `state`, capturing the handler's result **and** the mutated state in a single checkpoint.
+3. Publish the new state (so `getEntityState` can read it) and, if the caller asked for a reply, signal the result back.
+4. Loop.
+
+Because each operation is one checkpoint on one run, and a run only ever advances one checkpoint at a time, operations on the same key are **totally ordered** and each runs **exactly once**. On replay the engine restores `state` from the checkpoint instead of re-invoking the handler, so a handler never double-applies. Different keys are different runs, so they run fully in parallel — the serialization is *per key*, never global.
+
+## Defining an entity — `engine.registerEntity`
+
+An entity is a `name` plus an [`EntityConfig`](#the-types): a function that builds the **initial state** for a fresh key, and a map of **handlers** keyed by operation name. Each handler receives the current `state` and the operation's argument; it mutates `state` in place and/or returns a result.
+
+Entities are **not** auto-discovered the way `app/workflows` classes are — you register them explicitly, once, from a preload/start file:
+
+```ts title="start/entities.ts"
+import engine from '@adonis-agora/durable/services/main'
+import { FatalError } from '@adonis-agora/durable'
+
+interface AccountState {
+  balanceCents: number
+  version: number
+}
+
+engine.registerEntity<AccountState>('account', {
+  // Built once, the first time a key is touched.
+  initialState: () => ({ balanceCents: 0, version: 0 }),
+
+  handlers: {
+    // Mutate state in place; return whatever the caller should see back.
+    deposit: (state, amountCents: number) => {
+      state.balanceCents += amountCents
+      state.version += 1
+      return state.balanceCents
+    },
+
+    withdraw: (state, amountCents: number) => {
+      // Expected rejections are RESULTS, not throws — see the callout below.
+      if (amountCents > state.balanceCents) {
+        return { ok: false as const, reason: 'insufficient_funds', balanceCents: state.balanceCents }
+      }
+      state.balanceCents -= amountCents
+      state.version += 1
+      return { ok: true as const, balanceCents: state.balanceCents }
+    },
+
+    // A pure read: touch nothing, just return.
+    balance: (state) => state.balanceCents,
+  },
+})
+```
+
+Register the file from `adonisrc.ts` (or any existing preload):
+
+```ts title="adonisrc.ts"
+preloads: [
+  // …
+  () => import('#start/entities'),
+]
+```
+
+<Callout type="warn">
+**Keep handlers pure state transitions, and model expected failures as return values.** A handler runs inside the entity's own run; if it *throws*, the entity run fails and every caller waiting on a `ctx.callEntity` reply is left suspended. So treat a handler like a reducer: read `arg`, transform `state`, return a value — and for a business rejection (insufficient funds, item not found) **return** a discriminated result (`{ ok: false, … }`) instead of throwing. Reserve throwing (e.g. `FatalError`) for genuine programmer errors. Handlers may be `async`, but keep real side effects (charging a card, sending mail) in a *workflow* that calls the entity — the entity is for the serialized state, not the I/O.
+</Callout>
+
+## Driving an entity from outside a run — `engine.signalEntity`
+
+From a controller, a service, or any code holding the engine, send an operation fire-and-forget with `engine.signalEntity(name, key, op, arg)`. It is ordered and exactly-once per key; it returns as soon as the operation is durably enqueued, not when the handler finishes.
+
+```ts title="app/controllers/wallet_controller.ts"
+import { WorkflowEngine } from '@adonis-agora/durable'
+import { inject } from '@adonisjs/core'
+import type { HttpContext } from '@adonisjs/core/http'
+
+@inject()
+export default class WalletController {
+  constructor(private engine: WorkflowEngine) {}
+
+  // POST /wallet/:accountId/deposit  { amountCents }
+  async deposit({ params, request, response }: HttpContext) {
+    const { amountCents } = request.only(['amountCents'])
+    // Fire-and-forget: the deposit is serialized against every other op on this key.
+    await this.engine.signalEntity('account', params.accountId, 'deposit', amountCents)
+    return response.accepted({ queued: true })
+  }
+}
+```
+
+## Reading entity state — `engine.getEntityState`
+
+After each operation the runner publishes the current state, so any reader can fetch the latest snapshot with `engine.getEntityState(name, key)`. The read has **no effect** on the entity — it does not enqueue an operation, does not resume anything, and never appears in the entity's history. It returns `undefined` for a key that has never been touched.
+
+```ts
+// GET /wallet/:accountId
+async show({ params, response }: HttpContext) {
+  const state = await this.engine.getEntityState<AccountState>('account', params.accountId)
+  return response.ok(state ?? { balanceCents: 0, version: 0 })
+}
+```
+
+<Callout type="info">
+`getEntityState` is a snapshot, not a lock. If you need *consistent* read-modify-write — "withdraw only if the balance covers it" — do it **inside a handler** (which is serialized), not as a read followed by a separate write. That is the whole point of the entity.
+</Callout>
+
+## Calling an entity from a workflow — `ctx.callEntity`
+
+Inside a workflow body, `await ctx.callEntity(name, key, op, arg)` sends an operation **and awaits its result**. The call reserves a logical position, registers a durable reply waiter, dispatches the operation with a reply token, and suspends the workflow — zero compute — until the entity signals the handler's return value back. It is checkpointed, so on replay the recorded result is returned without re-dispatching.
+
+This is where the serialization earns its keep: a workflow can debit an account, confident that no other run or request is mutating the same balance mid-flight.
+
+```ts title="app/workflows/checkout_workflow.ts"
+import { BaseWorkflow, FatalError } from '@adonis-agora/durable'
+import type { WorkflowCtx } from '@adonis-agora/durable'
+
+interface Order {
+  id: number
+  accountId: string
+  totalCents: number
+}
+
+type WithdrawResult =
+  | { ok: true; balanceCents: number }
+  | { ok: false; reason: string; balanceCents: number }
+
+export default class CheckoutWorkflow extends BaseWorkflow {
+  static workflow = { name: 'checkout', version: '1' }
+
+  async run(ctx: WorkflowCtx, order: Order) {
+    // Debit the account — serialized against every other op on this key, exactly once.
+    const debit = await ctx.callEntity<WithdrawResult>(
+      'account',
+      order.accountId,
+      'withdraw',
+      order.totalCents,
+    )
+
+    if (!debit.ok) {
+      // The handler returned a rejection — branch on it, don't catch an exception.
+      throw new FatalError(`declined: ${debit.reason}`, 'payment_declined')
+    }
+
+    await ctx.step('fulfil-order', { orderId: order.id })
+    return { orderId: order.id, balanceCents: debit.balanceCents }
+  }
+}
+```
+
+### Fire-and-forget from a workflow — `ctx.signalEntity`
+
+When the workflow doesn't need the result, `await ctx.signalEntity(name, key, op, arg)` dispatches the operation once (checkpointed, replay-safe) and keeps going without suspending — the in-workflow counterpart of `engine.signalEntity`:
+
+```ts
+// Record a usage tick against a per-tenant meter; we don't need the new total here.
+await ctx.signalEntity('usage-meter', order.tenantId, 'increment', 1)
+```
+
+## The types
+
+Everything is exported from `@adonis-agora/durable`:
+
+```ts
+/** One operation on an entity: mutate `state` in place and/or return a result. */
+type EntityHandler<S = unknown> = (state: S, arg: unknown) => unknown | Promise<unknown>
+
+/** A durable keyed entity: initial state + per-op handlers, serialized per key. */
+interface EntityConfig<S = unknown> {
+  /** Build the initial state for a fresh key. */
+  initialState: () => S
+  /** Operation handlers, keyed by op name. Each runs serially per key, exactly once. */
+  handlers: Record<string, EntityHandler<S>>
+}
+```
+
+The engine surface is three methods:
+
+```ts
+// Define an entity (call once at boot).
+engine.registerEntity<S>(name: string, config: EntityConfig<S>): void
+
+// Send an op, fire-and-forget. Ordered + exactly-once per key.
+engine.signalEntity(name: string, key: string, op: string, arg?: unknown): Promise<void>
+
+// Read the latest published state, or undefined if the key has never been touched.
+engine.getEntityState<S>(name: string, key: string): Promise<S | undefined>
+```
+
+…plus the two `ctx` verbs inside a workflow: `ctx.callEntity<R>(name, key, op, arg?)` (call + await result) and `ctx.signalEntity(name, key, op, arg?)` (fire-and-forget).
+
+<Callout type="info">
+**The `Entities` class.** `registerEntity`/`signalEntity`/`getEntityState` are thin delegators to an exported [`Entities`](https://github.com/adonis-agora) instance the engine constructs at boot (over an `EntityHost` — the small slice of the engine the subsystem needs). You rarely touch it directly; the engine methods are the supported surface. It exists as a standalone module so the entity runner (`__entity`) can register itself without the engine hard-coding the feature.
+</Callout>
+
+## A note on longevity and history
+
+An entity run is intentionally **immortal** — it loops forever, waiting for the next operation, so its key stays addressable for the lifetime of the thing it models. Each operation appends one checkpoint to that run's history. For most keys (a user's cart, an account touched a few times a day) this is a non-issue. For an extremely hot key — thousands of operations a second on the *same* id — the accumulating history is worth keeping in mind: prefer sharding such a key across sub-keys, or model the truly high-frequency counter with the durable [flow-control](/docs/durable/reliability/flow-control) queues instead. For ordinary keyed state, the entity is the simplest correct answer.
+
+## See also
+
+- [Queries & updates](/docs/durable/authoring/queries-and-updates) — the read/steer primitives an entity's `getEntityState` and `callEntity` are built on (`setEvent`/`signal`).
+- [Child workflows](/docs/durable/authoring/child-workflows) — composing whole *processes*, where entities compose *state*.
+- [Concepts: workflows & steps](/docs/durable/concepts/workflows-and-steps) — the checkpoint-and-replay model that makes an entity's per-op exactly-once guarantee hold.
+</content>
+</invoke>

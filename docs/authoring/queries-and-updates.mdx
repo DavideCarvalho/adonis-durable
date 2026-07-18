@@ -1,8 +1,10 @@
 ---
 title: Queries & updates
-description: Read a live run's state with ctx.setEvent + engine.getEvent (side-effect-free queries), and steer it with ctx.onUpdate + engine.registerUpdateValidator + engine.update (validated, Temporal-style updates that can be rejected before they touch the run).
+description: Read a live run's state with ctx.setEvent + engine.getEvent (side-effect-free queries), steer it with ctx.onUpdate + engine.registerUpdateValidator + engine.update (validated, Temporal-style updates that can be rejected before they touch the run), and index runs with search attributes for typed/range engine.listRuns filtering.
 icon: MessagesSquare
 ---
+
+import { Callout } from 'fumadocs-ui/components/callout';
 
 A run is durable but it is not opaque. While it is in flight — suspended on a sleep, waiting on a remote step, parked on a signal — you often need to **read** what it has done so far, and sometimes to **steer** it from the outside. The engine gives you two distinct primitives, mirroring Temporal's split between *queries* (read-only) and *updates* (mutating, validated):
 
@@ -147,3 +149,95 @@ export default class ExpensesController {
 ### Why a validator beats a raw signal
 
 You can already steer a run with `ctx.waitForSignal` + `engine.signal`. The difference is *where the rejection happens*. A signal always lands; if the argument is bad, the workflow body has to detect it after resuming. An update with a validator rejects in the caller's request, synchronously, with a reason — the run never wakes for a bad update, and the caller gets immediate, actionable feedback.
+
+## Search attributes
+
+`getEvent` answers "what is *this one run* doing?" — you already know the run id. **Search attributes** answer the other question: "which runs match *this business predicate*?" — find every `checkout` run for tier `pro` with an amount over 200, regardless of id. They are typed, indexed labels you stamp on a run so the [dashboard](/docs/durable/observability/dashboard) and `engine.listRuns` can filter on them — the durable counterpart of Temporal's search attributes.
+
+An attribute set is a flat map of primitives:
+
+```ts
+type SearchAttributes = Record<string, string | number | boolean>
+```
+
+Unlike a free-form `setEvent` value, attributes are **typed and queryable**: SQL stores explode them into an indexed side-table so `amount >= 200` is a real range scan, not an in-memory filter over every row.
+
+### Stamping attributes on a run
+
+There are two moments to set them. At **start time**, pass `searchAttributes` in the start options (or the class `dispatch` options):
+
+```ts
+import { CheckoutWorkflow } from '#workflows/checkout_workflow'
+
+await CheckoutWorkflow.dispatch(order, {
+  runId: `checkout:${order.id}`,
+  searchAttributes: { amount: order.totalCents, tier: order.tier, priority: order.rush },
+})
+
+// Or via the engine, for a string-named workflow:
+await engine.start('checkout', order, `checkout:${order.id}`, {
+  searchAttributes: { amount: order.totalCents, tier: order.tier },
+})
+```
+
+**From inside the run**, refine them as the run learns more with `ctx.upsertSearchAttributes(attrs)`. It **shallow-merges** into the run's existing attributes (keys you don't pass are kept), and is durable and exactly-once — recorded at this position on the first run and skipped on replay, so it does one write, not one per turn:
+
+```ts
+engine.register('checkout', '1', async (ctx, order: Order) => {
+  await ctx.upsertSearchAttributes({ stage: 'charging' })
+
+  const charge = await ctx.step(chargeCard, { orderId: order.id, amountCents: order.totalCents })
+
+  // Merge in the outcome — `amount`/`tier` set at start time are preserved.
+  await ctx.upsertSearchAttributes({ stage: 'shipped', chargeId: charge.chargeId })
+  return { status: 'shipped', chargeId: charge.chargeId }
+})
+```
+
+<Callout type="info">
+Use `ctx.upsertSearchAttributes` instead of injecting the `StateStore` to mutate the run you're executing — it's the replay-safe path. It also means you never reach for `store.updateRun(ctx.runId, …)` from inside a workflow, which would double-write on every replay turn.
+</Callout>
+
+### Querying by attribute — `engine.listRuns`
+
+Filter runs with an `attributes` array on a `RunQuery`. Each entry is an `AttributeFilter`, and the query **ANDs** them all together:
+
+```ts
+type AttributeOp = 'eq' | 'ne' | 'gt' | 'gte' | 'lt' | 'lte'
+
+interface AttributeFilter {
+  key: string
+  op: AttributeOp
+  value: string | number | boolean
+}
+```
+
+Pair the attribute predicates with the coarse `workflow` / `status` / `tag` filters so the store can bound the scan before applying them:
+
+```ts
+@inject()
+export default class RunsController {
+  constructor(private engine: WorkflowEngine) {}
+
+  // GET /admin/big-pro-checkouts
+  async bigProCheckouts({ response }: HttpContext) {
+    const runs = await this.engine.listRuns({
+      workflow: 'checkout',        // coarse filter — bounds the scan
+      status: 'suspended',
+      attributes: [
+        { key: 'amount', op: 'gte', value: 20000 }, // amount >= 20000 cents
+        { key: 'tier', op: 'eq', value: 'pro' },    // AND tier === 'pro'
+      ],
+      limit: 50,
+    })
+    return response.ok(runs)
+  }
+}
+```
+
+A few semantics worth knowing:
+
+- **A missing key never matches.** If a run never set `tier`, it fails *any* filter on `tier` — including `ne` (there is simply no value to compare). Filter on keys you know you stamp.
+- **Booleans** are compared by `eq`/`ne` only (stored as `"true"`/`"false"` under the hood); numeric range ops (`gt`/`gte`/`lt`/`lte`) apply to numbers.
+- **Empty / absent `attributes`** matches everything — the query degrades to a plain `listRuns`.
+- On SQL stores the predicates push **down** into the indexed side-table; the in-memory test store applies the identical logic in-process, so a query behaves the same across adapters.

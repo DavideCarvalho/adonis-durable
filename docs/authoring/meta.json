@@ -4,8 +4,10 @@
   "pages": [
     "app-workflows",
     "child-workflows",
+    "entities",
     "queries-and-updates",
     "webhooks",
+    "external-tasks",
     "versioning",
     "scheduling"
   ]
