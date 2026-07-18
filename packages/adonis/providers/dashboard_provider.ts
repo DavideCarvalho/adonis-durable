@@ -6,7 +6,13 @@ import {
   performLogin,
   readSession,
 } from '../src/dashboard/auth.js';
-import { type CompatSource, compat } from '../src/dashboard/compat.js';
+import {
+  type CompatSource,
+  type FleetTransport,
+  compat,
+  enumerateLiveFleet,
+  mergeFleets,
+} from '../src/dashboard/compat.js';
 import {
   type DurableDashboardConfig,
   type ResolvedDurableDashboardConfig,
@@ -29,6 +35,7 @@ import { renderDashboard } from '../src/dashboard/html.js';
 import { renderLoginPage } from '../src/dashboard/login_page.js';
 import type { DurableConfig } from '../src/define_config.js';
 import { WorkflowEngine } from '../src/index.js';
+import { DURABLE_TRANSPORT } from '../src/role_bindings.js';
 
 /**
  * Mounts the durable dashboard into an AdonisJS app: a JSON API over the
@@ -175,7 +182,7 @@ export default class DashboardProvider {
       .get(`${apiBase}/compat`, async (ctx: HttpContext) => {
         if (!(await this.enforce(config, ctx, 'api'))) return;
         try {
-          const result = await compat(this.compatSource(await resolveEngine()));
+          const result = await compat(await this.compatSource(await resolveEngine()));
           return ctx.response.status(result.status).json(result.body);
         } catch (error) {
           return ctx.response
@@ -186,16 +193,38 @@ export default class DashboardProvider {
       .as('durable_dashboard.compat');
   }
 
-  /** Assemble the {@link CompatSource} the `/compat` handler reads: the live-fleet compat view + captured
-   *  diagnostics come from the {@link diagnostics} recorder (store role); blocked runs come from the
-   *  role's own read port (so a `tenant` pod round-trips `listRuns({ statuses: ['blocked'] })`). */
-  private compatSource(engine: DashboardEngine): CompatSource {
+  /**
+   * Assemble the {@link CompatSource} the `/compat` handler reads (design §10). The fleet view is the LIVE
+   * green fleet enumerated off the transport (every advertising worker — compatible OR incompatible, even
+   * one that never triggered a blocked dispatch) merged with the descriptors the {@link diagnostics}
+   * recorder reconstructed from past blocks; the live descriptors win per instance (fresher). Captured
+   * diagnostics + blocked runs stay as they were.
+   *
+   * The live enumeration is snapshotted ONCE per request (an `async` fetch off the transport), then handed
+   * to the handler as a synchronous `fleet()` closure — so {@link CompatSource} keeps its cheap sync shape.
+   * A `tenant` pod (or a transport without the fleet capability) has no {@link DURABLE_TRANSPORT} binding →
+   * live fleet is empty → the panel degrades to the diagnostics-only view exactly as before.
+   */
+  private async compatSource(engine: DashboardEngine): Promise<CompatSource> {
+    const live = await enumerateLiveFleet(await this.fleetTransport());
+    const fleet = mergeFleets(this.diagnostics.fleet(), live);
     return {
       controlPlaneDescriptor: () => this.diagnostics.controlPlaneDescriptor(),
-      fleet: () => this.diagnostics.fleet(),
+      fleet: () => fleet,
       blockedRuns: () => engine.listRuns({ statuses: ['blocked'] }),
       diagnosticsFor: (runId) => this.diagnostics.diagnosticsFor(runId),
     };
+  }
+
+  /** Resolve the store role's task transport (published under {@link DURABLE_TRANSPORT}) for LIVE fleet
+   *  enumeration, or `null` when unavailable — a `tenant` pod never binds it, and a mis-mounted dashboard
+   *  degrades cleanly to the diagnostics-only view rather than crashing the panel. */
+  private async fleetTransport(): Promise<FleetTransport | null> {
+    try {
+      return (await this.app.container.make(DURABLE_TRANSPORT)) as FleetTransport;
+    } catch {
+      return null;
+    }
   }
 
   /**

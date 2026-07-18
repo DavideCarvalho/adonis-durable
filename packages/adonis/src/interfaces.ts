@@ -748,6 +748,10 @@ export type RunRequestKind =
   | { kind: 'listRuns'; query: RunQuery }
   | { kind: 'getCheckpoints'; runId: string }
   | { kind: 'getSearchAttributes'; runId: string }
+  // Parent→child fan-out (the ids of the runs `runId` spawned). runId-bearing, so the responder
+  // enforces the tenant-ownership check before answering (anti-IDOR). Additive to the wire: an older
+  // control plane simply rejects the unknown verb, an older tenant never sends it.
+  | { kind: 'getRunChildren'; runId: string }
   // Per-group worker health — the responder answers it scoped to the requester's own `@<tenant>`
   // groups (see `RunRequestResponder`), so a tenant's Workers panel shows ITS queues, never another's.
   | { kind: 'workerHealth' }

@@ -63,6 +63,10 @@ export interface RunGateway {
   /** A run's step checkpoints in execution order — its timeline / history (the detail-view body). */
   getCheckpoints(runId: string): Promise<StepCheckpoint[]>;
 
+  /** The ids of the runs this run spawned (parent→child tree) — the detail view's children list. Empty
+   *  for a leaf run (or an unknown one). A `ProxyRunGateway` round-trips this over the P4 wire. */
+  getRunChildren(runId: string): Promise<string[]>;
+
   /** Typed, queryable run data (`searchAttributes`) stamped on the run, or undefined if it has none. */
   getSearchAttributes(runId: string): Promise<SearchAttributes | undefined>;
 

@@ -29,6 +29,7 @@ import {
 import {
   DURABLE_RUN_GATEWAY,
   DURABLE_RUN_REQUEST_RESPONDER,
+  DURABLE_TRANSPORT,
   DURABLE_WORKER_RUNTIME,
   NOOP_RUN_DISPATCHER,
   descriptorRedisFrom,
@@ -136,6 +137,17 @@ export default class DurableProvider {
         });
       },
     );
+
+    // Publish the engine's task transport so the store-agnostic dashboard fleet-health panel can enumerate
+    // the LIVE worker fleet off it (design §10). Resolving the engine first guarantees `#transport` is set
+    // (the engine factory assigns it). A broker transport carries `listWorkerGroups`/`listWorkerDescriptors`;
+    // an in-process one doesn't, so the panel degrades to diagnostics-only — no special-casing needed here.
+    this.app.container.singleton(DURABLE_TRANSPORT, async (): Promise<Transport> => {
+      await this.app.container.make(WorkflowEngine);
+      // Non-null after the engine factory ran; `#resolveTransport` always yields a transport (in-memory
+      // default when none is configured).
+      return this.#transport as Transport;
+    });
 
     // Register the engine LAST: a naive/legacy container double (see durable_provider.spec) captures a
     // SINGLE factory, overwritten on each singleton() call, so binding WorkflowEngine last keeps

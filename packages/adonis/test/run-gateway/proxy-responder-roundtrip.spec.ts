@@ -74,6 +74,10 @@ function makeEngine(namespace: string): WorkflowEngine {
   engine.register('echo', '1', async (_ctx, input) => input);
   engine.register('await-go', '1', async (ctx) => ctx.waitForSignal('go'));
   engine.register('stepper', '1', async (ctx) => ctx.localStep('do-it', async () => 'stepped'));
+  engine.register('parent', '1', async (ctx) => {
+    await ctx.child('echo', { from: 'parent' });
+    return 'parent-done';
+  });
   return engine;
 }
 
@@ -129,6 +133,18 @@ describe('ProxyRunGateway ↔ RunRequestResponder round-trip (prefix-only, no to
     await engine.waitForRun(started.runId);
     const checkpoints = await proxy.getCheckpoints(started.runId);
     expect(checkpoints.some((c) => c.name === 'do-it')).toBe(true);
+  });
+
+  it('getRunChildren round-trips the parent→child fan-out over the wire (real children, not [])', async () => {
+    const started = await proxy.start('parent', {}, { runId: 'p-children' });
+    await engine.waitForRun(started.runId);
+    // The proxy answers with the REAL child ids the responder read from the store — mutation: break the
+    // `getRunChildren` verb (proxy/responder/store) and this collapses to [] → fails.
+    const children = await proxy.getRunChildren('p-children');
+    expect(children.length).toBe(1);
+    expect(children[0]).not.toBe('p-children');
+    const child = await proxy.getRun(children[0] as string);
+    expect(child?.workflow).toBe('echo');
   });
 
   it('signal round-trips and resumes a parked run', async () => {
@@ -202,6 +218,11 @@ describe('tenant boundary — anti-IDOR (spec §8/§9)', () => {
   it('a tenant cannot SIGNAL another tenant’s run', async () => {
     const started = await acme.start('await-go', {});
     await expect(evil.signal(started.runId, 'go', {})).rejects.toThrow(/another tenant/);
+  });
+
+  it('a tenant cannot enumerate another tenant’s CHILDREN (getRunChildren rejects cross-tenant)', async () => {
+    const started = await acme.start('await-go', {});
+    await expect(evil.getRunChildren(started.runId)).rejects.toThrow(/another tenant/);
   });
 
   it('an unknown run is not an error (returns null), so it leaks nothing about existence', async () => {

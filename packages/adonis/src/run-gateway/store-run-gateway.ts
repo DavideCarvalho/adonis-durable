@@ -8,11 +8,7 @@ import type {
   WorkflowRun,
 } from '../interfaces.js';
 import type { WorkflowRef } from '../workflow-ref.js';
-import type {
-  DurableTopology,
-  RunGateway,
-  StartRunOptions,
-} from './interface.js';
+import type { DurableTopology, RunGateway, StartRunOptions } from './interface.js';
 
 /**
  * The slice of {@link WorkflowEngine} the {@link StoreRunGateway} delegates to. Declared structurally
@@ -31,6 +27,7 @@ export interface RunGatewayEngine {
   getRun(runId: string): Promise<WorkflowRun | null>;
   listRuns(query: RunQuery): Promise<WorkflowRun[]>;
   listCheckpoints(runId: string): Promise<StepCheckpoint[]>;
+  getRunChildren(parentRunId: string): Promise<string[]>;
   workerHealth(extra?: string[]): Promise<GroupHealth[]>;
   start(
     workflow: string,
@@ -42,9 +39,7 @@ export interface RunGatewayEngine {
   cancel(runId: string, opts?: { compensate?: boolean }): Promise<RunResult | null>;
   subscribe(listener: (event: EngineEvent) => void): () => void;
   /** Optional — absent on the current AdonisJS engine; see {@link RunGatewayEngine} note. */
-  redispatchPending?(
-    runId: string,
-  ): Promise<(RunResult & { redispatched: number }) | null>;
+  redispatchPending?(runId: string): Promise<(RunResult & { redispatched: number }) | null>;
 }
 
 /** Options for {@link StoreRunGateway}. */
@@ -94,6 +89,10 @@ export class StoreRunGateway implements RunGateway {
     return this.#engine.listCheckpoints(runId);
   }
 
+  getRunChildren(runId: string): Promise<string[]> {
+    return this.#engine.getRunChildren(runId);
+  }
+
   async getSearchAttributes(runId: string): Promise<SearchAttributes | undefined> {
     const run = await this.#engine.getRun(runId);
     return run?.searchAttributes;
@@ -103,11 +102,7 @@ export class StoreRunGateway implements RunGateway {
     return this.#engine.workerHealth();
   }
 
-  async start(
-    workflow: WorkflowRef,
-    input: unknown,
-    opts?: StartRunOptions,
-  ): Promise<RunResult> {
+  async start(workflow: WorkflowRef, input: unknown, opts?: StartRunOptions): Promise<RunResult> {
     const runId = opts?.runId ?? globalThis.crypto.randomUUID();
     // `start` is overloaded per ref kind (class | string) on the engine; a `WorkflowRef` union fits
     // neither overload, so resolve to the string overload (the engine handles both at runtime).
@@ -115,13 +110,19 @@ export class StoreRunGateway implements RunGateway {
   }
 
   /**
-   * Deliver `signal` (by token/name) with `payload` to the addressed run. The store-backed engine
-   * resolves the waiter by token globally, so delegation is by token; `runId` is retained on the port
-   * for a proxy to route to the owning control plane (and for future run-scoped delivery).
+   * Deliver `signal` (by name) with `payload` to the addressed run. Confirmed against the engine's
+   * waiter convention (design §8): `engine.signal` is GENUINELY GLOBAL-BY-NAME — `ctx.waitForSignal(name)`
+   * registers a waiter under the caller-chosen `name` VERBATIM, and `engine.signal(name, payload)` matches
+   * by that exact string. There is NO `signal:<runId>:<name>` waiter convention: the run-scoped families
+   * (`task:<runId>:<name>`, `update:<runId>:<name>`, `wh:<runId>:<seq>`, `child:<id>`) are the FRAMEWORK
+   * composing the token before it hands it to `waitForSignal` — an external, user-named signal never is.
+   * Deriving a run-scoped token here would therefore reach NO waiter (a run parked on `waitForSignal('go')`
+   * would never see `signal('go')`), so the name is forwarded unchanged.
    *
-   * TODO(integrator): confirm the token-derivation convention against design §8 — if run-scoped named
-   * signals are addressed as `signal:<runId>:<name>` (the engine's convention for `task:`/`update:`/
-   * `wh:` channels), derive the token here from `runId`+`signal` instead of using `signal` verbatim.
+   * `runId` is NOT dropped from the port on purpose: the `RunRequestResponder` uses it for the tenant
+   * ownership check (loads the run, rejects cross-tenant) BEFORE this delegates, and a `ProxyRunGateway`
+   * uses it to route to the run's owning control plane. So the signal stays name-addressed while the run
+   * boundary is still enforced one layer up.
    */
   signal(_runId: string, signal: string, payload?: unknown): Promise<RunResult | null> {
     return this.#engine.signal(signal, payload);
@@ -131,9 +132,7 @@ export class StoreRunGateway implements RunGateway {
     return this.#engine.cancel(runId, opts);
   }
 
-  redispatchPending(
-    runId: string,
-  ): Promise<(RunResult & { redispatched: number }) | null> {
+  redispatchPending(runId: string): Promise<(RunResult & { redispatched: number }) | null> {
     // The AdonisJS engine doesn't yet expose per-step re-dispatch; degrade to null when absent so the
     // verb stays byte-compatible for a proxy without inventing engine behaviour. See RunGatewayEngine.
     return this.#engine.redispatchPending?.(runId) ?? Promise.resolve(null);

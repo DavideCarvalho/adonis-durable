@@ -14,16 +14,16 @@ import type { DashboardEngine } from './handlers.js';
  * - `requeue` → the gateway's `redispatchPending` (the operator recovery verb; the extra
  *   `redispatched` count on the result is a harmless superset of `RunResult`).
  *
- * One verb has no wire equivalent: `getRunChildren` (parent→child fan-out) is not part of the P4 read
- * surface, so it degrades to `[]` on a tenant pod — the run detail view simply shows no children there.
+ * `getRunChildren` (parent→child fan-out) now rides the P4 read surface too (a `getRunChildren`
+ * `RunRequestKind` verb), so a store-less tenant pod's run detail view lists children round-tripped over
+ * the wire — the responder enforces the tenant-ownership check before answering (anti-IDOR).
  */
 export function gatewayDashboardEngine(gateway: RunGateway): DashboardEngine {
   return {
     getRun: (runId) => gateway.getRun(runId),
     listRuns: (query) => gateway.listRuns(query),
     listCheckpoints: (runId) => gateway.getCheckpoints(runId),
-    // Child-run fan-out is not part of the P4 read surface (design §8) — degrade to none over the wire.
-    getRunChildren: async () => [],
+    getRunChildren: (runId) => gateway.getRunChildren(runId),
     requeue: (runId): Promise<RunResult | null> => gateway.redispatchPending(runId),
     cancel: (runId, opts) => gateway.cancel(runId, opts),
     workerHealth: () => gateway.workerHealth(),

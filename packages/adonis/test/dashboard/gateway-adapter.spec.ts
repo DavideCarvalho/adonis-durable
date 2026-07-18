@@ -20,6 +20,7 @@ function gatewaySpy(): RunGateway & { calls: string[] } {
     getRun: async (id) => track(`getRun:${id}`, null),
     listRuns: async () => track('listRuns', []),
     getCheckpoints: async (id) => track(`getCheckpoints:${id}`, []),
+    getRunChildren: async (id) => track(`getRunChildren:${id}`, ['child-a', 'child-b']),
     getSearchAttributes: async () => undefined,
     workerHealth: async () => track('workerHealth', []),
     start: async () => ({ runId: 'r', status: 'pending' }),
@@ -48,9 +49,13 @@ describe('gatewayDashboardEngine — RunGateway → DashboardEngine port', () =>
     expect(gw.calls).toContain('listRuns');
   });
 
-  it('degrades getRunChildren to [] over the wire (not part of the P4 read surface)', async () => {
-    const engine = gatewayDashboardEngine(gatewaySpy());
-    expect(await engine.getRunChildren('run-1')).toEqual([]);
+  it('routes getRunChildren → gateway.getRunChildren (P4 wire verb, real children)', async () => {
+    const gw = gatewaySpy();
+    const engine = gatewayDashboardEngine(gw);
+    // The adapter delegates rather than degrading to [] — a tenant pod now lists real children over the
+    // wire. Mutation: revert the adapter to `async () => []` and this returns [] → fails.
+    expect(await engine.getRunChildren('run-1')).toEqual(['child-a', 'child-b']);
+    expect(gw.calls).toContain('getRunChildren:run-1');
   });
 });
 

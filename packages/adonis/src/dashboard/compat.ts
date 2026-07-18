@@ -11,8 +11,9 @@ import { type ApiResponse, ok } from './handlers.js';
  *
  * - `controlPlaneDescriptor()` — the control plane's own handshake descriptor, negotiated against each
  *   worker; `undefined` when nothing has advertised yet (the handler falls back to a current-protocol CP);
- * - `fleet()` — live worker descriptors grouped by routing token (from `listWorkerDescriptors` on a store
- *   role, reconstructed from diagnostics events by {@link BlockedDiagnosticsRecorder});
+ * - `fleet()` — worker descriptors grouped by routing token: the LIVE green fleet enumerated off the
+ *   transport ({@link enumerateLiveFleet}, so every advertising pod shows — compatible or not, blocked or
+ *   not), merged with the descriptors {@link BlockedDiagnosticsRecorder} reconstructed from past blocks;
  * - `blockedRuns()` — the runs parked `blocked` (their human reason on `run.error.message`);
  * - `diagnosticsFor(runId)` — the captured loud delta for a blocked run, when one was recorded.
  *
@@ -24,6 +25,76 @@ export interface CompatSource {
   fleet(): Array<{ token: string; workers: WorkerDescriptor[] }>;
   blockedRuns(): Promise<WorkflowRun[]>;
   diagnosticsFor(runId: string): RecordedBlock | undefined;
+}
+
+/** One routing token's live workers — the unit the compat panel negotiates per group. */
+export type FleetGroup = { token: string; workers: WorkerDescriptor[] };
+
+/**
+ * The OPTIONAL transport capability the dashboard uses to enumerate the LIVE green fleet (design §7.2/§10) —
+ * every worker currently advertising a descriptor, whether or not it has ever triggered a blocked dispatch.
+ * Both methods are optional on the full `Transport` (only broker transports — e.g. bullmq — carry them), so
+ * a transport that offers neither degrades the panel to the diagnostics-only view. Mirrors the engine's own
+ * `listWorkerGroups`/`listWorkerDescriptors` narrowing.
+ */
+export interface FleetTransport {
+  listWorkerGroups?(): Promise<string[]>;
+  listWorkerDescriptors?(token: string): Promise<WorkerDescriptor[]>;
+}
+
+/**
+ * Enumerate the LIVE fleet across ALL routing tokens: SCAN the heartbeat keyspace for distinct tokens
+ * (`listWorkerGroups`), then read each token's advertised descriptors (`listWorkerDescriptors`). This is
+ * what surfaces an incompatible worker that has NEVER blocked a dispatch — the diagnostics recorder only
+ * knows workers a past block captured, but a green-fleet enumeration sees every live pod (compatible +
+ * incompatible), so the panel can negotiate and red-flag it proactively.
+ *
+ * Degrades to `[]` (never throws): a transport without the capability, an empty keyspace, or a scan error
+ * all read as "no live fleet", leaving the panel on its diagnostics-only view. A token whose workers are
+ * all legacy (no descriptor published) contributes nothing — legacy is assume-compatible (design §7.7).
+ */
+export async function enumerateLiveFleet(
+  transport: FleetTransport | null | undefined,
+): Promise<FleetGroup[]> {
+  if (
+    !transport ||
+    typeof transport.listWorkerGroups !== 'function' ||
+    typeof transport.listWorkerDescriptors !== 'function'
+  ) {
+    return [];
+  }
+  const groups: FleetGroup[] = [];
+  try {
+    for (const token of await transport.listWorkerGroups()) {
+      const workers = await transport.listWorkerDescriptors(token);
+      if (workers.length > 0) groups.push({ token, workers });
+    }
+  } catch {
+    // A backend that can't SCAN/GET the descriptor keyspace degrades to whatever was read so far — the
+    // panel still renders (diagnostics + any partial live view) rather than 500-ing.
+  }
+  return groups;
+}
+
+/**
+ * Union several fleet snapshots into one, keyed `token` → `instanceId`. Later sources WIN per instance, so
+ * pass the freshest last (the provider passes the captured diagnostics fleet first, the live enumeration
+ * last — a live descriptor supersedes a stale captured one, and a live-only worker with no prior block is
+ * added). The result is what {@link CompatSource.fleet} returns for negotiation.
+ */
+export function mergeFleets(...sources: FleetGroup[][]): FleetGroup[] {
+  const byToken = new Map<string, Map<string, WorkerDescriptor>>();
+  for (const source of sources) {
+    for (const { token, workers } of source) {
+      const perInstance = byToken.get(token) ?? new Map<string, WorkerDescriptor>();
+      for (const worker of workers) perInstance.set(worker.instanceId, worker);
+      byToken.set(token, perInstance);
+    }
+  }
+  return [...byToken].map(([token, perInstance]) => ({
+    token,
+    workers: [...perInstance.values()],
+  }));
 }
 
 /**
