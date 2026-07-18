@@ -57,11 +57,24 @@ export const LEGACY_V1_PROTOCOL: WorkerDescriptor['protocol'] = { version: 1, ra
  * field is ABSENT. These are the durable primitives that have existed since v1, so a legacy worker
  * can still be routed work that `requires` them (design §7.5/§7.7).
  *
- * TODO(integrator): finalize this list against the real aviary v1 feature surface before the
- * cross-repo conformance wave — it is the canonical "what a v1 worker can do" contract and must
- * match the nestjs + python baselines byte-for-byte.
+ * This is the canonical aviary v1 execution surface, byte-for-byte identical across the Adonis,
+ * nestjs-durable, and Python SDKs (verified against the aviary codebase). `search-attr-v2` and other
+ * modern features are layered ON TOP and are NOT part of the v1 baseline — a legacy worker guarantees
+ * only the v1 `search-attributes` surface. Keep this list in lockstep with the other two SDKs.
  */
-export const LEGACY_V1_CAPABILITIES: readonly string[] = Object.freeze(['saga', 'signals']);
+export const LEGACY_V1_CAPABILITIES: readonly string[] = Object.freeze([
+  'saga',
+  'signals',
+  'search-attributes',
+  'priority',
+  'entities',
+  'child-workflows',
+  'singleton',
+  'schedules',
+  'continue-as-new',
+  'queries',
+  'cancellation',
+]);
 
 /**
  * A raw, possibly-partial descriptor as it may arrive off the wire from an older SDK: `protocol`

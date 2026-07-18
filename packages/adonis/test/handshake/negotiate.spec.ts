@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { RawWorkerDescriptor, WorkerDescriptor } from '../../src/handshake/descriptor.js';
+import {
+  LEGACY_V1_CAPABILITIES,
+  type RawWorkerDescriptor,
+  type WorkerDescriptor,
+} from '../../src/handshake/descriptor.js';
 import { negotiate } from '../../src/handshake/negotiate.js';
 
 function desc(overrides: Partial<WorkerDescriptor> = {}): WorkerDescriptor {
@@ -129,7 +133,8 @@ describe('negotiate — legacy assume-compatible (design §7.7)', () => {
       instanceId: 'cp',
       runtime: 'node',
       protocol: { version: 1, range: [1, 1] },
-      capabilities: ['saga', 'signals'],
+      // a v1 control-plane advertises the v1 surface — same set a legacy peer normalizes to
+      capabilities: [...LEGACY_V1_CAPABILITIES],
     };
     const legacy: RawWorkerDescriptor = { instanceId: 'old-worker', runtime: 'python' };
     const r = negotiate(modern, legacy);
