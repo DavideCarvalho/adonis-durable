@@ -1,5 +1,11 @@
 # @adonis-agora/durable
 
+## 0.11.0
+
+### Minor Changes
+
+- Store-less cluster + cross-ecosystem interop: separate API from engine and run store-less "thin" pods that only talk to the control plane. New role-discriminated config (`standalone` / `control-plane` / `tenant`, `store?: never` on tenant → compile-time isolation), an aviary byte-compatible BullMQ transport (a Python aviary worker can share the same control plane, proven live both directions), the P4 RunGateway (Store/Proxy/Responder) request/reply protocol with layered tenant auth, a store-less WorkerRuntime running steps + workflow turns + parallel `gather` (subpath `@adonis-agora/durable/worker`, no Lucid), a worker-descriptor handshake with capability/protocol negotiation + capability-aware dispatch (park `blocked` instead of hanging), and a dashboard fleet-health panel. Adds `bullmq` as a dependency.
+
 ## 0.10.0
 
 ### Minor Changes
