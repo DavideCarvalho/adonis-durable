@@ -130,9 +130,8 @@ opt-in `fail_fast`.
 
 ## Dispatching a Python workflow from Adonis
 
-You **don't** register anything. When a run is started for a workflow name the engine has no local
-registration for, but a **live worker group of that name** does, the engine routes it there
-automatically. So starting the Python-authored `pipeline` is just:
+Start the workflow by its name — whichever live Python worker is serving that name picks up the
+turns. From an AdonisJS service:
 
 ```ts
 import engine from '@adonis-agora/durable/services/main'
@@ -140,14 +139,9 @@ import engine from '@adonis-agora/durable/services/main'
 await engine.start('pipeline', { id: baseId }, `pipeline-${baseId}`)
 ```
 
-or, from inside another workflow, `await ctx.child('pipeline', { id: baseId })`. A live Python worker
-registered as `pipeline` picks up the turns.
-
-<Callout type="info">
-There is nothing to configure — convention routing is always on, because the **queue name is the
-routing**. If no live worker group matches the name, starting the run still throws `is not
-registered` (the unchanged fail-fast), so a typo'd name never silently hangs.
-</Callout>
+or, from inside another workflow, `await ctx.child('pipeline', { id: baseId })`. The **queue name is
+the routing**: the worker serving `pipeline` runs it. If none is live, the start fails fast so a
+typo'd name never silently hangs.
 
 The workflow-task/decision wire is language-neutral, so the same Python workflow runs unchanged
 against an Adonis, a [NestJS](/docs/durable/cluster/interop), or any other conformant control plane.
