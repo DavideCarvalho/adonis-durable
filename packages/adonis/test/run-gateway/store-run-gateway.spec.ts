@@ -169,11 +169,16 @@ describe('StoreRunGateway (store-backed RunGateway)', () => {
       expect(seenForTarget.length).toBe(countAfterOff);
     });
 
-    it('redispatchPending() degrades to null when the engine lacks the method', async () => {
+    it('redispatchPending() degrades to null when the engine port omits the method (legacy)', async () => {
       const { engine } = makeEngine();
-      // The AdonisJS engine does not implement redispatchPending yet.
-      expect((engine as { redispatchPending?: unknown }).redispatchPending).toBeUndefined();
-      expect(await new StoreRunGateway(engine).redispatchPending('whatever')).toBeNull();
+      // The real engine now implements redispatchPending (parity port of aviary's lost-remote-step
+      // recovery). To exercise the optional-member degradation guard, hide just that method behind a
+      // proxy — a legacy engine port that predates it must degrade to null rather than throw.
+      const legacy = new Proxy(engine, {
+        get: (t, p, r) => (p === 'redispatchPending' ? undefined : Reflect.get(t, p, r)),
+      }) as unknown as RunGatewayEngine;
+      expect((legacy as { redispatchPending?: unknown }).redispatchPending).toBeUndefined();
+      expect(await new StoreRunGateway(legacy).redispatchPending('whatever')).toBeNull();
     });
   });
 

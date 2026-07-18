@@ -36,6 +36,7 @@ export interface DashboardEngine {
   listCheckpoints(runId: string): Promise<StepCheckpoint[]>;
   getRunChildren(runId: string): Promise<string[]>;
   requeue(runId: string): Promise<RunResult | null>;
+  redispatchPending(runId: string): Promise<RunResult | null>;
   cancel(runId: string, opts?: { compensate?: boolean }): Promise<RunResult | null>;
   workerHealth(extra?: string[]): Promise<GroupHealth[]>;
 }

@@ -25,6 +25,7 @@ export function gatewayDashboardEngine(gateway: RunGateway): DashboardEngine {
     listCheckpoints: (runId) => gateway.getCheckpoints(runId),
     getRunChildren: (runId) => gateway.getRunChildren(runId),
     requeue: (runId): Promise<RunResult | null> => gateway.redispatchPending(runId),
+    redispatchPending: (runId): Promise<RunResult | null> => gateway.redispatchPending(runId),
     cancel: (runId, opts) => gateway.cancel(runId, opts),
     workerHealth: () => gateway.workerHealth(),
   };
