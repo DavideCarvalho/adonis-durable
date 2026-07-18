@@ -1,0 +1,18 @@
+{
+  "runId": "run-abc",
+  "seq": 3,
+  "stepId": "run-abc:3",
+  "status": "completed",
+  "output": {
+    "chargeId": "ch_123",
+    "amount": 1200
+  },
+  "startedAt": 1752710400000,
+  "events": [
+    {
+      "at": 1752710400500,
+      "level": "info",
+      "message": "charged card"
+    }
+  ]
+}

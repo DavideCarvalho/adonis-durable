@@ -1,4 +1,6 @@
 import type { z } from 'zod';
+import type { DispatchDiagnostics } from './dispatch-routing.js';
+import type { WorkerDescriptor } from './handshake/descriptor.js';
 import type { StepRef } from './step-name-symbol.js';
 import type { WorkflowClass, WorkflowInputOf, WorkflowOutputOf } from './workflow-ref.js';
 
@@ -18,6 +20,14 @@ export type RunStatus =
   | 'pending'
   | 'running'
   | 'suspended'
+  /**
+   * Parked because NO live worker can run the next dispatch — a required capability is unadvertised,
+   * or every live worker is protocol-incompatible (design §7.5/§7.6). NOT terminal and NOT a silent
+   * hang: it carries a human `error.message` reason + fires a `capability.unavailable`/
+   * `protocol.incompatible` diagnostics event, and the blocked-recovery poll re-drives it (via
+   * `wakeAt`) so it proceeds the moment a capable+compatible worker appears.
+   */
+  | 'blocked'
   | 'completed'
   | 'failed'
   | 'cancelled'
@@ -677,6 +687,102 @@ export interface RunDispatcher {
   dispatch(runId: string): void | Promise<void>;
 }
 
+// ---------------------------------------------------------------------------
+// P4 — store-less read/control/start wire DTOs (byte-compatible with aviary)
+//
+// A store-less `tenant` pod owns no store; every read/control/start round-trips over the transport to
+// the control plane and back. These four DTOs are the wire contract, and they cross the queue / pub-sub
+// as PLAIN JSON with NO envelope (the DTO IS the payload) — byte-for-byte identical to aviary's
+// `StartRunMessage`/`RunRequest`/`RunReply`/`TenantEvent` so a Python/NestJS worker interoperates
+// unchanged (spec §8, Appendix A). Dates nested in an `EngineEvent`/`WorkflowRun` carried by a
+// `TenantEvent`/`RunReply` cross as ISO strings (`Date.toJSON`), exactly what `JSON.stringify` produces.
+// ---------------------------------------------------------------------------
+
+/**
+ * A store-less `tenant` pod → control-plane request to start a run, published on `${P}-start-run`
+ * (BullMQ queue, job `startRun`). The control plane's `onStartRun` consumer turns it into a durable
+ * run via the engine. `tenant` names the namespace/partition that owns the run (the responder trusts
+ * a verified token over this claim — spec §9); it is separate from the wire-level key prefix so one
+ * transport can serve multiple tenants. Byte-compatible with aviary's `StartRunMessage`.
+ */
+export interface StartRunMessage {
+  /** The tenant/namespace the run belongs to (a claim; the responder derives the real one from the token). */
+  tenant: string;
+  /** Registered workflow name. */
+  workflow: string;
+  input: unknown;
+  /** Caller-supplied run id (idempotency key). The proxy always mints one so it can correlate the reply. */
+  runId?: string | undefined;
+  /** Tags to stamp on the run (merged with the workflow's static tags). */
+  tags?: string[] | undefined;
+  /** Typed, queryable run data to stamp on the run (same as {@link StartOptions.searchAttributes}). */
+  searchAttributes?: SearchAttributes | undefined;
+}
+
+/**
+ * A store-less `tenant` pod → control-plane read/control request, enqueued on `${P}-run-request`
+ * (BullMQ queue, job `runRequest`). The control plane's `onRunRequest` consumer answers it — scoped to
+ * `tenant` (spec §9) — and publishes a correlated {@link RunReply} on `${P}-run-reply`. Envelope is
+ * byte-compatible with aviary; the {@link RunRequestKind} verb set mirrors THIS package's
+ * {@link RunGateway} surface (see the note on `RunRequestKind`).
+ */
+export interface RunRequest {
+  /** Correlation id minted by the tenant; the matching {@link RunReply} carries it back. */
+  requestId: string;
+  /** The requesting tenant — the responder scopes the run's namespace/ownership to this. */
+  tenant: string;
+  body: RunRequestKind;
+}
+
+/**
+ * The discriminated verb + args of a {@link RunRequest}. Mirrors THIS package's tenant-facing
+ * {@link RunGateway} — so it diverges from aviary's verb set (aviary has `getRunDetail`/`retry`/
+ * `continue`/`retryWithInput`/`waitingFor`; this package has `getRun`/`getCheckpoints`/
+ * `getSearchAttributes`/`signal`) while the shared verbs (`listRuns`/`cancel`/`redispatch`/
+ * `workerHealth`) keep aviary's EXACT shape, and the request/reply ENVELOPE stays byte-compatible.
+ * `start` and `subscribe` are NOT here — they ride `${P}-start-run` and `${P}-tenant-events-<tenant>`
+ * respectively.
+ */
+export type RunRequestKind =
+  | { kind: 'getRun'; runId: string }
+  | { kind: 'listRuns'; query: RunQuery }
+  | { kind: 'getCheckpoints'; runId: string }
+  | { kind: 'getSearchAttributes'; runId: string }
+  // Parent→child fan-out (the ids of the runs `runId` spawned). runId-bearing, so the responder
+  // enforces the tenant-ownership check before answering (anti-IDOR). Additive to the wire: an older
+  // control plane simply rejects the unknown verb, an older tenant never sends it.
+  | { kind: 'getRunChildren'; runId: string }
+  // Per-group worker health — the responder answers it scoped to the requester's own `@<tenant>`
+  // groups (see `RunRequestResponder`), so a tenant's Workers panel shows ITS queues, never another's.
+  | { kind: 'workerHealth' }
+  | { kind: 'signal'; runId: string; signal: string; payload?: unknown }
+  | { kind: 'cancel'; runId: string; opts?: { compensate?: boolean } }
+  | { kind: 'redispatch'; runId: string };
+
+/** The control plane's answer to a {@link RunRequest} (or to a start-run, correlated by the minted
+ *  runId), keyed by `requestId`. Byte-compatible with aviary's `RunReply`. */
+export interface RunReply {
+  requestId: string;
+  result: RunReplyResult;
+}
+
+/** Success carries the verb's payload (JSON-serialised); failure carries a re-throwable domain error
+ *  (run not found, cross-tenant, unknown workflow). Transport/timeout failures are gateway-level, never
+ *  a `RunReply`. */
+export type RunReplyResult =
+  | { ok: true; data: unknown }
+  | { ok: false; error: { message: string; code?: string } };
+
+/**
+ * A lifecycle {@link EngineEvent} re-published to a single tenant's channel
+ * (`${P}-tenant-events-<tenant>`) so a store-less tenant can live-tail ITS OWN runs. Scoped by the
+ * run's namespace at publish time (spec §8). Byte-compatible with aviary's `TenantEvent`.
+ */
+export interface TenantEvent {
+  tenant: string;
+  event: EngineEvent;
+}
+
 export interface Transport {
   /** engine → worker */
   dispatch(task: RemoteTask): Promise<void>;
@@ -716,6 +822,50 @@ export interface Transport {
    *  keyspace, so a group with workers but no engine-side registration (e.g. a local-step group)
    *  still surfaces. Pairs with {@link groupHealth}. */
   listWorkerGroups?(): Promise<string[]>;
+  /**
+   * The LIVE worker handshake descriptors advertised on a routing `token` — read from the
+   * `${P}-worker-descriptor:<token>:*` keys a {@link WorkerDescriptor}-publishing worker runtime
+   * writes (design §7.2). The control-plane consults these BEFORE dispatch to route capability-aware
+   * and negotiate protocol compatibility (design §7.5): if none is capable/compatible the run parks
+   * `blocked` instead of hanging. OPTIONAL and additive — a transport that can't introspect the
+   * descriptor keyspace (in-process, or a pre-handshake broker) simply omits it, and the engine then
+   * skips the guard and dispatches as before (legacy assume-compatible, design §7.7). MUST degrade to
+   * `[]` (never throw) when the keyspace is empty or unreadable. Pairs with {@link listWorkerGroups}.
+   */
+  listWorkerDescriptors?(token: string): Promise<WorkerDescriptor[]>;
+
+  // -------------------------------------------------------------------------
+  // P4 — store-less read/control/start protocol (spec §6.2, §8). All OPTIONAL:
+  // only broker transports that carry the hosted-control-plane protocol (BullMQ) implement them, so a
+  // caller capability-checks (`transport.dispatchRunRequest?.(…)`) before wiring the proxy/responder.
+  // start-run & run-request ride BullMQ QUEUES (durable, one consumer); run-reply & tenant-events ride
+  // Redis PUB/SUB (fan-out) — the same substrate `RedisControlPlane` uses (spec §6 note).
+  // -------------------------------------------------------------------------
+
+  /** tenant → control plane: publish a {@link StartRunMessage} on `${P}-start-run` (queue, job
+   *  `startRun`) requesting a new run. Pair with {@link onStartRun}. */
+  dispatchStartRun?(msg: StartRunMessage): Promise<void>;
+  /** control plane ← tenant: consume {@link StartRunMessage}s and start runs. Pair with
+   *  {@link dispatchStartRun}. Idempotent — a second call is a no-op. */
+  onStartRun?(handler: (msg: StartRunMessage) => Promise<void>): void;
+  /** tenant → control plane: publish a {@link RunRequest} (read/control) on `${P}-run-request` (queue,
+   *  job `runRequest`). Pair with {@link onRunRequest}. */
+  dispatchRunRequest?(msg: RunRequest): Promise<void>;
+  /** control plane ← tenant: consume {@link RunRequest}s. Pair with {@link dispatchRunRequest}.
+   *  Idempotent — a second call is a no-op. */
+  onRunRequest?(handler: (msg: RunRequest) => Promise<void>): void;
+  /** control plane → tenant: publish a correlated {@link RunReply} on `${P}-run-reply` (pub/sub; every
+   *  tenant subscribes and filters by `requestId` client-side). Pair with {@link onRunReply}. */
+  publishRunReply?(reply: RunReply): Promise<void>;
+  /** tenant ← control plane: consume {@link RunReply}s (filter by `requestId` client-side). Pair with
+   *  {@link publishRunReply}. Idempotent — a second call is a no-op. */
+  onRunReply?(handler: (reply: RunReply) => void): void;
+  /** control plane → tenant: re-publish a lifecycle {@link TenantEvent} on the run's per-tenant channel
+   *  `${P}-tenant-events-<tenant>`. Pair with {@link onTenantEvent}. */
+  publishTenantEvent?(evt: TenantEvent): Promise<void>;
+  /** tenant ← control plane: subscribe to THIS tenant's event channel. Returns an unsubscribe fn.
+   *  Several tenants (or several callers per tenant) may subscribe independently. */
+  onTenantEvent?(tenant: string, handler: (evt: TenantEvent) => void): () => void;
 }
 
 /** One worker's liveness record — a TTL'd heartbeat a worker refreshes while it's consuming. Its
@@ -812,6 +962,14 @@ export interface StepOptions {
    * remote workers can use it as the idempotency key, so there's no separate key option.
    */
   compensate?: () => Promise<void>;
+  /**
+   * Capabilities a live worker must advertise (in its handshake descriptor) to run this step
+   * (design §7.5). The control-plane dispatches only to workers whose descriptor advertises EVERY
+   * name here; if no live capable+protocol-compatible worker exists the run parks `blocked` with a
+   * precise reason instead of dispatching into a queue nobody consumes. Absent/empty = "runs
+   * anywhere" (the backward-compatible default — no requirement). Order-insensitive (a set).
+   */
+  requires?: string[] | undefined;
 }
 
 /**
@@ -867,6 +1025,11 @@ export interface StepDispatchOpts {
   /** Liveness window for this dispatched step (ms): presume the worker dead and re-dispatch on
    *  timeout (retryable per `retries`). Omit to wait indefinitely. Overrides the `@Step` value. */
   timeoutMs?: number;
+  /** Capabilities a live worker must advertise to run this step (design §7.5). Overrides/augments the
+   *  `@Step`-declared `requires`. If no live capable+compatible worker exists the run parks `blocked`
+   *  with a precise reason rather than dispatching into a queue nobody consumes. Absent = no
+   *  requirement (runs anywhere) — the backward-compatible default. */
+  requires?: string[];
 }
 
 /** What a saga undo handler receives: the compensated step's original input and its result — the
@@ -1196,7 +1359,13 @@ export type EngineEventType =
   // A single step event (log line / sub-process outcome) emitted WHILE a step is still running, so
   // observers tail a long step's progress live instead of waiting for `step.completed` to deliver
   // the whole `events` array at once. Carries `event`; never persisted (live-tail only).
-  | 'step.progress';
+  | 'step.progress'
+  // The run parked `blocked`: no live worker advertised a capability it required (design §7.5/§7.6).
+  // Carries `error` (the human reason) + `diagnostics` (the missing-capability delta + descriptors).
+  | 'capability.unavailable'
+  // The run parked `blocked`: a capable worker existed but every live one is protocol-incompatible
+  // (no common major, design §7.4/§7.6). Carries `error` + `diagnostics` (the protocol-range delta).
+  | 'protocol.incompatible';
 
 /**
  * A lifecycle event emitted by the engine. The observability surfaces (dashboard, OTel, the
@@ -1221,6 +1390,11 @@ export interface EngineEvent {
   /** The live step event carried by a `step.progress` (the single log line / sub-process outcome a
    *  running step just emitted). Absent on lifecycle events. */
   event?: StepEvent | undefined;
+  /** The structured routing delta carried by a `capability.unavailable`/`protocol.incompatible`
+   *  diagnostics event (design §7.6): required capabilities, the live descriptors considered and the
+   *  control-plane descriptor negotiated against — enough to render WHY the run parked. Absent on all
+   *  other event types. */
+  diagnostics?: DispatchDiagnostics | undefined;
   at: Date;
 }
 

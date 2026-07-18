@@ -1,0 +1,14 @@
+{
+  "tenant": "acme",
+  "event": {
+    "type": "run.completed",
+    "runId": "run-checkout-1",
+    "workflow": "checkout",
+    "namespace": "acme",
+    "output": {
+      "orderId": "order-42"
+    },
+    "durationMs": 1234,
+    "at": "2025-07-17T00:00:00.000Z"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "instanceId": "ts-billing-01-4821",
+  "runtime": "node",
+  "sdk": {
+    "name": "@adonis-agora/durable",
+    "version": "1.0.0"
+  },
+  "protocol": {
+    "version": 1,
+    "range": [
+      1,
+      1
+    ]
+  },
+  "capabilities": [
+    "saga",
+    "signals",
+    "search-attr-v2",
+    "priority"
+  ],
+  "workflows": [
+    "CheckoutWorkflow",
+    "RefundWorkflow"
+  ],
+  "steps": [
+    "Billing.charge",
+    "Billing.refund",
+    "Inventory.reserve"
+  ],
+  "partition": "billing",
+  "namespace": "acme",
+  "startedAt": 1752710400000
+}

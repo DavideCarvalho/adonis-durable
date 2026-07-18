@@ -1,0 +1,6 @@
+{
+  "runId": "run-abc",
+  "seq": 3,
+  "stepId": "run-abc:3",
+  "group": "payments.charge-card"
+}

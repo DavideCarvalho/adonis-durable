@@ -7,13 +7,23 @@ import {
   readSession,
 } from '../src/dashboard/auth.js';
 import {
+  type CompatSource,
+  type FleetTransport,
+  compat,
+  enumerateLiveFleet,
+  mergeFleets,
+} from '../src/dashboard/compat.js';
+import {
   type DurableDashboardConfig,
   type ResolvedDurableDashboardConfig,
   resolveConfig,
 } from '../src/dashboard/define_config.js';
+import { BlockedDiagnosticsRecorder } from '../src/dashboard/diagnostics-recorder.js';
+import { dashboardEngineForRole } from '../src/dashboard/gateway-adapter.js';
 import {
   type ApiRequest,
   type ApiResponse,
+  type DashboardEngine,
   type Deps,
   cancelRun,
   getRun,
@@ -24,7 +34,9 @@ import {
 } from '../src/dashboard/handlers.js';
 import { renderDashboard } from '../src/dashboard/html.js';
 import { renderLoginPage } from '../src/dashboard/login_page.js';
+import type { DurableConfig } from '../src/define_config.js';
 import { WorkflowEngine } from '../src/index.js';
+import { DURABLE_TRANSPORT } from '../src/role_bindings.js';
 
 /**
  * Mounts the durable dashboard into an AdonisJS app: a JSON API over the
@@ -47,11 +59,27 @@ export default class DashboardProvider {
   /** Warn once so a throwing `login` hook doesn't spam the logs on every failed attempt. */
   private warnedOnHookThrow = false;
 
+  /**
+   * Captures the engine's `capability.unavailable` / `protocol.incompatible` diagnostics events so the
+   * `/compat` health panel can render each blocked run's structured delta + the live-fleet compat view
+   * (design §7.6, §10). Store-role only — attached in {@link boot}; a `tenant` pod owns no engine.
+   */
+  private readonly diagnostics = new BlockedDiagnosticsRecorder();
+  /** Detach handle for the diagnostics subscription, released on {@link shutdown}. */
+  private detachDiagnostics: (() => void) | null = null;
+
+  /** The active durable role (`standalone` when no `durable` config is present — today's default). */
+  private durableRole(): 'standalone' | 'control-plane' | 'tenant' {
+    return this.app.config.get<DurableConfig>('durable', {}).role ?? 'standalone';
+  }
+
   async boot() {
     const config = resolveConfig(
       this.app.config.get<DurableDashboardConfig>('durable_dashboard', {}),
     );
     if (!config.enabled) return;
+
+    const role = this.durableRole();
 
     // Route registration can't happen synchronously in `boot()`: at this point in the AdonisJS
     // lifecycle the HTTP server/router binding may not be resolvable yet (bindings from other
@@ -70,20 +98,41 @@ export default class DashboardProvider {
     // `@adonisjs/core`'s own `AppServiceProvider` uses internally.
     await this.app.booted(async () => {
       const router = await this.app.container.make('router');
-      this.registerRoutes(router, config);
+      this.registerRoutes(router, config, role);
+      await this.attachDiagnostics(role);
     });
   }
 
-  private registerRoutes(router: HttpRouterService, config: ResolvedDurableDashboardConfig): void {
+  /**
+   * Subscribe the {@link diagnostics} recorder to the store-backed engine's lifecycle events so the
+   * `/compat` panel is fed live (design §10). Store-role only: a `tenant` pod owns no engine (structural
+   * isolation), so its panel shows blocked runs reason-only. Defensive: if the engine can't be resolved
+   * (the dashboard mounted without `@adonis-agora/durable`'s provider), the recorder simply stays empty
+   * rather than crashing boot.
+   */
+  private async attachDiagnostics(role: 'standalone' | 'control-plane' | 'tenant'): Promise<void> {
+    if (role === 'tenant') return;
+    try {
+      const engine = await this.app.container.make(WorkflowEngine);
+      this.detachDiagnostics = this.diagnostics.attach(engine);
+    } catch {
+      // No store-backed engine available — the compat panel degrades to reason-only blocked runs.
+    }
+  }
+
+  private registerRoutes(
+    router: HttpRouterService,
+    config: ResolvedDurableDashboardConfig,
+    role: 'standalone' | 'control-plane' | 'tenant',
+  ): void {
     const apiBase = `${config.path}/api`;
 
-    // Resolve the engine lazily per request: the singleton is built by
-    // @adonis-agora/durable's provider, and runs/checkpoints are read through its own
-    // read API (listRuns / listCheckpoints), so the dashboard needs nothing else.
-    const deps = async (): Promise<Deps> => {
-      const engine = await this.app.container.make(WorkflowEngine);
-      return { engine };
-    };
+    // Resolve the dashboard's read/control port lazily per request, branched by role (design §5/§8):
+    // a store role resolves the engine (built by @adonis-agora/durable's provider); a store-less `tenant`
+    // pod resolves the DURABLE_RUN_GATEWAY token (a ProxyRunGateway) and adapts it — NO engine, NO store.
+    const resolveEngine = (): Promise<DashboardEngine> =>
+      dashboardEngineForRole(role, this.app.container, WorkflowEngine);
+    const deps = async (): Promise<Deps> => ({ engine: await resolveEngine() });
 
     // Built-in `dashboardAuth` login screen (opt-in). Registered ONLY when configured, so omitting
     // `dashboardAuth` leaves route registration byte-for-byte as it was. These endpoints are public
@@ -131,6 +180,56 @@ export default class DashboardProvider {
         json((d) => health(d)),
       )
       .as('durable_dashboard.health');
+
+    // Fleet health / protocol-compatibility panel (design §7.6, §10): per queue/group/pod protocol +
+    // negotiated level + red-flag reason on incompatibility, plus blocked runs with their structured delta.
+    router
+      .get(`${apiBase}/compat`, async (ctx: HttpContext) => {
+        if (!(await this.enforce(config, ctx, 'api'))) return;
+        try {
+          const result = await compat(await this.compatSource(await resolveEngine()));
+          return ctx.response.status(result.status).json(result.body);
+        } catch (error) {
+          return ctx.response
+            .status(500)
+            .json({ error: error instanceof Error ? error.message : 'internal error' });
+        }
+      })
+      .as('durable_dashboard.compat');
+  }
+
+  /**
+   * Assemble the {@link CompatSource} the `/compat` handler reads (design §10). The fleet view is the LIVE
+   * green fleet enumerated off the transport (every advertising worker — compatible OR incompatible, even
+   * one that never triggered a blocked dispatch) merged with the descriptors the {@link diagnostics}
+   * recorder reconstructed from past blocks; the live descriptors win per instance (fresher). Captured
+   * diagnostics + blocked runs stay as they were.
+   *
+   * The live enumeration is snapshotted ONCE per request (an `async` fetch off the transport), then handed
+   * to the handler as a synchronous `fleet()` closure — so {@link CompatSource} keeps its cheap sync shape.
+   * A `tenant` pod (or a transport without the fleet capability) has no {@link DURABLE_TRANSPORT} binding →
+   * live fleet is empty → the panel degrades to the diagnostics-only view exactly as before.
+   */
+  private async compatSource(engine: DashboardEngine): Promise<CompatSource> {
+    const live = await enumerateLiveFleet(await this.fleetTransport());
+    const fleet = mergeFleets(this.diagnostics.fleet(), live);
+    return {
+      controlPlaneDescriptor: () => this.diagnostics.controlPlaneDescriptor(),
+      fleet: () => fleet,
+      blockedRuns: () => engine.listRuns({ statuses: ['blocked'] }),
+      diagnosticsFor: (runId) => this.diagnostics.diagnosticsFor(runId),
+    };
+  }
+
+  /** Resolve the store role's task transport (published under {@link DURABLE_TRANSPORT}) for LIVE fleet
+   *  enumeration, or `null` when unavailable — a `tenant` pod never binds it, and a mis-mounted dashboard
+   *  degrades cleanly to the diagnostics-only view rather than crashing the panel. */
+  private async fleetTransport(): Promise<FleetTransport | null> {
+    try {
+      return (await this.app.container.make(DURABLE_TRANSPORT)) as FleetTransport;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -252,6 +351,12 @@ export default class DashboardProvider {
       maxAge: Math.floor(auth.ttlMs / 1000),
       encode: false,
     });
+  }
+
+  /** Detach the diagnostics subscription so the recorder stops listening on a clean shutdown/redeploy. */
+  async shutdown(): Promise<void> {
+    this.detachDiagnostics?.();
+    this.detachDiagnostics = null;
   }
 }
 

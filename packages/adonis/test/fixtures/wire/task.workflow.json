@@ -1,0 +1,33 @@
+{
+  "taskId": "run-xyz#2",
+  "runId": "run-xyz",
+  "workflow": "checkout",
+  "workflowVersion": "1.0.0",
+  "input": {
+    "cartId": "cart-9"
+  },
+  "history": [
+    {
+      "seq": 0,
+      "kind": "step",
+      "name": "inventory.reserve",
+      "output": {
+        "reserved": true
+      }
+    }
+  ],
+  "pendingSignals": [
+    {
+      "seq": 1,
+      "signal": "payment.settled",
+      "payload": {
+        "amount": 1200
+      }
+    }
+  ],
+  "group": "checkout",
+  "transport": "primary",
+  "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+  "priority": 5,
+  "attempt": 1
+}

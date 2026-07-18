@@ -1,0 +1,10 @@
+{
+  "requestId": "req-1",
+  "result": {
+    "ok": false,
+    "error": {
+      "message": "run belongs to another tenant",
+      "code": "cross-tenant"
+    }
+  }
+}

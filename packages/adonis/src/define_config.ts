@@ -1,3 +1,10 @@
+import type {
+  ControlPlaneConfig,
+  StandaloneConfig,
+  TenantConfig,
+  TenantVerifier,
+  VerifiedTenant,
+} from './config_types.js';
 import { controlPlanes } from './control-planes/factory.js';
 import type {
   ControlPlaneContext,
@@ -19,7 +26,8 @@ import type {
 } from './transports/factory.js';
 
 /**
- * Shape of `config/durable.ts`. Everything is optional — by default the engine uses an in-process
+ * The **shared** fields of `config/durable.ts`, common to every {@link DurableConfig} role. Everything
+ * here is optional — by default the engine uses an in-process
  * state store + transport (single-process, no extra infra). Pick a `transport`/`store` by name from
  * the `transports`/`stores` maps to run cross-process or persist durably; build the entries with the
  * {@link transports} / {@link stores} factories so each peer dependency (`@adonisjs/queue`,
@@ -44,7 +52,15 @@ import type {
  * })
  * ```
  */
-export interface DurableConfig {
+export interface BaseDurableConfig {
+  /**
+   * Which topology this engine runs as (spec §3): `'standalone'` (default — control-plane + embedded
+   * worker), `'control-plane'` (pure coordinator), or `'tenant'` (store-less thin pod). Selected
+   * explicitly, never inferred. Omit it and {@link defineConfig} defaults to `'standalone'`, so a
+   * config written before roles existed behaves identically. The concrete per-role shape is a member
+   * of the {@link DurableConfig} union; this base only declares the discriminant for shared reads.
+   */
+  role?: 'standalone' | 'control-plane' | 'tenant';
   /**
    * Name of the transport (a key of {@link transports}) the engine dispatches over. Omit for the
    * in-process transport (single-process, no extra infra).
@@ -109,13 +125,38 @@ export interface DurableConfig {
   stepsPath?: string | false;
 }
 
-/** Identity helper giving `config/durable.ts` full type-checking. */
-export function defineConfig(config: DurableConfig = {}): DurableConfig {
-  return config;
+/**
+ * Shape of `config/durable.ts` — a **role-discriminated union** (spec §5). TypeScript narrows the
+ * accepted config on the `role` literal, so each topology gets exactly the right fields and an
+ * invalid combination is a compile error. The headline invariant: a `tenant` config may not name a
+ * store (`store?: never` on {@link TenantConfig}), making store-less isolation a compile-time fact.
+ * A config with no `role` lands on {@link StandaloneConfig} — the default — preserving the
+ * pre-roles config byte-for-byte.
+ */
+export type DurableConfig = StandaloneConfig | ControlPlaneConfig | TenantConfig;
+
+/**
+ * Identity helper giving `config/durable.ts` full type-checking. Overloaded so the return type
+ * **narrows on `role`**: pass a `tenant` config and you get a {@link TenantConfig} back, etc. The
+ * `role` is defaulted to `'standalone'` at runtime, so a config that omits it (every config written
+ * before roles existed) still boots as the single-process standalone engine.
+ */
+export function defineConfig(config: TenantConfig): TenantConfig;
+export function defineConfig(config: ControlPlaneConfig): ControlPlaneConfig;
+export function defineConfig(config?: StandaloneConfig): StandaloneConfig;
+export function defineConfig(config: DurableConfig = { role: 'standalone' }): DurableConfig {
+  // Default the discriminant so downstream (provider, gateway) can branch on a always-present `role`
+  // without re-deriving it. `...config` wins, so an explicit role is preserved.
+  return { role: 'standalone', ...config } as DurableConfig;
 }
 
 export { transports, stores, controlPlanes };
 export type {
+  StandaloneConfig,
+  ControlPlaneConfig,
+  TenantConfig,
+  TenantVerifier,
+  VerifiedTenant,
   TransportContext,
   TransportFactory,
   MemoryTransportConfig,

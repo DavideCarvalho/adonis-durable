@@ -13,6 +13,7 @@ export * from './interfaces.js';
 export * from './protocol.js';
 export * from './queue.js';
 export * from './remote-workflow-executor.js';
+export * from './workflow-turn.js';
 export * from './tenant-group.js';
 export {
   DURABLE_STEP_CONFIG,
@@ -52,6 +53,7 @@ export type {
   MemoryTransportConfig,
   EventEmitterTransportConfig,
   QueueTransportConfig,
+  BullMQTransportConfig,
   DbTransportConfig,
 } from './transports/factory.js';
 export {
@@ -60,6 +62,12 @@ export {
 } from './transports/event-emitter.js';
 export { QueueTransport, type QueueTransportOptions } from './transports/queue.js';
 export { DbTransport, type DbTransportOptions } from './transports/db.js';
+export {
+  BullMQTransport,
+  type BullMQTransportOptions,
+  type BullMQDeps,
+  createBullMQDeps,
+} from './transports/bullmq/index.js';
 export {
   TRANSPORT_TABLES,
   createDurableTransportTables,
@@ -88,3 +96,35 @@ export {
 // --- AdonisJS integration ---------------------------------------------------
 export { defineConfig } from './define_config.js';
 export type { DurableConfig } from './define_config.js';
+export type {
+  StandaloneConfig,
+  ControlPlaneConfig,
+  TenantConfig,
+  TenantVerifier,
+  VerifiedTenant,
+} from './config_types.js';
+
+// --- store-less cluster: RunGateway (read/control surface) ------------------
+export type { RunGateway, DurableTopology, StartRunOptions } from './run-gateway/interface.js';
+export {
+  StoreRunGateway,
+  type RunGatewayEngine,
+  type StoreRunGatewayOptions,
+} from './run-gateway/store-run-gateway.js';
+export {
+  ProxyRunGateway,
+  type ProxyTransport,
+  type ProxyRunGatewayOptions,
+} from './run-gateway/proxy-run-gateway.js';
+export {
+  RunRequestResponder,
+  type ResponderTransport,
+  type RunRequestResponderOptions,
+} from './run-gateway/run-request-responder.js';
+export { signTenantToken, hmacTenantVerifier } from './run-gateway/tenant-auth.js';
+
+// --- store-less cluster: handshake & capability negotiation -----------------
+export * from './handshake/descriptor.js';
+export * from './handshake/negotiate.js';
+export * from './handshake/routing.js';
+export * from './dispatch-routing.js';

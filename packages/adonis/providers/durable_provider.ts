@@ -1,15 +1,20 @@
 import { pathToFileURL } from 'node:url';
 import type { ApplicationService } from '@adonisjs/core/types';
+import type { ControlPlaneConfig, TenantConfig } from '../src/config_types.js';
 import type { ControlPlaneContext } from '../src/control-planes/factory.js';
 import type { DurableConfig } from '../src/define_config.js';
 import {
   type ControlPlane,
   InMemoryStateStore,
   InMemoryTransport,
+  ProxyRunGateway,
+  type RunGateway,
+  RunRequestResponder,
   type StateStore,
   type StepServer,
   type StepsBarrel,
   type StoreContext,
+  StoreRunGateway,
   type Transport,
   type TransportContext,
   WorkflowEngine,
@@ -21,6 +26,23 @@ import {
   registerWorkflowsFromBarrel,
   registerWorkflowsFromDir,
 } from '../src/index.js';
+import {
+  DURABLE_RUN_GATEWAY,
+  DURABLE_RUN_REQUEST_RESPONDER,
+  DURABLE_TRANSPORT,
+  DURABLE_WORKER_RUNTIME,
+  NOOP_RUN_DISPATCHER,
+  descriptorRedisFrom,
+  hasProxyCapability,
+  hasResponderCapability,
+} from '../src/role_bindings.js';
+import {
+  NoopWorkerRegistry,
+  RedisWorkerRegistry,
+  type WorkerRegistry,
+  WorkerRuntime,
+  type WorkerTransport,
+} from '../src/worker-runtime/index.js';
 
 /** The read view of `@adonis-agora/context`'s accessor, read structurally from its global slot. */
 interface ContextAccessorLike {
@@ -40,18 +62,24 @@ const OTEL_TRACEPARENT = Symbol.for('@agora/otel:traceparent');
 const DIAGNOSTICS_EMIT = Symbol.for('@agora/diagnostics:emit');
 
 /**
- * Wires `@adonis-agora/durable` into the AdonisJS application: binds a singleton
- * {@link WorkflowEngine} built from `config/durable.ts`.
+ * Wires `@adonis-agora/durable` into the AdonisJS application, branching on the config's `role` (design
+ * §5) so a **store-less cluster** boots per role:
  *
- * Defaults to an in-process store + transport (single-process, zero infra). Pick a `transport` /
- * `store` by name from the config's `transports` / `stores` maps to run cross-process or persist
- * durably; each selected driver's peer dependency is imported lazily inside its factory thunk, only
- * when that driver is chosen. When `@adonis-agora/context` is installed, the originating
- * tenant/user/correlation carrier is attached to each dispatched task (best-effort, read structurally
- * from the global accessor slot — no hard dependency). When `@adonis-agora/diagnostics-otel` (and an OTel SDK
- * such as `@adonisjs/otel`) is installed, each dispatched task is stamped with the active OTel
- * `traceparent` so a worker continues the trace.
+ * - **`standalone`** (default — a config with no `role` lands here, byte-identical to today): the
+ *   store-backed {@link WorkflowEngine} + a {@link StoreRunGateway} + the embedded worker (app/steps
+ *   served in-process) + the engine's in-process run dispatcher.
+ * - **`control-plane`**: the same store-backed engine + `StoreRunGateway`, but a PURE coordinator — no
+ *   embedded worker (app/steps are NOT served here) and a no-op run dispatcher (a started run stays
+ *   `pending` for the poll loop). When the transport carries the P4 methods, a
+ *   {@link RunRequestResponder} is bound + started so tenant pods can round-trip to it.
+ * - **`tenant`**: NO store-backed engine and NO store binding (structural isolation, design §5) — a
+ *   {@link ProxyRunGateway} (read/control/start over the wire) plus, for a worker pod, a
+ *   {@link WorkerRuntime} the `durable:worker` command drives.
  *
+ * `services/main` exposes the ACTIVE role's {@link RunGateway} under {@link DURABLE_RUN_GATEWAY}, so
+ * app/dashboard code is identical whether or not a store is present.
+ *
+ * Store roles keep the historical binding, so nothing that resolves the engine directly changes:
  * ```ts
  * const engine = await app.container.make(WorkflowEngine)
  * engine.register('order', '1', async (ctx) => { ... })
@@ -62,12 +90,77 @@ export default class DurableProvider {
   #detachDiagnostics: (() => void) | null = null;
   #transport: (Transport & { close?: () => Promise<void> }) | null = null;
   #controlPlane: (ControlPlane & { close?: () => Promise<void> }) | null = null;
+  #responder: RunRequestResponder | null = null;
+  /** Memoized tenant transport so the ProxyRunGateway + WorkerRuntime share ONE broker connection. */
+  #tenantTransportPromise: Promise<Transport & { close?: () => Promise<void> }> | null = null;
 
   constructor(protected app: ApplicationService) {}
 
   register() {
+    const config = this.app.config.get<DurableConfig>('durable', {});
+    const role = config.role ?? 'standalone';
+    if (role === 'tenant') {
+      this.#registerTenantRole(config as TenantConfig);
+    } else {
+      this.#registerStoreRole(config, role);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // store roles — standalone / control-plane
+  // ---------------------------------------------------------------------------
+
+  /** Bind the store-backed engine, its {@link StoreRunGateway}, and (P4-capable transports) the
+   *  operator-side {@link RunRequestResponder}. Shared by `standalone` and `control-plane`. */
+  #registerStoreRole(config: DurableConfig, role: 'standalone' | 'control-plane') {
+    // The active RunGateway = the store-backed gateway wrapping the local engine (design §8).
+    this.app.container.singleton(DURABLE_RUN_GATEWAY, async () => {
+      const engine = await this.app.container.make(WorkflowEngine);
+      return new StoreRunGateway(engine, { role });
+    });
+
+    // Operator-side responder. Only meaningful when the transport carries the P4 store-less methods
+    // (broker transports only); returns `null` otherwise. `boot()` gates on the SAME capability, so this
+    // factory is only ever resolved when it can produce a live responder.
+    this.app.container.singleton(
+      DURABLE_RUN_REQUEST_RESPONDER,
+      async (): Promise<RunRequestResponder | null> => {
+        const engine = await this.app.container.make(WorkflowEngine);
+        const transport = this.#transport;
+        if (!hasResponderCapability(transport)) return null;
+        const gateway = await this.app.container.make(DURABLE_RUN_GATEWAY);
+        const verifyTenant = (config as ControlPlaneConfig).verifyTenant;
+        return new RunRequestResponder(transport, gateway, {
+          ...(verifyTenant ? { verifyTenant } : {}),
+          // Republish the engine's lifecycle events, scoped by namespace, so tenants can live-tail.
+          subscribeEngineEvents: (listener) => engine.subscribe(listener),
+        });
+      },
+    );
+
+    // Publish the engine's task transport so the store-agnostic dashboard fleet-health panel can enumerate
+    // the LIVE worker fleet off it (design §10). Resolving the engine first guarantees `#transport` is set
+    // (the engine factory assigns it). A broker transport carries `listWorkerGroups`/`listWorkerDescriptors`;
+    // an in-process one doesn't, so the panel degrades to diagnostics-only — no special-casing needed here.
+    this.app.container.singleton(DURABLE_TRANSPORT, async (): Promise<Transport> => {
+      await this.app.container.make(WorkflowEngine);
+      // Non-null after the engine factory ran; `#resolveTransport` always yields a transport (in-memory
+      // default when none is configured).
+      return this.#transport as Transport;
+    });
+
+    // Register the engine LAST: a naive/legacy container double (see durable_provider.spec) captures a
+    // SINGLE factory, overwritten on each singleton() call, so binding WorkflowEngine last keeps
+    // make(WorkflowEngine) resolving the engine. The real AdonisJS container is key-aware — order is
+    // irrelevant there; this only shields the test double.
+    this.#registerEngine(config, role);
+  }
+
+  /** Bind the store-backed {@link WorkflowEngine} singleton (today's build), applying the role's run
+   *  dispatcher default: `control-plane` gets the no-op dispatcher (pure coordinator); `standalone`
+   *  keeps the engine's in-process default (embedded worker). An explicit `config.runDispatcher` wins. */
+  #registerEngine(config: DurableConfig, role: 'standalone' | 'control-plane') {
     this.app.container.singleton(WorkflowEngine, async () => {
-      const config = this.app.config.get<DurableConfig>('durable', {});
       const accessor = (globalThis as Record<symbol, unknown>)[CONTEXT_ACCESSOR] as
         | ContextAccessorLike
         | undefined;
@@ -97,7 +190,14 @@ export default class DurableProvider {
         ...(config.compensationRetries !== undefined
           ? { compensationRetries: config.compensationRetries }
           : {}),
-        ...(config.runDispatcher ? { runDispatcher: config.runDispatcher } : {}),
+        // Where a freshly-started run executes: explicit config wins; else `control-plane` leaves it
+        // pending for the poll loop (no inline execution), and `standalone` uses the engine's in-process
+        // default (embedded worker).
+        ...(config.runDispatcher
+          ? { runDispatcher: config.runDispatcher }
+          : role === 'control-plane'
+            ? { runDispatcher: NOOP_RUN_DISPATCHER }
+            : {}),
         // Best-effort context propagation from @adonis-agora/context (no hard dep): pass the opaque
         // carrier through verbatim. The carrier is producer-owned and shape-opaque; the worker's
         // scope slot round-trips the whole snapshot via Context.run, so no field-picking is needed.
@@ -110,19 +210,99 @@ export default class DurableProvider {
     });
   }
 
+  // ---------------------------------------------------------------------------
+  // tenant role — store-less (no engine, no store binding)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Bind the store-less objects for a `tenant` pod (design §5): a {@link ProxyRunGateway} (every
+   * read/control/start round-trips over the wire) and a {@link WorkerRuntime} for a worker pod. NO
+   * {@link WorkflowEngine} and NO store binding are registered — resolving either throws, which is the
+   * container layer of the three-layer structural isolation (type · container · object).
+   */
+  #registerTenantRole(config: TenantConfig) {
+    this.app.container.singleton(DURABLE_RUN_GATEWAY, async () => {
+      const transport = await this.#tenantTransport(config);
+      if (!hasProxyCapability(transport)) {
+        throw new Error(
+          `@agora/durable: role 'tenant' needs a transport with the P4 store-less methods (dispatchStartRun/dispatchRunRequest/onRunReply/onTenantEvent); the selected transport ("${config.transport}") does not expose them.`,
+        );
+      }
+      return new ProxyRunGateway(transport, {
+        partition: config.partition,
+        ...(config.tenant?.token !== undefined ? { token: config.tenant.token } : {}),
+        ...(config.requestTimeoutMs !== undefined
+          ? { requestTimeoutMs: config.requestTimeoutMs }
+          : {}),
+      });
+    });
+
+    this.app.container.singleton(DURABLE_WORKER_RUNTIME, async () => {
+      const transport = await this.#tenantTransport(config);
+      if (typeof (transport as Partial<WorkerTransport>).handle !== 'function') {
+        throw new Error(
+          `@agora/durable: role 'tenant' worker needs a transport that can serve handlers (handle()); the selected transport ("${config.transport}") cannot.`,
+        );
+      }
+      return new WorkerRuntime({
+        transport: transport as unknown as WorkerTransport,
+        partition: config.partition,
+        ...(config.namespace !== undefined ? { namespace: config.namespace } : {}),
+        ...(config.instanceId !== undefined ? { instanceId: config.instanceId } : {}),
+        ...(config.capabilities !== undefined ? { capabilities: config.capabilities } : {}),
+        registry: this.#buildWorkerRegistry(transport),
+      });
+    });
+  }
+
+  /**
+   * Build the descriptor/heartbeat registry for a tenant worker: a real {@link RedisWorkerRegistry} when
+   * the transport can mint a descriptor-Redis client (design §7.2), else the {@link NoopWorkerRegistry}
+   * (the descriptor is still built + observable, just not published to the shared Redis).
+   */
+  #buildWorkerRegistry(transport: Transport): WorkerRegistry {
+    const redis = descriptorRedisFrom(transport);
+    if (redis) return new RedisWorkerRegistry(redis, { ownsConnection: true });
+    // TODO(integrator): expose `createDescriptorRedis()` on the tenant broker transport
+    // (e.g. BullMQTransport, keyed off the same connection its queues use) so a real pod advertises its
+    // descriptor + heartbeat on the shared Redis instead of falling back to the no-op registry.
+    return new NoopWorkerRegistry();
+  }
+
+  /** Build the tenant transport ONCE and memoize it, so the ProxyRunGateway and the WorkerRuntime share
+   *  one broker connection (and one set of P4 consumers). Held on {@link #transport} for clean shutdown. */
+  #tenantTransport(config: TenantConfig): Promise<Transport & { close?: () => Promise<void> }> {
+    if (!this.#tenantTransportPromise) {
+      this.#tenantTransportPromise = (async () => {
+        const transport = await this.#resolveTransport(config, { app: this.app });
+        transport.useNamespace?.(config.namespace ?? 'default');
+        this.#transport = transport;
+        return transport;
+      })();
+    }
+    return this.#tenantTransportPromise;
+  }
+
+  // ---------------------------------------------------------------------------
+  // boot — auto-registration + responder bring-up (store roles)
+  // ---------------------------------------------------------------------------
+
   /**
    * Auto-register the `app/workflows` convention so users never call `engine.register(...)` by hand
-   * (mirrors `@adonisjs/queue`'s `app/jobs`). Opt-out with `config.workflowsPath = false`.
+   * (mirrors `@adonisjs/queue`'s `app/jobs`), then serve `app/steps` for the embedded worker
+   * (`standalone` only), then bring up the {@link RunRequestResponder} on a P4-capable transport.
    *
    * Prefers the **build-time barrel** generated by the Assembler `init` hook
    * (`@adonis-agora/durable/hooks/workflows` → `.adonisjs/durable/workflows.js`): registering from it
-   * avoids any runtime `readdir`. When that barrel is absent (the hook isn't registered in
-   * `adonisrc.ts`, or it hasn't been generated yet) it FALLS BACK to the runtime directory scan, so
-   * apps that don't opt into the hook keep working unchanged. The low-level
-   * `engine.register(name, version, fn)` remains the escape hatch.
+   * avoids any runtime `readdir`. When that barrel is absent it FALLS BACK to the runtime directory scan.
+   *
+   * A `tenant` pod owns no engine, so boot is a no-op for it (a worker pod registers `app/steps` on the
+   * container-bound {@link WorkerRuntime} from the `durable:worker` command instead).
    */
   async boot() {
     const config = this.app.config.get<DurableConfig>('durable', {});
+    const role = config.role ?? 'standalone';
+    if (role === 'tenant') return;
     if (config.workflowsPath === false) return;
     const engine = await this.app.container.make(WorkflowEngine);
 
@@ -135,7 +315,30 @@ export default class DurableProvider {
       await registerWorkflowsFromDir(engine, dir);
     }
 
-    await this.#registerSteps(config);
+    // Embedded worker: only `standalone` serves step bodies in-process (design §3). A `control-plane` is
+    // a pure coordinator — its step bodies run on separate tenant worker pods — so it does NOT serve
+    // app/steps.
+    if (role === 'standalone') await this.#registerSteps(config);
+
+    await this.#startResponder();
+  }
+
+  /**
+   * Bring up the operator-side {@link RunRequestResponder} so tenant pods can round-trip read/control/
+   * start to this control plane — but only when the transport actually carries the P4 methods (in-process
+   * transports do not). The capability gate here means the responder binding is never resolved on a
+   * non-P4 transport, so a legacy container double never sees it.
+   */
+  async #startResponder() {
+    // Idempotent (singleton) — also guarantees the transport exists before the capability probe.
+    await this.app.container.make(WorkflowEngine);
+    if (!hasResponderCapability(this.#transport)) return;
+    const responder = (await this.app.container.make(
+      DURABLE_RUN_REQUEST_RESPONDER,
+    )) as RunRequestResponder | null;
+    if (!responder) return;
+    responder.start();
+    this.#responder = responder;
   }
 
   /**
@@ -235,9 +438,12 @@ export default class DurableProvider {
    * but only when diagnostics is actually installed (its emit slot is populated at module load).
    * Gating on the slot avoids eagerly constructing the engine when diagnostics is absent; when it is
    * present, this makes durable runs visible to `onDiagnostic`, Telescope, the relays and OTel with
-   * zero config. No hard dependency on `@adonis-agora/diagnostics`.
+   * zero config. No hard dependency on `@adonis-agora/diagnostics`. A `tenant` pod owns no engine, so this
+   * is a no-op for it.
    */
   async ready() {
+    const config = this.app.config.get<DurableConfig>('durable', {});
+    if ((config.role ?? 'standalone') === 'tenant') return;
     const emit = (globalThis as Record<symbol, unknown>)[DIAGNOSTICS_EMIT];
     if (typeof emit !== 'function') return;
     const engine = await this.app.container.make(WorkflowEngine);
@@ -245,11 +451,15 @@ export default class DurableProvider {
   }
 
   async shutdown() {
+    // Stop republishing tenant events before the transport connections drop.
+    this.#responder?.stop();
+    this.#responder = null;
     this.#detachDiagnostics?.();
     this.#detachDiagnostics = null;
     // Release the transport's broker workers / queues / connections so a deploy hands off cleanly.
     await this.#transport?.close?.();
     this.#transport = null;
+    this.#tenantTransportPromise = null;
     // Tear down the control plane's subscriber connection (Redis pub/sub) on the way out.
     await this.#controlPlane?.close?.();
     this.#controlPlane = null;

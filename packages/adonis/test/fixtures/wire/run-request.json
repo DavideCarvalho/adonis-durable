@@ -1,0 +1,12 @@
+{
+  "requestId": "req-1",
+  "tenant": "acme",
+  "body": {
+    "kind": "listRuns",
+    "query": {
+      "workflow": "checkout",
+      "status": "running",
+      "limit": 20
+    }
+  }
+}
