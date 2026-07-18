@@ -33,14 +33,5 @@
     "typescript": "^5.4.0",
     "unplugin-swc": "^1.5.9",
     "vitest": "^3.0.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "@biomejs/biome",
-      "@swc/core",
-      "better-sqlite3",
-      "esbuild",
-      "msgpackr-extract"
-    ]
   }
 }
