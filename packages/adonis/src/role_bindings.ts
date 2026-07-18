@@ -1,4 +1,4 @@
-import type { RunDispatcher } from './interfaces.js';
+import type { RunDispatcher, Transport } from './interfaces.js';
 import type { RunGateway } from './run-gateway/interface.js';
 import type { ProxyTransport } from './run-gateway/proxy-run-gateway.js';
 import type {
@@ -18,6 +18,7 @@ declare module '@adonisjs/core/types' {
     '@adonis-agora/durable:run-gateway': RunGateway;
     '@adonis-agora/durable:worker-runtime': WorkerRuntime;
     '@adonis-agora/durable:run-request-responder': RunRequestResponder | null;
+    '@adonis-agora/durable:transport': Transport;
   }
 }
 
@@ -40,6 +41,13 @@ declare module '@adonisjs/core/types' {
 export const DURABLE_RUN_GATEWAY = '@adonis-agora/durable:run-gateway';
 export const DURABLE_WORKER_RUNTIME = '@adonis-agora/durable:worker-runtime';
 export const DURABLE_RUN_REQUEST_RESPONDER = '@adonis-agora/durable:run-request-responder';
+/**
+ * The store role's active task {@link import('./interfaces.js').Transport}, published so store-agnostic
+ * consumers (the dashboard's fleet-health panel) can enumerate the LIVE worker fleet off it
+ * (`listWorkerGroups`/`listWorkerDescriptors`) without reaching into the engine. Bound ONLY on store roles
+ * (`standalone`/`control-plane`); a `tenant` pod never binds it, so its panel degrades to diagnostics-only.
+ */
+export const DURABLE_TRANSPORT = '@adonis-agora/durable:transport';
 
 /**
  * A no-op {@link RunDispatcher}: a freshly-`start`ed run stays `pending` in the store for a worker's

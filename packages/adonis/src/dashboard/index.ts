@@ -19,8 +19,8 @@ export type { ApiRequest, ApiResponse, Deps, DashboardEngine } from './handlers.
 export { renderDashboard } from './html.js';
 
 // Fleet health / protocol-compatibility panel (design §7.6, §10).
-export { compat } from './compat.js';
-export type { CompatSource } from './compat.js';
+export { compat, enumerateLiveFleet, mergeFleets } from './compat.js';
+export type { CompatSource, FleetGroup, FleetTransport } from './compat.js';
 export { BlockedDiagnosticsRecorder } from './diagnostics-recorder.js';
 export type { RecordedBlock, EngineEventSource } from './diagnostics-recorder.js';
 export { outcomeClass, outcomeLabel, formatProtocolRange } from './compat-view.js';
