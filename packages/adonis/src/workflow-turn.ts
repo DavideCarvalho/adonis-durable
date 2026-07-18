@@ -38,6 +38,36 @@ export class WorkflowStepFailedError extends Error {
   }
 }
 
+/** One failed member of a `ctx.gatherCalls` / `ctx.gatherChildren` fan — its label (the step/child
+ *  `name`) and the structured {@link StepError} the engine recorded. Mirrors the per-item dicts the
+ *  Python `GatherFailed` carries. */
+export interface GatherItemError {
+  name: string;
+  error: StepError;
+}
+
+/** One or more members of a parallel fan-out ({@link WorkflowTurnCtx.gatherCalls} /
+ *  {@link WorkflowTurnCtx.gatherChildren}) resolved to a failure. Subclasses {@link WorkflowStepFailedError}
+ *  so it is catchable in a workflow body exactly like any awaited failure AND settles the turn as a
+ *  `failed` decision via {@link runWorkflowTurn}'s existing catch — the TS twin of the Python `GatherFailed`.
+ *  Its wire {@link StepError} carries the aggregate `message` (count + failing names), a `gather_failed`
+ *  `code`, and the per-item `errors` list (byte-parity with what Python emits). */
+export class WorkflowGatherFailedError extends WorkflowStepFailedError {
+  readonly failures: GatherItemError[];
+  constructor(failures: GatherItemError[]) {
+    const names = failures.map((f) => f.name).join(', ');
+    super({
+      message: `gather: ${failures.length} item(s) failed: ${names}`,
+      code: 'gather_failed',
+      // `errors` is additive runtime data (parity with the Python `GatherFailed` dict); it rides the
+      // wire but is not part of the strict {@link StepError} type, hence the cast.
+      errors: failures,
+    } as StepError);
+    this.name = 'WorkflowGatherFailedError';
+    this.failures = failures;
+  }
+}
+
 /** The history at `seq` did not match what the replay produced there — the workflow code changed under
  *  an in-flight run. The run fails loudly rather than silently diverging (Python `NondeterminismError`). */
 export class WorkflowNondeterminismError extends Error {
@@ -68,6 +98,22 @@ function toStepError(err: unknown): StepError {
   return out;
 }
 
+/** How a parallel fan-out settles a member failure. `waitAll` (default) waits for EVERY member to
+ *  resolve, records all, then throws an aggregate {@link WorkflowGatherFailedError} if any failed;
+ *  `failFast` throws the moment a resolved member is a failure (siblings already in flight are NOT
+ *  force-cancelled — their eventual results are ignored). Mirrors the engine-side `ctx.all`
+ *  `{ mode: 'waitAll' | 'failFast' }` and the Python worker's `wait_all` / `fail_fast`. */
+export type GatherMode = 'waitAll' | 'failFast';
+
+/** One member of a {@link WorkflowTurnCtx.gatherCalls} fan — a step to dispatch (routed by handler
+ *  `name`), its `input`, and an optional isolation `group` (defaults to the workflow's own partition,
+ *  exactly like {@link WorkflowTurnCtx.step}). The object form of the Python `gather_calls` entry. */
+export interface GatherCall {
+  name: string;
+  input?: unknown;
+  group?: string;
+}
+
 /**
  * The replay context handed to a worker-side workflow body. Deterministic: same code + same history ⇒
  * same seqs ⇒ same decisions. Every method is SYNCHRONOUS — an op either returns its replayed value or
@@ -90,6 +136,23 @@ export interface WorkflowTurnCtx {
   waitSignal(name: string): unknown;
   /** Start a child run and await its output (its own durable lifecycle). */
   startChild(workflow: string, input?: unknown): unknown;
+  /**
+   * PARALLEL FAN-OUT of remote steps: dispatch N steps AT ONCE and await ALL their results. Reserves a
+   * contiguous seq block in list order (the determinism anchor), then on the first turn emits ONE
+   * `call` command per member — every one stamped with the SAME `parallelGroup` (`gather:<firstSeq>`) —
+   * and suspends. Each result checkpoints independently and resumes the run; a member ALREADY in history
+   * is not re-dispatched (a re-emit of a still-pending call is idempotent on the engine), so the turn
+   * re-suspends until EVERY member has resolved. When all are in, outputs return in INPUT order
+   * (`waitAll`), else a {@link WorkflowGatherFailedError} is thrown (`failFast` short-circuits on the
+   * first resolved failure). The worker-side twin of the Python `ctx.gather_calls`; the wire it emits is
+   * byte-compatible with the engine's remote fan-out (`call` + `parallelGroup`). */
+  gatherCalls(calls: GatherCall[], opts?: { mode?: GatherMode }): unknown[];
+  /**
+   * PARALLEL FAN-OUT of child workflows: start N children AT ONCE and await ALL their outputs. Same
+   * determinism/`parallelGroup`/re-dispatch-avoidance/`mode` contract as {@link gatherCalls}, over
+   * `startChild` commands instead of `call`. The worker-side twin of the Python `ctx.gather_children`
+   * and the counterpart of the engine-side `ctx.all`. */
+  gatherChildren(workflow: string, inputs: unknown[], opts?: { mode?: GatherMode }): unknown[];
   /** A replay-stable wall-clock timestamp in epoch ms — captured once, replayed thereafter. */
   now(): number;
   /** Run `fn` ONCE, record its result, and on replay return the same value WITHOUT re-running `fn` —
@@ -229,6 +292,107 @@ class TurnContext implements WorkflowTurnCtx {
     if (found) return output;
     this.commands.push({ kind: 'startChild', seq, workflow, input });
     throw new TurnSuspend();
+  }
+
+  /** Collect outputs from a list of history entries in list order, throwing an aggregate
+   *  {@link WorkflowGatherFailedError} if any member resolved to a failure — the shared tail of both
+   *  gather ops (the TS twin of the Python `_aggregate`). `label` names the failing member in the
+   *  aggregate error (the step/child `name`). */
+  #aggregate(
+    entries: (HistoryEvent | undefined)[],
+    label: (ev: HistoryEvent) => string,
+  ): unknown[] {
+    const outputs: unknown[] = [];
+    const failures: GatherItemError[] = [];
+    for (const ev of entries) {
+      if (ev !== undefined && ev.error != null) {
+        failures.push({ name: label(ev), error: ev.error });
+        outputs.push(undefined);
+      } else {
+        outputs.push(ev?.output);
+      }
+    }
+    if (failures.length > 0) throw new WorkflowGatherFailedError(failures);
+    return outputs;
+  }
+
+  gatherCalls(calls: GatherCall[], opts: { mode?: GatherMode } = {}): unknown[] {
+    // Empty fan: reserve no seqs and produce no side effects (degenerate identity) — matches Python.
+    if (calls.length === 0) return [];
+    const mode = opts.mode ?? 'waitAll';
+    // Reserve the whole block in list order BEFORE any dispatch — replay re-derives identical seqs.
+    const seqs = calls.map(() => this.#next());
+    const firstSeq = seqs[0] as number;
+    const parallelGroup = `gather:${firstSeq}`;
+    const entries = calls.map((c, i) => this.#replayEntry(seqs[i] as number, 'call', c.name));
+
+    // failFast: bail the moment any ALREADY-resolved member is a failure (siblings are left in flight).
+    if (mode === 'failFast') {
+      for (let i = 0; i < entries.length; i += 1) {
+        const ev = entries[i];
+        if (ev !== undefined && ev.error != null) {
+          throw new WorkflowGatherFailedError([
+            { name: ev.name ?? (calls[i] as GatherCall).name, error: ev.error },
+          ]);
+        }
+      }
+    }
+
+    // Dispatch every member not yet in history — all stamped with the shared fan group — then suspend
+    // ONCE. A member already resolved is skipped (no re-dispatch); a re-emit of a still-pending call is
+    // idempotent on the engine, so the turn re-suspends until EVERY member has resolved.
+    let pending = false;
+    for (let i = 0; i < calls.length; i += 1) {
+      if (entries[i] !== undefined) continue;
+      const c = calls[i] as GatherCall;
+      const group = c.group ?? this.#partition ?? '';
+      this.commands.push({
+        kind: 'call',
+        seq: seqs[i] as number,
+        name: c.name,
+        group,
+        input: c.input,
+        parallelGroup,
+      });
+      pending = true;
+    }
+    if (pending) throw new TurnSuspend();
+
+    // All resolved: outputs in INPUT order, aggregating any failures (waitAll).
+    return this.#aggregate(entries, (ev) => ev.name ?? '');
+  }
+
+  gatherChildren(workflow: string, inputs: unknown[], opts: { mode?: GatherMode } = {}): unknown[] {
+    if (inputs.length === 0) return [];
+    const mode = opts.mode ?? 'waitAll';
+    const seqs = inputs.map(() => this.#next());
+    const firstSeq = seqs[0] as number;
+    const parallelGroup = `gather:${firstSeq}`;
+    const entries = seqs.map((seq) => this.#replayEntry(seq, 'child', workflow));
+
+    if (mode === 'failFast') {
+      for (const ev of entries) {
+        if (ev !== undefined && ev.error != null) {
+          throw new WorkflowGatherFailedError([{ name: workflow, error: ev.error }]);
+        }
+      }
+    }
+
+    let pending = false;
+    for (let i = 0; i < inputs.length; i += 1) {
+      if (entries[i] !== undefined) continue;
+      this.commands.push({
+        kind: 'startChild',
+        seq: seqs[i] as number,
+        workflow,
+        input: inputs[i],
+        parallelGroup,
+      });
+      pending = true;
+    }
+    if (pending) throw new TurnSuspend();
+
+    return this.#aggregate(entries, () => workflow);
   }
 
   now(): number {

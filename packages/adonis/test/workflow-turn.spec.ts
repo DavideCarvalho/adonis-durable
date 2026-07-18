@@ -235,6 +235,191 @@ describe('runWorkflowTurn — deterministic replay → decision (the shared pure
   });
 });
 
+describe('runWorkflowTurn — parallel fan-out (ctx.gatherCalls / ctx.gatherChildren)', () => {
+  it('dispatches ALL gathered steps in ONE decision (not N sequential turns), then aggregates in input order', async () => {
+    // The body gathers THREE steps at once. The point of the fan-out: one turn emits three `call`
+    // commands (parallel), not three turns of one call each.
+    const wf: WorkflowBody = (ctx) => {
+      const [a, b, c] = ctx.gatherCalls([
+        { name: 's1', input: 1 },
+        { name: 's2', input: 2 },
+        { name: 's3', input: 3 },
+      ]);
+      return { a, b, c };
+    };
+
+    // Turn 1 — empty history: ALL THREE dispatch AT ONCE, each stamped with the SAME parallelGroup, and
+    // the turn suspends. MUTATION ANCHOR (dispatch-all-at-once): if the fan emitted only the first
+    // member (or suspended after one), commands.length would be 1, not 3.
+    const t1 = await runWorkflowTurn(bodies({ checkout: wf }), task(), { partition: 'acme' });
+    expect(t1.status).toBe('continue');
+    expect(t1.commands).toEqual([
+      { kind: 'call', seq: 0, name: 's1', group: 'acme', input: 1, parallelGroup: 'gather:0' },
+      { kind: 'call', seq: 1, name: 's2', group: 'acme', input: 2, parallelGroup: 'gather:0' },
+      { kind: 'call', seq: 2, name: 's3', group: 'acme', input: 3, parallelGroup: 'gather:0' },
+    ]);
+
+    // Turn 2 — only seq 0 has landed: the fan must NOT complete (wait-for-ALL) and must re-dispatch ONLY
+    // the still-missing members (re-dispatch avoidance — seq 0 is not re-emitted). MUTATION ANCHOR
+    // (wait-for-all): if the fan completed on partial history, this would be `completed`, not `continue`.
+    const t2 = await runWorkflowTurn(
+      bodies({ checkout: wf }),
+      task({ history: [{ seq: 0, kind: 'call', name: 's1', output: 'A' }] }),
+      { partition: 'acme' },
+    );
+    expect(t2.status).toBe('continue');
+    expect(t2.commands).toEqual([
+      { kind: 'call', seq: 1, name: 's2', group: 'acme', input: 2, parallelGroup: 'gather:0' },
+      { kind: 'call', seq: 2, name: 's3', group: 'acme', input: 3, parallelGroup: 'gather:0' },
+    ]);
+
+    // Turn 3 — every member resolved: replay returns the outputs in INPUT order and the body completes.
+    const t3 = await runWorkflowTurn(
+      bodies({ checkout: wf }),
+      task({
+        history: [
+          { seq: 0, kind: 'call', name: 's1', output: 'A' },
+          { seq: 1, kind: 'call', name: 's2', output: 'B' },
+          { seq: 2, kind: 'call', name: 's3', output: 'C' },
+        ],
+      }),
+      { partition: 'acme' },
+    );
+    expect(t3.status).toBe('completed');
+    expect(t3.commands).toEqual([]); // all replayed as found — nothing new
+    expect(t3.output).toEqual({ a: 'A', b: 'B', c: 'C' });
+  });
+
+  it('a gathered step call takes its own explicit group, else inherits the workflow partition', async () => {
+    const wf: WorkflowBody = (ctx) => {
+      ctx.gatherCalls([{ name: 'x', input: 1, group: 'pinned' }, { name: 'y', input: 2 }]);
+      return null;
+    };
+    const t1 = await runWorkflowTurn(bodies({ checkout: wf }), task(), { partition: 'acme' });
+    expect(t1.commands).toEqual([
+      { kind: 'call', seq: 0, name: 'x', group: 'pinned', input: 1, parallelGroup: 'gather:0' },
+      { kind: 'call', seq: 1, name: 'y', group: 'acme', input: 2, parallelGroup: 'gather:0' },
+    ]);
+  });
+
+  it('waitAll aggregates a member failure into a catchable gather_failed decision', async () => {
+    const wf: WorkflowBody = (ctx) => ctx.gatherCalls([{ name: 's1' }, { name: 's2' }, { name: 's3' }]);
+    // All three resolved, the middle one failed → waitAll records all then throws the aggregate.
+    const d = await runWorkflowTurn(
+      bodies({ checkout: wf }),
+      task({
+        history: [
+          { seq: 0, kind: 'call', name: 's1', output: 'A' },
+          { seq: 1, kind: 'call', name: 's2', error: { message: 's2 boom' } },
+          { seq: 2, kind: 'call', name: 's3', output: 'C' },
+        ],
+      }),
+    );
+    expect(d.status).toBe('failed');
+    expect(d.error?.code).toBe('gather_failed');
+    expect(d.error?.message).toContain('s2');
+    // The per-item failures ride the wire (parity with Python's GatherFailed dict).
+    expect((d.error as { errors?: unknown[] }).errors).toEqual([
+      { name: 's2', error: { message: 's2 boom' } },
+    ]);
+
+    // The same aggregate is catchable in the body — it then completes normally (saga/compensation).
+    const caught: WorkflowBody = (ctx) => {
+      try {
+        ctx.gatherCalls([{ name: 's1' }, { name: 's2' }]);
+        return { ok: true };
+      } catch (err) {
+        return { caught: (err as Error).message };
+      }
+    };
+    const recovered = await runWorkflowTurn(
+      bodies({ checkout: caught }),
+      task({
+        history: [
+          { seq: 0, kind: 'call', name: 's1', output: 'A' },
+          { seq: 1, kind: 'call', name: 's2', error: { message: 'nope' } },
+        ],
+      }),
+    );
+    expect(recovered.status).toBe('completed');
+    expect(recovered.output).toEqual({ caught: 'gather: 1 item(s) failed: s2' });
+  });
+
+  it('failFast short-circuits on the first resolved failure WITHOUT waiting for the rest', async () => {
+    const wf: WorkflowBody = (ctx) =>
+      ctx.gatherCalls([{ name: 's1' }, { name: 's2' }, { name: 's3' }], { mode: 'failFast' });
+    // seq 0 done, seq 1 FAILED, seq 2 still absent. waitAll would suspend (seq 2 pending); failFast must
+    // fail NOW. MUTATION ANCHOR: break the failFast branch (fall through to waitAll) and the seq-2-
+    // pending path suspends → status 'continue', not 'failed'.
+    const d = await runWorkflowTurn(
+      bodies({ checkout: wf }),
+      task({
+        history: [
+          { seq: 0, kind: 'call', name: 's1', output: 'A' },
+          { seq: 1, kind: 'call', name: 's2', error: { message: 'fast boom' } },
+        ],
+      }),
+    );
+    expect(d.status).toBe('failed');
+    expect(d.error?.code).toBe('gather_failed');
+    expect((d.error as { errors?: { name: string }[] }).errors).toEqual([
+      { name: 's2', error: { message: 'fast boom' } },
+    ]);
+  });
+
+  it('gatherChildren fans out N child workflows at once, waits for all, aggregates in input order', async () => {
+    const wf: WorkflowBody = (ctx) => ({ kids: ctx.gatherChildren('sub', [10, 20]) });
+    const t1 = await runWorkflowTurn(bodies({ checkout: wf }), task());
+    expect(t1.status).toBe('continue');
+    expect(t1.commands).toEqual([
+      { kind: 'startChild', seq: 0, workflow: 'sub', input: 10, parallelGroup: 'gather:0' },
+      { kind: 'startChild', seq: 1, workflow: 'sub', input: 20, parallelGroup: 'gather:0' },
+    ]);
+
+    // One child landed → still waiting on the other (re-dispatch only the missing one).
+    const t2 = await runWorkflowTurn(
+      bodies({ checkout: wf }),
+      task({ history: [{ seq: 0, kind: 'child', name: 'sub', output: { r: 1 } }] }),
+    );
+    expect(t2.status).toBe('continue');
+    expect(t2.commands).toEqual([
+      { kind: 'startChild', seq: 1, workflow: 'sub', input: 20, parallelGroup: 'gather:0' },
+    ]);
+
+    const t3 = await runWorkflowTurn(
+      bodies({ checkout: wf }),
+      task({
+        history: [
+          { seq: 0, kind: 'child', name: 'sub', output: { r: 1 } },
+          { seq: 1, kind: 'child', name: 'sub', output: { r: 2 } },
+        ],
+      }),
+    );
+    expect(t3.status).toBe('completed');
+    expect(t3.output).toEqual({ kids: [{ r: 1 }, { r: 2 }] });
+  });
+
+  it('an empty gather is a degenerate identity — no seqs consumed, no commands', async () => {
+    const wf: WorkflowBody = (ctx) => {
+      const calls = ctx.gatherCalls([]);
+      const kids = ctx.gatherChildren('sub', []);
+      // The next op must still get seq 0 — an empty gather reserved nothing.
+      const paid = ctx.step('charge');
+      return { calls, kids, paid };
+    };
+    const d = await runWorkflowTurn(bodies({ checkout: wf }), task(), { partition: 'acme' });
+    expect(d.status).toBe('continue');
+    expect(d.commands).toEqual([{ kind: 'call', seq: 0, name: 'charge', group: 'acme', input: undefined }]);
+  });
+
+  it('bails at the fan boundary with a cancelled decision when isCancelled fires', async () => {
+    const wf: WorkflowBody = (ctx) => ctx.gatherCalls([{ name: 'a' }, { name: 'b' }]);
+    const d = await runWorkflowTurn(bodies({ checkout: wf }), task(), { isCancelled: () => true });
+    expect(d.status).toBe('cancelled');
+    expect(d.commands).toEqual([]); // bailed before emitting any call
+  });
+});
+
 describe('isWorkflowTask — shape discrimination (spec §6.3)', () => {
   it('is true for a workflow-shaped payload, false for a step task / junk', () => {
     expect(isWorkflowTask({ workflow: 'checkout', history: [] })).toBe(true);

@@ -65,6 +65,7 @@ export {
   runWorkflowTurn,
   isWorkflowTask,
   WorkflowStepFailedError,
+  WorkflowGatherFailedError,
   WorkflowNondeterminismError,
   WorkflowTurnCancelled,
   type WorkflowTurnCtx,
@@ -72,4 +73,7 @@ export {
   type WorkflowBodyResolver,
   type WorkflowTurnHandler,
   type RunWorkflowTurnOptions,
+  type GatherMode,
+  type GatherCall,
+  type GatherItemError,
 } from '../workflow-turn.js';
