@@ -420,7 +420,15 @@ class TurnContext implements WorkflowTurnCtx {
       const error = toStepError(err);
       const finishedAt = this.#now();
       this.commands.push({ kind: 'recordStep', seq, name, error, startedAt, finishedAt });
-      this.#emitStep({ runId: this.runId ?? '', seq, name, phase: 'failed', startedAt, finishedAt, error });
+      this.#emitStep({
+        runId: this.runId ?? '',
+        seq,
+        name,
+        phase: 'failed',
+        startedAt,
+        finishedAt,
+        error,
+      });
       throw new WorkflowStepFailedError(error);
     }
     const finishedAt = this.#now();

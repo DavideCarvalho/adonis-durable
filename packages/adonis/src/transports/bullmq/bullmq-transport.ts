@@ -271,7 +271,10 @@ export class BullMQTransport implements Transport {
             runId: task.runId,
             status: 'failed',
             commands: [],
-            error: { message: `no workflow registered for '${task.workflow}'`, code: 'no_workflow' },
+            error: {
+              message: `no workflow registered for '${task.workflow}'`,
+              code: 'no_workflow',
+            },
           };
     } catch (err) {
       // A turn handler is expected to be pure (it returns a `failed` decision rather than throwing), so

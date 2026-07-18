@@ -22,7 +22,12 @@ async function settle(store: InMemoryStateStore, runId: string) {
   throw new Error(`run ${runId} did not settle`);
 }
 
-function register(engine: WorkflowEngine, name: string, body: WorkflowBody, group = 'ts-workflows') {
+function register(
+  engine: WorkflowEngine,
+  name: string,
+  body: WorkflowBody,
+  group = 'ts-workflows',
+) {
   engine.registerRemote(name, '1', {
     group,
     executor: new LocalWorkflowTurnExecutor(new Map([[name, body]]), { group }),
@@ -33,7 +38,9 @@ describe('WorkflowEngine + LocalWorkflowTurnExecutor — a TS turn body driven b
   it('dispatches a step then completes — the run advances across turns to `completed`', async () => {
     const store = new InMemoryStateStore();
     const transport = new InMemoryTransport();
-    transport.handle('charge', async (input: { amount: number }) => ({ ref: `ch_${input.amount}` }));
+    transport.handle('charge', async (input: { amount: number }) => ({
+      ref: `ch_${input.amount}`,
+    }));
 
     const engine = new WorkflowEngine({ store, transport });
     const checkout: WorkflowBody = (ctx, input) => {

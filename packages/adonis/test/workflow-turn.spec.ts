@@ -62,7 +62,9 @@ describe('runWorkflowTurn — deterministic replay → decision (the shared pure
       ctx.step('a'); // inherits partition
       return null;
     };
-    const inherited = await runWorkflowTurn(bodies({ checkout: wf }), task(), { partition: 'acme' });
+    const inherited = await runWorkflowTurn(bodies({ checkout: wf }), task(), {
+      partition: 'acme',
+    });
     expect(inherited.commands[0]).toMatchObject({ kind: 'call', name: 'a', group: 'acme' });
 
     const explicit: WorkflowBody = (ctx) => {
@@ -173,7 +175,12 @@ describe('runWorkflowTurn — deterministic replay → decision (the shared pure
     expect(t1.output).toEqual({ at: 1_700_000_000_000, id: 'id-abc' });
     // Emitted recordStep commands so the engine persists the captured values (name `now#<seq>` / `sideEffect`).
     expect(t1.commands).toEqual([
-      expect.objectContaining({ kind: 'recordStep', seq: 0, name: 'now#0', output: 1_700_000_000_000 }),
+      expect.objectContaining({
+        kind: 'recordStep',
+        seq: 0,
+        name: 'now#0',
+        output: 1_700_000_000_000,
+      }),
       expect.objectContaining({ kind: 'recordStep', seq: 1, name: 'sideEffect', output: 'id-abc' }),
     ]);
 
@@ -292,7 +299,10 @@ describe('runWorkflowTurn — parallel fan-out (ctx.gatherCalls / ctx.gatherChil
 
   it('a gathered step call takes its own explicit group, else inherits the workflow partition', async () => {
     const wf: WorkflowBody = (ctx) => {
-      ctx.gatherCalls([{ name: 'x', input: 1, group: 'pinned' }, { name: 'y', input: 2 }]);
+      ctx.gatherCalls([
+        { name: 'x', input: 1, group: 'pinned' },
+        { name: 'y', input: 2 },
+      ]);
       return null;
     };
     const t1 = await runWorkflowTurn(bodies({ checkout: wf }), task(), { partition: 'acme' });
@@ -303,7 +313,8 @@ describe('runWorkflowTurn — parallel fan-out (ctx.gatherCalls / ctx.gatherChil
   });
 
   it('waitAll aggregates a member failure into a catchable gather_failed decision', async () => {
-    const wf: WorkflowBody = (ctx) => ctx.gatherCalls([{ name: 's1' }, { name: 's2' }, { name: 's3' }]);
+    const wf: WorkflowBody = (ctx) =>
+      ctx.gatherCalls([{ name: 's1' }, { name: 's2' }, { name: 's3' }]);
     // All three resolved, the middle one failed → waitAll records all then throws the aggregate.
     const d = await runWorkflowTurn(
       bodies({ checkout: wf }),
@@ -409,7 +420,9 @@ describe('runWorkflowTurn — parallel fan-out (ctx.gatherCalls / ctx.gatherChil
     };
     const d = await runWorkflowTurn(bodies({ checkout: wf }), task(), { partition: 'acme' });
     expect(d.status).toBe('continue');
-    expect(d.commands).toEqual([{ kind: 'call', seq: 0, name: 'charge', group: 'acme', input: undefined }]);
+    expect(d.commands).toEqual([
+      { kind: 'call', seq: 0, name: 'charge', group: 'acme', input: undefined },
+    ]);
   });
 
   it('bails at the fan boundary with a cancelled decision when isCancelled fires', async () => {
