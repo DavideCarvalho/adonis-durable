@@ -15,6 +15,7 @@ import type {
   WorkflowTask,
 } from '../../interfaces.js';
 import { type StepHandler, runStepHandler } from '../../protocol.js';
+import { type WorkflowTurnHandler, isWorkflowTask } from '../../workflow-turn.js';
 import type { BullMQDeps, JobLike, QueueLike, RedisLike, WorkerLike } from './deps.js';
 import {
   decisionsName,
@@ -91,6 +92,8 @@ export class BullMQTransport implements Transport {
   readonly #onError: (err: unknown) => void;
 
   readonly #handlers = new Map<string, StepHandler>();
+  // Worker-side workflow turn consumers, keyed by workflow name — a `workflow`-shaped job routes here.
+  readonly #workflowTurns = new Map<string, WorkflowTurnHandler>();
   // One task queue/worker per registered handler name (its routing token) — never a shared queue.
   readonly #queues = new Map<string, QueueLike>();
   readonly #taskWorkers = new Map<string, WorkerLike>();
@@ -202,17 +205,33 @@ export class BullMQTransport implements Transport {
   // ---------------------------------------------------------------------------
 
   /**
-   * Register a step handler (worker side). Starts a DEDICATED task worker for `name` on first
-   * registration — one BullMQ worker per handler name, each on its own `${P}-tasks-<routingToken>`
-   * queue — and begins stamping this instance's liveness key for that token. Re-registering swaps the
-   * handler fn; its worker is untouched.
+   * Register a step handler (worker side). Starts a DEDICATED task worker for `name`'s routing token on
+   * first registration (see {@link #ensureTaskWorker}) and begins stamping this instance's liveness key
+   * for that token. Re-registering swaps the handler fn; its worker is untouched.
    */
   handle(name: string, fn: StepHandler): void {
     this.#handlers.set(name, fn);
-    const token = routingToken(name, this.#partition);
+    this.#ensureTaskWorker(routingToken(name, this.#partition));
+  }
+
+  /**
+   * Register a WORKFLOW turn consumer (worker side, design §4 / spec §6.3). Starts a DEDICATED task
+   * worker for the workflow `name`'s routing token — the SAME `${P}-tasks-<token>` queue a Python
+   * workflow worker consumes — which discriminates step-vs-workflow BY SHAPE ({@link #runJob}): a
+   * `workflow`-shaped job runs `turn(task)` (the replay → decision) and its {@link WorkflowDecision} is
+   * published on `${P}-decisions`. Re-registering swaps the turn fn; the worker is untouched.
+   */
+  handleWorkflow(name: string, turn: WorkflowTurnHandler): void {
+    this.#workflowTurns.set(name, turn);
+    this.#ensureTaskWorker(routingToken(name, this.#partition));
+  }
+
+  /** Start (once per routing token) the discriminating task worker + its liveness heartbeat. Shared by
+   *  {@link handle} (steps) and {@link handleWorkflow} (workflow turns) — both ride `${P}-tasks-<token>`. */
+  #ensureTaskWorker(token: string): void {
     if (this.#taskWorkers.has(token)) return;
     const worker = this.#deps.makeWorker(tasksName(this.#effectivePrefix(), token), (job) =>
-      this.#runTask(job.data as RemoteTask),
+      this.#runJob(job.data),
     );
     // Terminal-failure bridge: a task job reaching a TERMINAL `failed` state is an INFRASTRUCTURE
     // failure (worker crash / stalled-count exhaustion), never a handler business error —
@@ -220,14 +239,64 @@ export class BullMQTransport implements Transport {
     // SUCCEEDS. `failed` fires only when no StepResult was produced, so without this the run hangs on
     // its `pending` checkpoint forever. Synthesize a RETRYABLE failed StepResult so the engine settles
     // the checkpoint and re-dispatches. A PEER replica's worker fails a crashed worker's stalled job,
-    // so this still fires cross-process.
+    // so this still fires cross-process. (A failed WORKFLOW job carries no step identity, so the bridge
+    // no-ops for it — the engine's RemoteWorkflowExecutor re-drives the turn on recovery instead.)
     worker.on('failed', (job, error) => {
       const identity = failedTaskIdentity(job?.data);
-      if (!identity) return; // payload already GC'd or malformed — nothing safe to publish
+      if (!identity) return; // payload already GC'd, malformed, or a workflow job — nothing safe to publish
       void this.#bridgeTaskFailure(identity, job?.failedReason ?? error?.message ?? 'unknown');
     });
     this.#taskWorkers.set(token, worker);
     this.#startWorkerHeartbeat(token);
+  }
+
+  /** Route one task job by SHAPE (spec §6.3): a workflow turn runs the replay → decision path, a step
+   *  runs the `runStepHandler` → result path. Both kinds share a token's queue but never each other's. */
+  async #runJob(data: unknown): Promise<void> {
+    if (isWorkflowTask(data)) return this.#runWorkflowTask(data);
+    return this.#runTask(data as RemoteTask);
+  }
+
+  /** Worker side: replay a workflow turn and publish its {@link WorkflowDecision} on `${P}-decisions`
+   *  (job `decision`) — the queue the engine's `onDecision` consumes. An unknown workflow or a turn
+   *  that throws still publishes a `failed` decision so the engine settles the run (never hangs). */
+  async #runWorkflowTask(task: WorkflowTask): Promise<void> {
+    let decision: WorkflowDecision;
+    try {
+      const turn = this.#workflowTurns.get(task.workflow);
+      decision = turn
+        ? await turn(task)
+        : {
+            taskId: task.taskId,
+            runId: task.runId,
+            status: 'failed',
+            commands: [],
+            error: { message: `no workflow registered for '${task.workflow}'`, code: 'no_workflow' },
+          };
+    } catch (err) {
+      // A turn handler is expected to be pure (it returns a `failed` decision rather than throwing), so
+      // reaching here is unusual — publish a failed decision anyway so the run settles.
+      this.#onError(err);
+      decision = {
+        taskId: task.taskId,
+        runId: task.runId,
+        status: 'failed',
+        commands: [],
+        error: { message: err instanceof Error ? err.message : String(err) },
+      };
+    }
+    try {
+      await this.#queue(decisionsName(this.#effectivePrefix())).add(
+        'decision',
+        decision,
+        jobOptions(),
+      );
+    } catch (err) {
+      // The decisions-queue publish threw (Redis blipped). Rethrow so the job is marked `failed` and the
+      // engine re-drives the turn on recovery rather than the run hanging awaiting a decision.
+      this.#onError(err);
+      throw err;
+    }
   }
 
   async #runTask(task: RemoteTask): Promise<void> {

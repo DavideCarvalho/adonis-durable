@@ -4,13 +4,22 @@ import {
   type WorkerDescriptor,
   descriptorHash,
 } from '../../src/handshake/descriptor.js';
-import type { RemoteTask, StepResult } from '../../src/interfaces.js';
+import type {
+  RemoteTask,
+  StepResult,
+  WorkflowDecision,
+  WorkflowStepEvent,
+  WorkflowTask,
+} from '../../src/interfaces.js';
+import type { StepHandler } from '../../src/protocol.js';
 import { InMemoryTransport } from '../../src/testing/in-memory-transport.js';
 import { effectivePrefix, routingToken } from '../../src/transports/bullmq/naming.js';
 import { WORKER_HEARTBEAT_TTL_SECONDS } from '../../src/transports/bullmq/serialization.js';
+import type { WorkflowTurnHandler } from '../../src/workflow-turn.js';
 import {
   RedisWorkerRegistry,
   type WorkerRegistry,
+  type WorkerTransport,
   WorkerRuntime,
   workerDescriptorKey,
   workerHeartbeatKey,
@@ -105,6 +114,125 @@ describe('WorkerRuntime — consume + execute + publish (store-less step path)',
     runtime.registerStep('zeta', () => 1);
     runtime.registerStep('alpha', () => 2);
     expect(runtime.stepNames).toEqual(['alpha', 'zeta']);
+  });
+});
+
+/**
+ * A worker transport that can carry WORKFLOW turns: it records each registered turn consumer and lets a
+ * test `deliver` a `${P}-tasks-<token>` workflow job to it, capturing the published decision + any
+ * streamed step events — a stand-in for the BullMQ broker so the whole store-less turn path is exercised
+ * in one process, no Redis.
+ */
+class WorkflowFakeTransport implements WorkerTransport {
+  readonly #turns = new Map<string, WorkflowTurnHandler>();
+  readonly decisions: WorkflowDecision[] = [];
+  readonly stepEvents: WorkflowStepEvent[] = [];
+
+  handle(_name: string, _fn: StepHandler): void {
+    /* steps unused in these workflow-turn tests */
+  }
+
+  handleWorkflow(name: string, turn: WorkflowTurnHandler): void {
+    this.#turns.set(name, turn);
+  }
+
+  async dispatchStepEvent(event: WorkflowStepEvent): Promise<void> {
+    this.stepEvents.push(event);
+  }
+
+  /** Simulate the broker delivering a workflow-shaped job for `task.workflow`; capture its decision.
+   *  Every registered turn handler resolves the SAME runtime body map, so a job whose name isn't the
+   *  registration name (a misroute) still reaches a handler and gets the map's verdict (no_workflow). */
+  async deliver(taskInput: WorkflowTask): Promise<WorkflowDecision> {
+    const turn = this.#turns.get(taskInput.workflow) ?? [...this.#turns.values()][0];
+    if (!turn) throw new Error(`no workflow turn registered at all`);
+    const decision = await turn(taskInput);
+    this.decisions.push(decision);
+    return decision;
+  }
+}
+
+function workflowTask(overrides: Partial<WorkflowTask> = {}): WorkflowTask {
+  return {
+    taskId: 'wf-1',
+    runId: 'run-1',
+    workflow: 'checkout',
+    workflowVersion: '1',
+    input: { amount: 200 },
+    history: [],
+    group: 'checkout@acme',
+    attempt: 1,
+    ...overrides,
+  };
+}
+
+describe('WorkerRuntime — execute WORKFLOW turns (store-less replay → decision, design §4)', () => {
+  it('replays a workflow turn end-to-end through the runtime: dispatch a step, then complete', async () => {
+    const transport = new WorkflowFakeTransport();
+    const runtime = new WorkerRuntime({ transport, partition: 'acme' });
+
+    runtime.registerWorkflow('checkout', (ctx, input) => {
+      const paid = ctx.step('charge', { amount: (input as { amount: number }).amount });
+      return { ok: true, paid };
+    });
+
+    // Turn 1 — empty history: the workflow dispatches `charge` and suspends.
+    const t1 = await transport.deliver(workflowTask());
+    expect(t1.status).toBe('continue');
+    expect(t1.commands).toEqual([
+      { kind: 'call', seq: 0, name: 'charge', group: 'acme', input: { amount: 200 } },
+    ]);
+
+    // Turn 2 — `charge` resolved in history: the turn replays it and the run completes.
+    // MUTATION ANCHOR: this asserts the replay drives the decision sequence. Break the replay (so the
+    // resolved call isn't returned from history) and turn 2 re-dispatches instead of completing → red.
+    const t2 = await transport.deliver(
+      workflowTask({
+        taskId: 'wf-2',
+        history: [{ seq: 0, kind: 'call', name: 'charge', output: { ref: 'ch_1' } }],
+      }),
+    );
+    expect(t2.status).toBe('completed');
+    expect(t2.output).toEqual({ ok: true, paid: { ref: 'ch_1' } });
+    expect(t2.commands).toEqual([]);
+  });
+
+  it('advertises a registered workflow body by name in the descriptor', () => {
+    const transport = new WorkflowFakeTransport();
+    const runtime = new WorkerRuntime({ transport, partition: 'acme' });
+    runtime.registerWorkflow('checkout', () => 'done');
+    runtime.registerWorkflow('refund', () => 'done');
+    expect(runtime.workflowNames).toEqual(['checkout', 'refund']);
+    expect(runtime.descriptor().workflows).toEqual(['checkout', 'refund']);
+  });
+
+  it('streams a local step (ctx.sideEffect) lifecycle to the transport mid-turn', async () => {
+    const transport = new WorkflowFakeTransport();
+    const runtime = new WorkerRuntime({ transport, partition: 'acme' });
+    runtime.registerWorkflow('capture', (ctx) => ({ id: ctx.sideEffect(() => 'id-xyz') }));
+
+    const d = await transport.deliver(workflowTask({ workflow: 'capture' }));
+    expect(d.status).toBe('completed');
+    expect(d.output).toEqual({ id: 'id-xyz' });
+    expect(transport.stepEvents.map((e) => e.phase)).toEqual(['running', 'completed']);
+    expect(transport.stepEvents[1]).toMatchObject({ name: 'sideEffect', output: 'id-xyz' });
+  });
+
+  it('an unknown workflow name yields a no_workflow failed decision (never hangs)', async () => {
+    const transport = new WorkflowFakeTransport();
+    const runtime = new WorkerRuntime({ transport, partition: 'acme' });
+    runtime.registerWorkflow('checkout', () => 'ok');
+
+    const d = await transport.deliver(workflowTask({ workflow: 'ghost' }));
+    expect(d.status).toBe('failed');
+    expect(d.error).toMatchObject({ code: 'no_workflow' });
+  });
+
+  it('with a transport that cannot carry turns, registerWorkflow still advertises the name', () => {
+    // The plain InMemoryTransport has no `handleWorkflow` — the name is advertised, just not executed here.
+    const runtime = new WorkerRuntime({ transport: new InMemoryTransport(), partition: 'acme' });
+    runtime.registerWorkflow('checkout', () => 'ok');
+    expect(runtime.workflowNames).toEqual(['checkout']);
   });
 });
 

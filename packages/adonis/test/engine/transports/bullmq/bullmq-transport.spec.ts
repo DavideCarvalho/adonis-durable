@@ -275,6 +275,78 @@ describe('BullMQTransport', () => {
     });
   });
 
+  describe('handleWorkflow (worker side — workflow turns, spec §6.3)', () => {
+    it("starts a task worker on the workflow name's queue and stamps its liveness key", () => {
+      transport.handleWorkflow('checkout', async (t) => ({
+        taskId: t.taskId,
+        runId: t.runId,
+        status: 'completed',
+        commands: [],
+      }));
+      expect(broker.workers.has('durable-tasks-checkout')).toBe(true);
+      expect(broker.redis.setCalls.at(-1)?.key).toBe('durable-worker-heartbeat:checkout:ts-box-1');
+    });
+
+    it('routes a workflow-shaped job to the turn and publishes its decision on `durable-decisions`', async () => {
+      transport.handleWorkflow('checkout', async (t) => ({
+        taskId: t.taskId,
+        runId: t.runId,
+        status: 'continue',
+        commands: [{ kind: 'call', seq: 0, name: 'charge', group: '', input: t.input }],
+      }));
+      const w = broker.workers.get('durable-tasks-checkout')!;
+      await w.process({
+        data: {
+          taskId: 'wf1',
+          runId: 'r9',
+          workflow: 'checkout',
+          workflowVersion: '1',
+          input: { amount: 5 },
+          history: [],
+          group: 'checkout',
+          attempt: 0,
+        },
+      });
+      const add = broker.queues.get('durable-decisions')?.adds.at(-1);
+      expect(add?.name).toBe('decision');
+      expect(add?.opts).toEqual({ removeOnComplete: true, removeOnFail: true });
+      expect(add?.data).toMatchObject({ taskId: 'wf1', runId: 'r9', status: 'continue' });
+    });
+
+    it('discriminates by SHAPE: a step job on the SAME worker still yields a result, not a decision', async () => {
+      // Register BOTH a step handler and a workflow turn whose routing tokens collide on one queue, so the
+      // one worker on that queue must route each job by shape (workflow → decision, step → result).
+      transport.handle('mixed', async (input) => ({ echoed: input }));
+      transport.handleWorkflow('mixed', async (t) => ({
+        taskId: t.taskId,
+        runId: t.runId,
+        status: 'completed',
+        commands: [],
+        output: 'wf-done',
+      }));
+      const w = broker.workers.get('durable-tasks-mixed')!;
+
+      await w.process({ data: task({ name: 'mixed', group: 'mixed' }) });
+      expect(broker.queues.get('durable-results')?.adds.at(-1)?.name).toBe('result');
+
+      await w.process({
+        data: {
+          taskId: 'wf2',
+          runId: 'r1',
+          workflow: 'mixed',
+          workflowVersion: '1',
+          input: {},
+          history: [],
+          group: 'mixed',
+          attempt: 0,
+        },
+      });
+      const decision = broker.queues.get('durable-decisions')?.adds.at(-1);
+      expect(decision?.name).toBe('decision');
+      expect(decision?.data).toMatchObject({ status: 'completed', output: 'wf-done' });
+    });
+  });
+
   describe('long-step heartbeat pub/sub', () => {
     it('heartbeat() publishes JSON on `durable-heartbeat`; onHeartbeat receives it', async () => {
       const received: Heartbeat[] = [];

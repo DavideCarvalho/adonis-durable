@@ -5,12 +5,18 @@ import {
   descriptorHash,
   heartbeatStatus,
 } from '../handshake/descriptor.js';
+import type { WorkflowStepEvent } from '../interfaces.js';
 import type { StepHandler } from '../protocol.js';
 import {
   WORKER_HEARTBEAT_INTERVAL_MS,
   WORKER_HEARTBEAT_TTL_SECONDS,
   buildInstanceId,
 } from '../transports/bullmq/serialization.js';
+import {
+  type WorkflowBody,
+  type WorkflowTurnHandler,
+  runWorkflowTurn,
+} from '../workflow-turn.js';
 import {
   effectivePrefix,
   routingToken,
@@ -30,6 +36,16 @@ export interface WorkerTransport {
   /** Register a step handler → the transport subscribes `${P}-tasks-<token>` for it and, on a task,
    *  runs it through the shared `protocol.ts runStepHandler` and publishes the {@link StepResult}. */
   handle(name: string, fn: StepHandler): void;
+  /** Register a WORKFLOW turn consumer → the transport subscribes the workflow name's
+   *  `${P}-tasks-<token>` queue and, on a `workflow`-shaped job (discriminated by SHAPE, spec §6.3),
+   *  runs `turn(task)` (the replay → decision) and publishes the {@link WorkflowDecision} on
+   *  `${P}-decisions`. OPTIONAL — a transport that can't carry workflow tasks omits it, and the runtime
+   *  then only advertises the workflow name (routing/observability) without executing turns. */
+  handleWorkflow?(name: string, turn: WorkflowTurnHandler): void;
+  /** workflow worker → engine: stream a LOCAL step's lifecycle ({@link WorkflowStepEvent}) mid-turn so a
+   *  long inline turn's steps show live. OPTIONAL — only broker transports carry it; absent = no live
+   *  step streaming (the turn's final decision still records every step). */
+  dispatchStepEvent?(event: WorkflowStepEvent): Promise<void>;
   /** Release the transport's broker workers/connections on stop. Optional (in-process transports omit it). */
   close?(): Promise<void>;
 }
@@ -112,6 +128,8 @@ export class WorkerRuntime {
 
   readonly #steps = new Set<string>();
   readonly #workflows = new Set<string>();
+  // Worker-side workflow turn bodies, keyed by name — the resolver `runWorkflowTurn` replays against.
+  readonly #workflowBodies = new Map<string, WorkflowBody>();
   readonly #startedAt: number;
 
   #beatTimer: ReturnType<typeof setInterval> | undefined;
@@ -170,10 +188,43 @@ export class WorkerRuntime {
   }
 
   /**
-   * Advertise a workflow NAME in the descriptor (routing + capability negotiation, design §7.1). A
-   * store-less worker does not own the durable workflow state — the control-plane does — so this is the
-   * descriptor axis only; execution of a remote workflow turn (replay → decision) is a later wave (it
-   * needs a worker-side workflow-task consumer + a shared TS replay body). If already {@link start}ed,
+   * Register a runnable WORKFLOW TURN body (`(ctx, input) => output`, written against the worker-side
+   * {@link import('../workflow-turn.js').WorkflowTurnCtx}) AND advertise its name. This is what lets a
+   * store-less TS worker EXECUTE workflow turns for parity with a Python worker (design §4): the
+   * transport subscribes the workflow's `${P}-tasks-<token>` queue and, on a `workflow`-shaped job, the
+   * turn is replayed via the shared {@link runWorkflowTurn} (deterministic history → decision) and the
+   * {@link import('../interfaces.js').WorkflowDecision} published on `${P}-decisions`. The worker never
+   * touches a store — every durable decision stays on the control-plane; this only replays the body.
+   *
+   * NOTE: this is the polyglot TURN surface (the TS twin of the Python `@workflow`), NOT the
+   * store-backed `BaseWorkflow`/`WorkflowCtx` the engine runs in-process — those are a different
+   * authoring surface (they own the store). Re-registering swaps the body; if the transport can't carry
+   * workflow tasks (`handleWorkflow` absent) the name is still advertised, just not executed here.
+   */
+  registerWorkflow(name: string, body: WorkflowBody): void {
+    const firstBody = !this.#workflowBodies.has(name);
+    this.#workflowBodies.set(name, body);
+    // Wire the transport's turn consumer ONCE per name (the resolver reads the live #workflowBodies map,
+    // so a later re-register is picked up without re-wiring). No-op if the transport can't carry turns.
+    if (firstBody && this.#transport.handleWorkflow) {
+      this.#transport.handleWorkflow(name, (task) =>
+        runWorkflowTurn(this.#workflowBodies, task, {
+          partition: this.#partition,
+          ...(this.#transport.dispatchStepEvent
+            ? { onStep: (event: WorkflowStepEvent) => void this.#transport.dispatchStepEvent?.(event) }
+            : {}),
+        }),
+      );
+    }
+    const isNew = !this.#workflows.has(name);
+    this.#workflows.add(name);
+    if (isNew && this.#started) void this.#advertise();
+  }
+
+  /**
+   * Advertise a workflow NAME in the descriptor WITHOUT a runnable body (routing + capability
+   * negotiation only, design §7.1) — e.g. this pod routes/observes a workflow another worker executes.
+   * To actually EXECUTE turns here, use {@link registerWorkflow}. If already {@link start}ed,
    * re-advertises so the name is visible.
    */
   registerWorkflowName(name: string): void {

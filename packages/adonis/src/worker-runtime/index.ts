@@ -58,3 +58,18 @@ export {
 
 // The shared pure worker body + step-handler type (the transport funnels tasks through it).
 export { runStepHandler, type StepHandler } from '../protocol.js';
+
+// The shared pure WORKFLOW-TURN body (replay history → decision) + its authoring surface — what lets a
+// store-less worker execute workflow turns (design §4). Itself Lucid-free (imports only interface types).
+export {
+  runWorkflowTurn,
+  isWorkflowTask,
+  WorkflowStepFailedError,
+  WorkflowNondeterminismError,
+  WorkflowTurnCancelled,
+  type WorkflowTurnCtx,
+  type WorkflowBody,
+  type WorkflowBodyResolver,
+  type WorkflowTurnHandler,
+  type RunWorkflowTurnOptions,
+} from '../workflow-turn.js';
