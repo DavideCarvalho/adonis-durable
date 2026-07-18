@@ -188,4 +188,3 @@ async continue({ params, response }: HttpContext) {
 <Callout type="info">
 Pair `ctx.breakpoint` with [`ctx.setEvent`](/docs/durable/authoring/queries-and-updates#queries) (publish what the reviewer should see) and [`ctx.onUpdate`](/docs/durable/authoring/queries-and-updates#updates) when the human needs to feed a *decision* back into the run, not just an unblocking nudge. A breakpoint is the pure "wait for a go-ahead" case; an update is "wait for an answer".
 </Callout>
-</content>
