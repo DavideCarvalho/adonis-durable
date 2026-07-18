@@ -134,6 +134,20 @@ export async function retryRun(deps: Deps, req: ApiRequest): Promise<ApiResponse
   return ok({ result });
 }
 
+/**
+ * `POST /runs/:id/redispatch` — re-enqueue every remote step of a run stuck `pending`, for a run
+ * whose dispatched step job was LOST (worker crashed with no result, or the transport dropped the
+ * job). The idempotent step re-runs and its result resumes the run. Returns the run's current status
+ * and the count re-dispatched; never blocks on execution.
+ */
+export async function redispatchPendingRun(deps: Deps, req: ApiRequest): Promise<ApiResponse> {
+  const id = req.params.id;
+  if (!id) return notFound('run id is required');
+  const result = await deps.engine.redispatchPending(id);
+  if (!result) return notFound(`run ${id} not found`);
+  return ok({ result });
+}
+
 /** `POST /runs/:id/cancel` — cancel a run. Pass `{ compensate: true }` to undo the saga first. */
 export async function cancelRun(deps: Deps, req: ApiRequest): Promise<ApiResponse> {
   const id = req.params.id;

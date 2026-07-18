@@ -219,6 +219,40 @@ export interface WorkflowEngineDeps {
    */
   maxRecoveryAttempts?: number | undefined;
   /**
+   * Fallback re-drive window (ms) for a run that SUSPENDS with no natural timer — i.e. it's waiting on
+   * an EVENT to wake it (a child's completion, a signal, a remote step with no `timeoutMs`) rather than
+   * a `ctx.sleep`. Those events re-drive the run directly; but if the wake is LOST (the delivering pod
+   * crashed / rolled mid-handoff), the run would otherwise sit `suspended` forever with `wakeAt: null` —
+   * invisible to both the timer poller (no `wakeAt`) and crash-recovery (no lease). This stamps a
+   * fallback `wakeAt` so {@link resumeDueTimers} re-drives it after the window; the re-drive is an
+   * idempotent replay (a still-pending dependency re-suspends via the checkpoint guard, a settled one
+   * advances), so it's a safe self-heal, not a retry that can double-dispatch. The primary event path
+   * still wins first for a healthy run (it re-drives long before this fires), so this only ever fires
+   * for a genuinely-orphaned run. Default 5min; set `0` to disable (the prior wake-forever behavior).
+   */
+  reconcileMs?: number | undefined;
+  /**
+   * Opt-in self-heal window (ms) for a remote step with NO `timeoutMs` whose dispatched job was LOST —
+   * the worker crashed mid-step leaving no result, or the transport dropped the job (a Redis
+   * flush/eviction, or a broker moving a stalled job to `failed` and removing it). The `pending`
+   * checkpoint then has no result to resume on, and — BY DESIGN (see {@link reconcileMs}) — the
+   * reconcile re-drive re-suspends a still-pending step rather than re-dispatching, so a slow-but-live
+   * worker is never double-run. That safety means a genuinely-lost dispatch would otherwise hang
+   * forever. When set, a reconcile re-drive that finds a remote step still `pending` PAST this window
+   * re-dispatches it (bumping `attempts`, bounded by {@link remoteRedispatchMax}). Off by default:
+   * re-dispatch can double-run a step whose original job is merely slow, so the window MUST exceed the
+   * longest such step and the step MUST be idempotent. Prefer a per-step `timeoutMs` (tighter,
+   * heartbeat-aware) where you can; this is the store-driven net for no-timeout steps that must
+   * survive a lost dispatch. {@link WorkflowEngine.redispatchPending} is the manual counterpart.
+   */
+  remoteRedispatchMs?: number | undefined;
+  /**
+   * Max times {@link remoteRedispatchMs} re-dispatches one lost remote step before giving up and
+   * failing it as a {@link RemoteStepError} (`code: 'remote_step_lost'`), so the run fails / dead-letters
+   * instead of re-dispatching forever. Default 10. Ignored when `remoteRedispatchMs` is unset.
+   */
+  remoteRedispatchMax?: number | undefined;
+  /**
    * Build the public callback URL for a `ctx.webhook()` token (e.g.
    * ``(t) => `https://api.example.com/durable/webhooks/${t}` ``). Populates
    * {@link DurableWebhook.url}. Omit if you build URLs yourself from the token.
@@ -315,6 +349,9 @@ export class WorkflowEngine {
   private readonly namespace: string;
   private readonly leaseMs: number;
   private readonly maxRecoveryAttempts?: number | undefined;
+  private readonly reconcileMs: number | undefined;
+  private readonly remoteRedispatchMs: number | undefined;
+  private readonly remoteRedispatchMax: number;
   private readonly webhookUrl?: ((token: string) => string) | undefined;
   private readonly traceparent?: (() => string | undefined) | undefined;
   private readonly context?: (() => Record<string, unknown> | undefined) | undefined;
@@ -386,6 +423,11 @@ export class WorkflowEngine {
     this.pool.useNamespace(this.namespace);
     this.leaseMs = deps.leaseMs ?? 30_000;
     this.maxRecoveryAttempts = deps.maxRecoveryAttempts;
+    // Default 5min; an explicit 0 disables the fallback (opt back into wake-forever-on-lost-event).
+    this.reconcileMs = deps.reconcileMs === undefined ? 300_000 : deps.reconcileMs || undefined;
+    // Opt-in: unset (or 0) leaves the by-design "re-suspend a lost dispatch, never re-dispatch" behavior.
+    this.remoteRedispatchMs = deps.remoteRedispatchMs || undefined;
+    this.remoteRedispatchMax = Math.max(1, deps.remoteRedispatchMax ?? 10);
     this.webhookUrl = deps.webhookUrl;
     this.traceparent = deps.traceparent;
     this.context = deps.context;
@@ -1017,13 +1059,125 @@ export class WorkflowEngine {
    * inline — or null if the run is unknown. The dashboard "retry" goes through here so it can't block
    * the HTTP request on workflow execution.
    */
-  async requeue(runId: string): Promise<RunResult | null> {
+  async requeue(runId: string, _seen?: Set<string>): Promise<RunResult | null> {
+    const seen = _seen ?? new Set<string>();
+    if (seen.has(runId)) return null;
+    seen.add(runId);
     const run = await this.store.getRun(runId);
     if (!run) return null;
+    // A FAILED/DEAD run's replay deterministically re-throws its recorded failures — an exhausted
+    // failed checkpoint rethrows, and an awaited child's failure completion rethrows through
+    // unwrapCompletion — so "retry" without resetting that state is a no-op that re-fails in
+    // milliseconds. Reset the failure state first so replay RE-EXECUTES the failed parts:
+    // - a `failed` checkpoint becomes retryable-now (attempts 0, wake immediately, `retryable`
+    //   forced back on): the durable-retry machinery re-dispatches it as a fresh first attempt;
+    // - an awaited-child `signal:child:` checkpoint holding a FAILURE completion returns to its
+    //   live `running` placeholder, so replay re-registers the `child:<id>` waiter — a separately
+    //   retried child's completion (already buffered, or still to come) then resumes this run.
+    //   Retry child and parent in either order; signal buffering makes it converge.
+    if (run.status === 'failed' || run.status === 'dead') {
+      const isFailureCompletion = (v: unknown): boolean =>
+        typeof v === 'object' && v !== null && (v as { ok?: unknown }).ok === false;
+      for (const cp of await this.store.listCheckpoints(runId)) {
+        if (cp.status === 'failed') {
+          await this.store.saveCheckpoint({
+            ...cp,
+            attempts: 0,
+            wakeAt: this.clock(),
+            ...(cp.error ? { error: { ...cp.error, retryable: true } } : {}),
+          });
+        } else if (
+          cp.kind === 'signal' &&
+          cp.name.startsWith('signal:child:') &&
+          cp.status === 'completed' &&
+          isFailureCompletion(cp.output)
+        ) {
+          await this.store.saveCheckpoint({ ...cp, status: 'running', output: undefined });
+          // CASCADE: retrying only the parent is useless in a live engine — replay re-registers
+          // the `child:<id>` waiter and the reconciler re-delivers the child's still-FAILED
+          // terminal state within seconds, re-failing the parent with the same error. Requeue the
+          // failed child too so the pair converges: whichever finishes the handshake last (waiter
+          // registered vs completion buffered) resumes the parent.
+          //
+          // Exception: a SUCCESS already buffered on this token (a completed `~retry~` fix of the
+          // child — see notifyParent's origin delivery) is the outcome the replay will consume, so
+          // re-running the failed origin would be pure waste. Peek = take + re-buffer.
+          const childId = cp.name.slice('signal:child:'.length);
+          // Drain-and-restore keeps relative order (a partial take+re-buffer would rotate it).
+          const parked: unknown[] = [];
+          for (;;) {
+            const buffered = await this.store.takeBufferedSignal(`child:${childId}`);
+            if (!buffered) break;
+            parked.push(buffered.payload);
+          }
+          for (const payload of parked) await this.store.bufferSignal(`child:${childId}`, payload);
+          const bufferedSuccess = parked.some(
+            (payload) =>
+              typeof payload === 'object' &&
+              payload !== null &&
+              (payload as { ok?: unknown }).ok === true,
+          );
+          if (!bufferedSuccess) {
+            const child = await this.store.getRun(childId);
+            if (child && (child.status === 'failed' || child.status === 'dead')) {
+              await this.requeue(childId, seen);
+            }
+          }
+        }
+      }
+    }
     await this.store.releaseRunLock(runId);
-    await this.store.updateRun(runId, { status: 'pending', updatedAt: new Date() });
+    // Explicit `error: undefined` CLEARS the stale failure (the store spreads the patch over the
+    // run) — otherwise the dashboard keeps showing the old error while the run is re-executing.
+    await this.store.updateRun(runId, {
+      status: 'pending',
+      error: undefined,
+      updatedAt: new Date(),
+    });
     await this.runDispatcher.dispatch(runId);
     return { runId, status: 'pending' };
+  }
+
+  /**
+   * Explicitly re-dispatch every remote step of `runId` stuck `pending` — the OPERATOR escape hatch for
+   * a run whose dispatched step job was LOST (worker crashed with no result, or a transport that dropped
+   * the job). No automatic recovery re-drives these: a reconcile re-drive re-suspends a still-pending
+   * step by design (unless `remoteRedispatchMs` is set), `recoverIncomplete` only reclaims LEASED runs,
+   * and `requeue` just replays back to the pending guard. This re-enqueues the same `stepId` so the
+   * (idempotent) step re-runs and its result resumes the run. Safe to call on a healthy run — it re-runs
+   * only in-flight `pending` remote steps, which are idempotent by the durable contract. Returns the
+   * run's current status (with the count re-dispatched), or null if the run is unknown.
+   */
+  async redispatchPending(runId: string): Promise<(RunResult & { redispatched: number }) | null> {
+    const run = await this.store.getRun(runId);
+    if (!run) return null;
+    const pending = (await this.store.listCheckpoints(runId)).filter(
+      (cp) => cp.kind === 'remote' && cp.status === 'pending',
+    );
+    let redispatched = 0;
+    for (const cp of pending) {
+      if (!cp.stepId) continue;
+      const reAttempt = cp.attempts + 1;
+      const reEnqueuedAt = new Date();
+      await this.store.saveCheckpoint({
+        ...cp,
+        attempts: reAttempt,
+        enqueuedAt: reEnqueuedAt,
+        startedAt: reEnqueuedAt,
+        finishedAt: reEnqueuedAt,
+      });
+      await this.dispatchRemoteTask({
+        runId,
+        seq: cp.seq,
+        name: cp.name,
+        stepId: cp.stepId,
+        group: cp.workerGroup ?? sanitizeQueueToken(cp.name),
+        input: cp.input,
+        attempt: reAttempt,
+      });
+      redispatched += 1;
+    }
+    return { runId, status: run.status, redispatched };
   }
 
   /**
@@ -1328,6 +1482,15 @@ export class WorkflowEngine {
    */
   private notifyParent(runId: string, completion: Completion<unknown>): void {
     void this.signal(`child:${runId}`, completion).catch(() => undefined);
+    // A fix-and-replay run (`<origin>~retry~<hash>`) is standalone, but its SUCCESS is the
+    // origin's outcome for all practical purposes: deliver it on the ORIGIN's token too, so a
+    // parent that failed on that child and is retried later consumes this success (buffered or
+    // live) instead of waiting on a child nobody re-runs. Failures stay retry-only — a failed
+    // fix attempt must not poison the origin's token.
+    const at = runId.lastIndexOf('~retry~');
+    if (at !== -1 && completion.ok) {
+      void this.signal(`child:${runId.slice(0, at)}`, completion).catch(() => undefined);
+    }
   }
 
   /**
@@ -1777,7 +1940,11 @@ export class WorkflowEngine {
     if (latest?.status === 'cancelled') {
       return { runId: run.id, status: 'cancelled', error: latest.error };
     }
-    await this.store.updateRun(run.id, { status: 'suspended', wakeAt: outcome.wakeAt, updatedAt });
+    await this.store.updateRun(run.id, {
+      status: 'suspended',
+      wakeAt: this.reconcileWakeAt(outcome.wakeAt),
+      updatedAt,
+    });
     this.emit({
       type: 'run.suspended',
       runId: run.id,
@@ -1785,6 +1952,17 @@ export class WorkflowEngine {
       namespace: run.namespace,
     });
     return { runId: run.id, status: 'suspended' };
+  }
+
+  /**
+   * A wakeAt to persist on a suspend: the natural timer if the turn produced one (a `ctx.sleep`, a
+   * remote-step deadline), else the {@link reconcileMs} fallback so an event-waiting run (child/signal/
+   * timeout-less remote step) can't be orphaned forever if its wake is lost. `undefined` only when the
+   * fallback is disabled (`reconcileMs: 0`). See {@link WorkflowEngineDeps.reconcileMs}.
+   */
+  private reconcileWakeAt(wakeAt: number | undefined): number | undefined {
+    if (wakeAt != null) return wakeAt;
+    return this.reconcileMs != null ? this.clock() + this.reconcileMs : undefined;
   }
 
   private async runRemoteExecution(
@@ -2308,6 +2486,12 @@ export class WorkflowEngine {
       startChild: (workflow, input, id, priority) => {
         this.startChildDeferred(workflow, input, id, { priority });
       },
+      // Deferred for the same reentrancy reason as `startChild` above. `cancel()` is already
+      // idempotent on a terminal/cancelled run (returns its existing status without side effects), so
+      // no extra guard is needed here for the failFast replay case (re-issuing the same cancel calls).
+      cancelChild: (childId) => {
+        queueMicrotask(() => void this.cancel(childId).catch(() => undefined));
+      },
       // Shallow-merge into the run's searchAttributes (the ctx primitive makes this exactly-once).
       upsertSearchAttributes: async (runId, attrs) => {
         const run = await this.store.getRun(runId);
@@ -2416,7 +2600,55 @@ export class WorkflowEngine {
     // checkpoint, and let the result resume the run on whichever instance receives it — so a worker
     // pod can scale down or crash mid-step without losing the run or re-running completed work.
     if (step.timeoutMs) return this.callRemoteInMemory(runId, seq, step, input, transport);
-    if (existing?.status === 'pending') throw new WorkflowSuspended(); // dispatched; keep waiting
+    if (existing?.status === 'pending') {
+      // Dispatched; normally we just keep waiting for the result to resume the run. But a LOST dispatch
+      // (worker crashed with no result, or the transport dropped the job) would hang here forever — a
+      // reconcile re-drive replays straight back to this guard. Opt-in self-heal: once the step has been
+      // pending longer than `remoteRedispatchMs`, re-dispatch the same stepId (the idempotent step
+      // re-runs, its result resumes the run), bounded by `remoteRedispatchMax` so a never-settling step
+      // fails instead of looping. Unset (default) keeps the by-design "re-suspend, never re-dispatch".
+      if (this.remoteRedispatchMs == null) throw new WorkflowSuspended();
+      // Stamp a redispatch deadline (clock-space, persisted) the first time we see this pending step,
+      // stable across replays and crashes — mirrors the failed-retry backoff below. The run's wakeAt
+      // becomes this deadline, so a reconcile re-drive lands exactly when it's due to re-dispatch.
+      if (existing.wakeAt == null) {
+        const wakeAt = this.clock() + this.remoteRedispatchMs;
+        await this.store.saveCheckpoint({ ...existing, wakeAt });
+        throw new WorkflowSuspended(wakeAt);
+      }
+      if (this.clock() < existing.wakeAt) throw new WorkflowSuspended(existing.wakeAt);
+      // Past the deadline with no result — the dispatch is presumed lost. Re-dispatch (bounded by
+      // `remoteRedispatchMax` so a step that never settles fails the run instead of looping forever).
+      if (existing.attempts >= this.remoteRedispatchMax) {
+        throw new RemoteStepError({
+          message: `remote step "${step.name}" lost — no result after ${existing.attempts} re-dispatch(es)`,
+          code: 'remote_step_lost',
+        });
+      }
+      const reAttempt = existing.attempts + 1;
+      const nextDeadline = this.clock() + this.remoteRedispatchMs;
+      const reEnqueuedAt = new Date();
+      await this.store.saveCheckpoint({
+        ...existing,
+        attempts: reAttempt,
+        wakeAt: nextDeadline,
+        enqueuedAt: reEnqueuedAt,
+        startedAt: reEnqueuedAt,
+        finishedAt: reEnqueuedAt,
+      });
+      await this.dispatchRemoteTask({
+        runId,
+        seq,
+        name: step.name,
+        stepId: existing.stepId ?? stepId(runId, seq),
+        group: existing.workerGroup ?? tenantGroup(sanitizeQueueToken(step.name), step.partition),
+        input: existing.input,
+        priority: admission?.priority,
+        attempt: reAttempt,
+        transport,
+      });
+      throw new WorkflowSuspended(nextDeadline);
+    }
 
     // Durable retry: a failed attempt re-dispatches up to `retries`, spacing attempts by `backoff` —
     // unless the worker marked the error non-retryable (a deterministic verdict like a declined card).
@@ -2484,23 +2716,52 @@ export class WorkflowEngine {
       startedAt: enqueuedAt, // placeholders until the worker result lands
       finishedAt: enqueuedAt,
     });
-    await this.pool.dispatch(
-      {
-        runId,
-        seq,
-        name: step.name,
-        stepId: id,
-        group: token,
-        input: validInput,
-        traceparent: this.traceparent?.(),
-        context: this.context?.(),
-        priority: admission?.priority,
-        attempt,
-      },
+    await this.dispatchRemoteTask({
+      runId,
+      seq,
+      name: step.name,
+      stepId: id,
+      group: token,
+      input: validInput,
+      priority: admission?.priority,
+      attempt,
       transport,
-    );
+    });
     this.emit({ type: 'step.started', runId, seq, name: step.name, kind: 'remote' });
     throw new WorkflowSuspended();
+  }
+
+  /**
+   * Enqueue a remote step task to its worker group via the transport pool. Shared by the initial
+   * dispatch, the opt-in self-heal re-dispatch (see `remoteRedispatchMs`), and the explicit
+   * {@link redispatchPending}. Carries the current trace/context so a re-dispatch is traceable.
+   */
+  private dispatchRemoteTask(task: {
+    runId: string;
+    seq: number;
+    name: string;
+    stepId: string;
+    group: string;
+    input: unknown;
+    attempt: number;
+    priority?: number | undefined;
+    transport?: string | undefined;
+  }): Promise<void> {
+    return this.pool.dispatch(
+      {
+        runId: task.runId,
+        seq: task.seq,
+        name: task.name,
+        stepId: task.stepId,
+        group: task.group,
+        input: task.input,
+        traceparent: this.traceparent?.(),
+        context: this.context?.(),
+        priority: task.priority,
+        attempt: task.attempt,
+      },
+      task.transport,
+    );
   }
 
   /**

@@ -167,6 +167,73 @@ describe('ctx.all (parallel child workflows, wait-all)', () => {
     expect(err?.message).toContain('1 of 2');
   });
 
+  it('failFast cancels the surviving unfinished siblings', async () => {
+    const store = new InMemoryStateStore();
+    const engine = new WorkflowEngine({ store });
+    engine.register('handle', '1', async (_ctx, input) => {
+      const p = (input as { p: string }).p;
+      if (p === 'bad') throw new Error('boom-fast');
+      // Parks forever on its own — if it ends up 'cancelled' rather than stuck 'running'/'suspended',
+      // that's the parent's cancellation landing, not the child resolving on its own.
+      await (_ctx as { waitForSignal: (t: string) => Promise<unknown> }).waitForSignal('never');
+      return `out-${p}`;
+    });
+    engine.register('parent', '1', async (ctx) => {
+      return ctx.all('handle', [{ p: 'bad' }, { p: 'slow' }], { mode: 'failFast' });
+    });
+
+    await startRun(engine, 'parent', {}, 'p1');
+    await poll(async () => (await store.getRun('p1'))?.status === 'failed');
+    // The still-suspended sibling gets cancelled shortly after (host.cancelChild is deferred via
+    // queueMicrotask, so it lands on a later tick than the parent's own failure).
+    await poll(async () => (await store.getRun('p1.all.0.1'))?.status === 'cancelled');
+    expect((await store.getRun('p1.all.0.1'))?.status).toBe('cancelled');
+  });
+
+  it('waitAll does NOT cancel siblings — they run to completion', async () => {
+    const store = new InMemoryStateStore();
+    const engine = new WorkflowEngine({ store });
+    engine.register('handle', '1', async (_ctx, input) => {
+      const p = (input as { p: string }).p;
+      if (p === 'bad') throw new Error('child boom');
+      return `out-${p}`;
+    });
+    engine.register('parent', '1', async (ctx) => {
+      return ctx.all('handle', [{ p: 'A' }, { p: 'bad' }, { p: 'C' }]);
+    });
+
+    await startRun(engine, 'parent', {}, 'p1');
+    await poll(async () => (await store.getRun('p1'))?.status === 'failed');
+    // Both non-failing siblings ran to completion, untouched — waitAll never cancels.
+    expect((await store.getRun('p1.all.0.0'))?.status).toBe('completed');
+    expect((await store.getRun('p1.all.0.2'))?.status).toBe('completed');
+  });
+
+  it('replaying after a failFast failure re-issues cancels safely (no throw)', async () => {
+    const store = new InMemoryStateStore();
+    const engine = new WorkflowEngine({ store });
+    engine.register('handle', '1', async (_ctx, input) => {
+      const p = (input as { p: string }).p;
+      if (p === 'bad') throw new Error('boom-fast');
+      await (_ctx as { waitForSignal: (t: string) => Promise<unknown> }).waitForSignal('never');
+      return `out-${p}`;
+    });
+    engine.register('parent', '1', async (ctx) => {
+      return ctx.all('handle', [{ p: 'bad' }, { p: 'slow' }], { mode: 'failFast' });
+    });
+
+    await startRun(engine, 'parent', {}, 'p1');
+    await poll(async () => (await store.getRun('p1'))?.status === 'failed');
+    await poll(async () => (await store.getRun('p1.all.0.1'))?.status === 'cancelled');
+
+    // `engine.resume` treats `failed` as non-terminal (a retry resumes it), so this replays the
+    // workflow body from scratch: the failFast branch re-executes and re-issues `cancelChild` for
+    // the ALREADY-cancelled sibling. That must be a safe no-op — `engine.cancel` is idempotent on a
+    // terminal/cancelled run — not a throw.
+    const replayed = await engine.resume('p1');
+    expect(replayed.status).toBe('failed');
+  });
+
   it('GatherError carries per-item failures', () => {
     const err = new GatherError([
       { index: 1, id: 'r.all.0.1', error: 'child boom' },
