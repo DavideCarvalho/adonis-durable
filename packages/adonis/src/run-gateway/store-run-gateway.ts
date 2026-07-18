@@ -115,13 +115,19 @@ export class StoreRunGateway implements RunGateway {
   }
 
   /**
-   * Deliver `signal` (by token/name) with `payload` to the addressed run. The store-backed engine
-   * resolves the waiter by token globally, so delegation is by token; `runId` is retained on the port
-   * for a proxy to route to the owning control plane (and for future run-scoped delivery).
+   * Deliver `signal` (by name) with `payload` to the addressed run. Confirmed against the engine's
+   * waiter convention (design §8): `engine.signal` is GENUINELY GLOBAL-BY-NAME — `ctx.waitForSignal(name)`
+   * registers a waiter under the caller-chosen `name` VERBATIM, and `engine.signal(name, payload)` matches
+   * by that exact string. There is NO `signal:<runId>:<name>` waiter convention: the run-scoped families
+   * (`task:<runId>:<name>`, `update:<runId>:<name>`, `wh:<runId>:<seq>`, `child:<id>`) are the FRAMEWORK
+   * composing the token before it hands it to `waitForSignal` — an external, user-named signal never is.
+   * Deriving a run-scoped token here would therefore reach NO waiter (a run parked on `waitForSignal('go')`
+   * would never see `signal('go')`), so the name is forwarded unchanged.
    *
-   * TODO(integrator): confirm the token-derivation convention against design §8 — if run-scoped named
-   * signals are addressed as `signal:<runId>:<name>` (the engine's convention for `task:`/`update:`/
-   * `wh:` channels), derive the token here from `runId`+`signal` instead of using `signal` verbatim.
+   * `runId` is NOT dropped from the port on purpose: the `RunRequestResponder` uses it for the tenant
+   * ownership check (loads the run, rejects cross-tenant) BEFORE this delegates, and a `ProxyRunGateway`
+   * uses it to route to the run's owning control plane. So the signal stays name-addressed while the run
+   * boundary is still enforced one layer up.
    */
   signal(_runId: string, signal: string, payload?: unknown): Promise<RunResult | null> {
     return this.#engine.signal(signal, payload);
