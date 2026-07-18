@@ -1,4 +1,11 @@
 {
   "title": "Reliability",
-  "pages": ["index", "retries", "sagas", "flow-control", "dead-letter"]
+  "icon": "ShieldCheck",
+  "pages": [
+    "index",
+    "retries",
+    "sagas",
+    "flow-control",
+    "dead-letter"
+  ]
 }

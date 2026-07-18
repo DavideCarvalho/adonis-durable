@@ -1,6 +1,7 @@
 ---
 title: OpenTelemetry
 description: One trace per run, one span per step. Bridge the engine's lifecycle events to OpenTelemetry with attachDurableOtel and see workflows in Jaeger, Grafana, or Datadog — plus distributed tracing across worker processes.
+icon: Waypoints
 ---
 
 The `@adonis-agora/durable/otel` subpath turns workflow runs into OpenTelemetry traces — a root span per run, a child span per step — so they show up in the tracing stack you already run. It ships in the main `@adonis-agora/durable` package; install `@opentelemetry/api` as the only extra peer.

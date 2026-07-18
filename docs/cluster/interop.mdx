@@ -1,0 +1,109 @@
+---
+title: Cross-ecosystem interop
+description: Run Adonis, NestJS, and Python workers on one durable control plane. The BullMQ transport speaks the aviary wire byte-for-byte, so a step dispatched by an Adonis engine can execute on a Python worker and flow back.
+icon: Languages
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+
+`@adonis-agora/durable` and the aviary durable engine (`nestjs-durable`, plus its Python `durable-worker` client) speak the **same wire protocol, byte-for-byte**. That means a single control plane — in *any* of the three runtimes — can dispatch work to workers written in *any* of the others. An Adonis engine can run a workflow whose steps execute on a Python worker; a NestJS control plane can hand a step to an Adonis worker.
+
+<Callout type="info">
+This is proven with **live bidirectional interop tests**, not just a shared spec: an Adonis control plane dispatching to a real Python `durable-worker`, and a NestJS control plane dispatching to a store-less Adonis worker — across BullMQ major versions (`bullmq` 5.x on Node, 2.x on Python), results flowing back correctly.
+</Callout>
+
+## The BullMQ transport
+
+Interop rides one transport: `transports.bullmq(...)`, built on the real `bullmq` npm package with the identical job structure the Python raw-Redis runner mirrors.
+
+```ts title="config/durable.ts"
+import { defineConfig, transports, stores } from '@adonis-agora/durable'
+
+export default defineConfig({
+  role: 'control-plane',
+  transport: 'bullmq',
+  transports: {
+    bullmq: transports.bullmq({ connection: { host: '127.0.0.1', port: 6379 } }),
+  },
+  store: 'lucid',
+  stores: { lucid: stores.lucid({ connection: 'pg' }) },
+})
+```
+
+<Callout type="warn">
+The `queue` and `db` transports remain the right choice for **Adonis-only** fleets. `bullmq` is required **only** for cross-ecosystem interop — it is the one wire all three runtimes share.
+</Callout>
+
+## How the wire lines up
+
+The control-plane pub/sub channel and every cross-process DTO already match the aviary field-for-field. The BullMQ transport adds the aviary-compatible task/result queues and worker registry:
+
+| Purpose | Channel | Mechanism |
+|---------|---------|-----------|
+| Task dispatch (step + workflow) | `${P}-tasks-${token}` | BullMQ queue |
+| Step result | `${P}-results` | queue |
+| Workflow decision | `${P}-decisions` | queue |
+| Control broadcast | `${P}-control` | Redis pub/sub |
+| Worker liveness | `${P}-worker-heartbeat:${token}:${instance}` | Redis key, `EX 35` |
+| Worker descriptor | `${P}-worker-descriptor:${token}:${instance}` | Redis key |
+
+where `P` is the effective prefix (`durable`, or `durable-<namespace>`), and the routing `token` is `<name>@<tenant>` when a partition is set. Serialization is plain JSON with the DTO **as** the job data — the worker discriminates step vs workflow by shape. Dates are epoch-ms on cross-process DTOs (ISO only where nested in an `EngineEvent`/`WorkflowRun`), and BullMQ priority is inverted the same way on every side. The [handshake](/docs/durable/cluster/handshake) descriptor's `descriptorHash` even agrees three-way (Python folds UTF-16 code units to match JS `charCodeAt`), so negotiation is cross-SDK.
+
+## Running a polyglot fleet
+
+<Tabs items={['Adonis CP → Python worker', 'NestJS CP → Adonis worker']}>
+
+<Tab value="Adonis CP → Python worker">
+
+1. **Adonis control plane** — configure the `bullmq` transport (above) and run the store-backed loop:
+
+   ```bash
+   node ace durable:work
+   ```
+
+2. **Python worker** — install the aviary client (`pip install durable-worker[redis]`) and register a handler under the **same handler name** your Adonis workflow calls with `ctx.step('py-echo', ...)`. `run_redis_worker` consumes the same Redis queues the BullMQ transport dispatches to:
+
+   ```python
+   import asyncio
+   from durable_worker import Worker
+   from durable_worker.redis_runner import run_redis_worker
+
+   worker = Worker()
+
+   @worker.step("py-echo")
+   async def py_echo(data):
+       return {"echoed": data}
+
+   async def main():
+       await run_redis_worker(worker)
+       await asyncio.Event().wait()
+
+   asyncio.run(main())
+   ```
+
+3. Start a run on the Adonis side. The `ctx.step('py-echo')` task lands on `${P}-tasks-py-echo`, the Python worker consumes and executes it, publishes on `${P}-results`, and the Adonis run resumes and completes — with the Python-computed output.
+
+</Tab>
+
+<Tab value="NestJS CP → Adonis worker">
+
+Point a store-less **Adonis** `tenant` worker (see [Roles & config](/docs/durable/cluster/roles-and-config)) at the same Redis a NestJS/aviary control plane dispatches over. Register the handler names the NestJS workflows call; the Adonis worker advertises its descriptor, the aviary control plane negotiates it as routable, and steps it dispatches execute on the Adonis worker with the result flowing back.
+
+```bash
+# On the Adonis worker pod (role: 'tenant', bullmq transport, same Redis)
+node ace durable:worker
+```
+
+</Tab>
+
+</Tabs>
+
+## Version safety across runtimes
+
+Because every worker advertises a [descriptor](/docs/durable/cluster/handshake) and the control plane negotiates before dispatching, a polyglot fleet is **version-safe**: an incompatible protocol major is refused loudly, an optional capability a Python worker lacks routes that work only to workers that have it, and a run requiring a capability no live worker provides parks `blocked` until one appears — never a silent cross-language hang.
+
+## Learn more
+
+- The aviary engine and its Python client live in the [`nestjs-durable`](https://github.com/DavideCarvalho/nestjs-durable) repo (`durable-worker` on PyPI).
+- **[Handshake & negotiation](/docs/durable/cluster/handshake)** — the compatibility layer that makes a mixed-version fleet safe.

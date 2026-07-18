@@ -11,6 +11,8 @@
     "transports",
     "stores",
     "observability",
+    "---Cluster---",
+    "cluster",
     "---Operations---",
     "tooling",
     "testing",

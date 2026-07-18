@@ -1,0 +1,82 @@
+---
+title: Handshake & negotiation
+description: How a mixed fleet stays version-safe — workers advertise a capability descriptor, the control plane negotiates compatibility, and work routes only to workers that can run it. Runs park blocked instead of hanging.
+icon: Handshake
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+In a split or polyglot fleet, workers come and go and may run **different versions** of the SDK — an Adonis worker, a Python worker, an older NestJS worker. The handshake layer keeps that fleet honest: every worker **advertises what it can do**, the control plane **negotiates compatibility** before dispatching, and a run that no live worker can execute **parks as `blocked`** rather than hanging silently.
+
+<Callout type="info">
+The handshake is **broker-native** — there is no direct connection between the control plane and a worker. Workers advertise their descriptor on the same heartbeat registry the control plane already scans, and the control plane validates it on read. It works across the aviary wire, so the negotiation is identical whether the worker is Adonis, NestJS, or Python.
+</Callout>
+
+## The worker descriptor
+
+Every worker publishes a `WorkerDescriptor` — the single source of truth for **routing**, **compatibility**, and **observability**:
+
+```ts
+interface WorkerDescriptor {
+  instanceId: string
+  runtime: 'node' | 'python'
+  sdk: { name: string; version: string }
+  protocol: { version: number; range: [number, number] }  // wire-protocol majors it speaks
+  capabilities: string[]   // named features: 'saga', 'signals', 'priority', 'child-workflows', ...
+  workflows: string[]      // registered handler names → routing
+  steps: string[]
+  partition?: string
+  namespace?: string
+  startedAt: number
+}
+```
+
+It is advertised in **two tiers** to stay cheap at steady state and rich on change (ETag-style):
+
+- **Heartbeat** (every ~10s, `EX 35`): a compact `{ ts, status, descriptorHash }`.
+- **Full descriptor**: published on startup and whenever it changes, to `${P}-worker-descriptor:<token>:<instance>`. The control plane re-reads the full descriptor only when the `descriptorHash` changes.
+
+## Negotiation — three outcomes
+
+The control plane self-advertises its own descriptor, and both sides compute a **negotiated session**: the highest common protocol major plus the capability intersection. Each worker lands in one of three states:
+
+| Outcome | Meaning | Dispatch |
+|---------|---------|----------|
+| **Compatible** | protocol ranges overlap + required capabilities present | dispatch freely |
+| **Degraded** | ranges overlap but an *optional* capability is missing | dispatch, but route capability-requiring work only to capable workers; soft warning |
+| **Incompatible** | no protocol-range overlap | **do not dispatch** — red flag with the exact reason |
+
+An incompatible worker (say it speaks protocol `2` while the control plane speaks `1`) is never handed a task — the mismatch surfaces loudly instead of corrupting a run.
+
+## Capability-aware routing
+
+A workflow or step can declare the capabilities it **requires**:
+
+```ts
+// A step that relies on saga compensation and search attributes
+export const settlePayment = defineStep(
+  'settle-payment',
+  async (input: { orderId: number }) => { /* ... */ },
+  { requires: ['saga', 'search-attributes'] },
+)
+```
+
+The control plane dispatches such work **only** to workers whose descriptor advertises those capabilities. If **no live capable worker** exists, the run does not hang and does not dead-letter — it **parks as `blocked`**:
+
+<Callout type="warn">
+`blocked: no compatible worker (requires 'saga')` is a first-class run status, visible in the [dashboard](/docs/durable/observability/dashboard). The control plane re-checks blocked runs on a poll, so the moment a capable worker registers, the run resumes automatically. A capability mismatch is **never** a silent hang.
+</Callout>
+
+## Loud, structured failures
+
+When negotiation rejects a worker or a run parks, durable emits structured diagnostics — `protocol.incompatible` / `capability.unavailable` — carrying **both descriptors and the precise delta**, not a bare boolean. Those events flow to the [dashboard health panel](/docs/durable/observability/dashboard) and to [Telescope](/docs/durable/observability/telescope), and are alertable.
+
+## Backward compatibility
+
+A worker that advertises **no descriptor** (an older SDK, or a pre-handshake aviary worker) is treated as **legacy v1** with the v1 capability baseline, and assumed compatible. Existing workers keep flowing untouched; rich negotiation lights up as SDKs adopt it.
+
+The current wire protocol is **v1**. The whole point of the handshake is that a future **v2 breaking change is detectable** — an old worker and a new control plane discover the mismatch and refuse to corrupt each other, instead of failing in confusing ways at runtime.
+
+## Cross-SDK contract
+
+The descriptor, heartbeat, and negotiation wire are pinned as **golden JSON fixtures** that the Adonis, NestJS, and Python SDKs each produce and parse byte-identically in a conformance test. That is what keeps polyglot negotiation from rotting — see [Cross-ecosystem interop](/docs/durable/cluster/interop).

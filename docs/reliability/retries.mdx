@@ -1,6 +1,7 @@
 ---
 title: Retries & backoff
 description: In-process localStep retries with fixed/exponential backoff and jitter, FatalError to opt out, the durable dispatched-step retry path (re-dispatch on a persisted wakeAt), retryable:false worker verdicts, and the in-memory timeoutMs + heartbeat liveness path.
+icon: RefreshCw
 ---
 
 Transient failures are the normal case for anything that crosses a network boundary, so every step is retryable. The mechanics differ between an **in-process** `ctx.localStep` — work that runs inside the engine — and a **dispatched** `ctx.step` routed to a worker, because the engine can re-run a local function in place but a dispatched step has to survive the worker (and even the orchestrator) disappearing mid-flight.

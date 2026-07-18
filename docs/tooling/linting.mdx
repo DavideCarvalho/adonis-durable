@@ -1,6 +1,7 @@
 ---
 title: Linting for non-determinism
 description: Catch Date.now(), Math.random(), new Date() and crypto.randomUUID() inside a workflow body at author time with @adonis-agora/durable-eslint-plugin — an AST-scoped ESLint rule that knows both the engine.register() function form and a BaseWorkflow class.
+icon: SpellCheck
 ---
 
 A durable workflow body is executed *and replayed*: the engine re-runs it from the top on every resume, replaying recorded step results to reach the suspension point. That only stays correct if the body is **deterministic** — the same input has to produce the same sequence of step calls every time. A bare `Date.now()`, `Math.random()`, `new Date()`, `crypto.randomUUID()`, or `performance.now()` returns a *different value on every replay*, so the replayed path diverges from the recorded one and silently corrupts the run.

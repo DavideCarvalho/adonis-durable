@@ -1,0 +1,147 @@
+---
+title: Roles & config
+description: The role-discriminated config/durable.ts, the worker vs api entrypoints for a store-less pod, and layered tenant authentication — with store-less isolation enforced at compile time.
+icon: SlidersHorizontal
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+
+`config/durable.ts` is a **role-discriminated union**. You pick the topology with a single `role` field, and TypeScript narrows the accepted shape on the `role` literal — so an invalid combination (a store-less `tenant` pod that names a store) is a **compile error**, not a runtime surprise.
+
+## Standalone (the default)
+
+Omit `role` entirely and you get `standalone` — a control plane plus an embedded worker, identical to a config written before roles existed.
+
+```ts title="config/durable.ts"
+import { defineConfig, transports, stores } from '@adonis-agora/durable'
+
+export default defineConfig({
+  // role: 'standalone' is the default — you can omit it
+  transport: 'queue',
+  transports: { queue: transports.queue({ connection: 'redis', group: 'durable' }) },
+  store: 'lucid',
+  stores: { lucid: stores.lucid({ connection: 'pg' }) },
+})
+```
+
+## Control plane
+
+A pure coordinator: it owns the store and the transport, dispatches work, recovers crashes, fires timers, prunes retention, and answers thin-pod requests — but runs **no** embedded worker. Both `store` and `transport` are **required** here.
+
+```ts title="config/durable.ts (control plane)"
+import { defineConfig, transports, stores } from '@adonis-agora/durable'
+import { hmacTenantVerifier } from '@adonis-agora/durable'
+
+export default defineConfig({
+  role: 'control-plane',
+  transport: 'bullmq',
+  transports: { bullmq: transports.bullmq({ connection: { host: '127.0.0.1', port: 6379 } }) },
+  store: 'lucid',
+  stores: { lucid: stores.lucid({ connection: 'pg' }) },
+  // Optional: verify signed tenant tokens on incoming wire requests (see below)
+  verifyTenant: hmacTenantVerifier(process.env.DURABLE_TENANT_SECRET!),
+})
+```
+
+<Callout type="info">
+For **cross-ecosystem** fleets (a Python or NestJS worker on the same control plane), select the [`bullmq` transport](/docs/durable/cluster/interop) — it speaks the aviary wire byte-for-byte. For an Adonis-only split, the [`queue`](/docs/durable/transports/queue) and [`db`](/docs/durable/transports/db) transports work too.
+</Callout>
+
+## Tenant (store-less thin pod)
+
+A `tenant` pod **never owns a store**. Everything round-trips over the wire via the `ProxyRunGateway`. The isolation is a **compile-time fact** — `store` and `stores` are typed `never`, so naming one fails to type-check:
+
+```ts title="config/durable.ts (tenant)"
+import { defineConfig, transports } from '@adonis-agora/durable'
+
+export default defineConfig({
+  role: 'tenant',
+  transport: 'bullmq',
+  transports: { bullmq: transports.bullmq({ connection: process.env.REDIS_URL }) },
+  partition: 'acme-corp',            // which tenant this pod serves (required)
+  tenant: { token: process.env.DURABLE_TENANT_TOKEN }, // its signed claim
+  requestTimeoutMs: 10_000,          // ProxyRunGateway round-trip timeout
+  // store: 'lucid'                  // ❌ compile error — a tenant pod may not name a store
+})
+```
+
+<Callout type="warn">
+The three layers of store-less isolation: **(1) type** — a `tenant` config cannot mention a store; **(2) container** — the provider registers no store binding for the tenant role, so resolving one throws; **(3) object** — the `WorkerRuntime` and `ProxyRunGateway` have no store field at all.
+</Callout>
+
+## Worker vs api — the entrypoint decides
+
+A `tenant` pod's *shape* is not another config field — it's **which process you launch**. AdonisJS already separates the HTTP server from ace commands, and durable leans on exactly that:
+
+<Tabs items={['Worker pod', 'API / dashboard pod']}>
+
+<Tab value="Worker pod">
+
+A store-less **task consumer**. It registers `app/steps` (served by the transport) and advertises `app/workflows` names in its descriptor, subscribes their `<name>@<tenant>` queues, executes bodies, and publishes results. It owns no store.
+
+```bash
+node ace durable:worker
+```
+
+`durable:worker` is the store-less loop — distinct from `durable:work` (the store-backed dispatch/recovery/timers loop). It stays alive until `SIGINT`/`SIGTERM`, then drains.
+
+</Tab>
+
+<Tab value="API / dashboard pod">
+
+The ordinary **HTTP server**. Every durable read, control action, and run-start it performs is turned into a wire request answered by the control plane — through the very same `RunGateway` the dashboard and your routes already use, so no code changes.
+
+```bash
+node bin/server.js
+```
+
+Mount the [dashboard](/docs/durable/observability/dashboard) and it works unchanged — its reads proxy to the control plane over the wire.
+
+</Tab>
+
+</Tabs>
+
+Run both processes on one pod if you want (less isolated; usually kept separate).
+
+## Layered tenant authentication
+
+The `tenant` on a wire request is a **claim**. Without authentication, the isolation boundary is meaningless — any pod could ask for any tenant's runs. Durable stacks **two** layers (spec-driven; use one or both):
+
+<Steps>
+
+<Step>
+
+### Prefix / network baseline
+
+Each tenant runs on a segmented transport prefix/namespace behind a Redis/network ACL, so a pod can only reach its own prefix. This is the aviary model and needs no application code.
+
+</Step>
+
+<Step>
+
+### Signed token on top
+
+Each `tenant` pod carries a secret-signed token. The control plane's `RunRequestResponder` **verifies the signature and derives the tenant from the token**, ignoring any `tenant` in the request body. Defense in depth.
+
+```ts
+import { signTenantToken, hmacTenantVerifier } from '@adonis-agora/durable'
+
+// On the tenant pod — mint the token it presents (config.tenant.token):
+const token = signTenantToken('acme-corp', process.env.DURABLE_TENANT_SECRET!)
+
+// On the control plane — verify it (config.verifyTenant):
+verifyTenant: hmacTenantVerifier(process.env.DURABLE_TENANT_SECRET!)
+```
+
+</Step>
+
+</Steps>
+
+The `RunRequestResponder` is the **trust boundary**. Beyond checking the token, it forces `listRuns` to the requester's own tenant (no cross-tenant enumeration), validates `run.namespace === tenant` on every get/signal/cancel (anti-IDOR), and rejects unknown verbs and tampered tokens.
+
+## Next steps
+
+- **[Handshake & capability negotiation](/docs/durable/cluster/handshake)** — keep a mixed fleet version-safe.
+- **[Cross-ecosystem interop](/docs/durable/cluster/interop)** — add Python and NestJS workers.

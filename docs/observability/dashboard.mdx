@@ -1,6 +1,7 @@
 ---
 title: Dashboard
 description: The embedded dashboard — a self-contained HTML page plus a JSON API, mounted into your AdonisJS routes. Lists runs, renders each run's step timeline, and exposes retry and cancel actions, all behind a configurable authorize guard.
+icon: LayoutDashboard
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
@@ -73,6 +74,15 @@ The routes are named (`durable_dashboard.index`, `durable_dashboard.runs.show`, 
 - **Step timeline** — the selected run's steps rendered in order: start through each step to the terminal state, tagged by kind (local / remote / sleep / signal), with worker group and duration. In-flight steps show up here while they run, not only on completion — a remote step in flight reads as `pending` and a local step's executing body as `running` (the engine's [`trackStepStart`](/docs/durable/concepts/workflows-and-steps#in-flight-visibility) option).
 - **Children** — a run's [child workflows](/docs/durable/authoring/child-workflows) are linked from its detail.
 - **Actions** — retry a failed/suspended/dead run, cancel a running one, and **cancel + undo** (cancel with [saga compensation](/docs/durable/reliability/sagas)). These are **non-blocking**: retry re-enqueues the run and cancel + undo runs the saga in the background — neither replays the workflow inline in the HTTP request, so the action returns immediately and a worker does the work.
+
+## Fleet health
+
+When you run a [split or polyglot cluster](/docs/durable/cluster), the dashboard grows a **health / compatibility panel** fed by the [handshake](/docs/durable/cluster/handshake) descriptors and diagnostics events:
+
+- **Per pod** — its protocol version, negotiated level (**compatible** / **degraded** / **incompatible**), and a red flag with the exact reason on a mismatch (e.g. *"worker speaks protocol 2, control-plane speaks 1 → stopped"*).
+- **Blocked runs** — runs parked because no live worker advertises a [required capability](/docs/durable/cluster/handshake#capability-aware-routing) (*"requires capability X, no worker"*), so a stuck fleet is diagnosable at a glance rather than a silent hang.
+
+A store-less `tenant` api/dashboard pod serves this same view — its reads proxy to the control plane over the wire, so the panel looks identical whether or not the pod owns a store.
 
 ## Calling the API directly
 

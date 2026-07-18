@@ -1,6 +1,7 @@
 ---
 title: Dead-letter queue
 description: Cap crash-recovery with maxRecoveryAttempts so a poison-pill run moves to the terminal dead status instead of crash-looping forever, then route dead runs with engine.onDead to alert, compensate, or start a durable handler workflow.
+icon: Skull
 ---
 
 Most failures are transient and recover cleanly. But occasionally a run is a **poison pill**: it crashes the process every time recovery picks it up — a deserialization bug, a non-deterministic change, an infinite loop in a step. Left alone, crash-recovery would resume it, crash, resume it again on the next boot, and loop forever, taking the whole instance down with it each time. The dead-letter queue breaks that loop.

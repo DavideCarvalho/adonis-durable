@@ -1,4 +1,10 @@
 {
   "title": "Transports",
-  "pages": ["index", "queue", "db", "control-plane"]
+  "icon": "Cable",
+  "pages": [
+    "index",
+    "queue",
+    "db",
+    "control-plane"
+  ]
 }

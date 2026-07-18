@@ -1,4 +1,7 @@
 {
   "title": "Tooling",
-  "pages": ["linting"]
+  "icon": "Wrench",
+  "pages": [
+    "linting"
+  ]
 }

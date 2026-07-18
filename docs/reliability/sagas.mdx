@@ -1,6 +1,7 @@
 ---
 title: Sagas & compensation
 description: "Undo the side effects of a partially-completed run with per-step compensate callbacks that run in reverse on failure, compensationRetries for transient undos, compensate:<step> events, and compensating cancellation via engine.cancel(runId, { compensate: true })."
+icon: Undo2
 ---
 
 A durable run often performs several irreversible side effects in sequence — reserve inventory, charge a card, allocate a shipment. If a later step fails, the earlier effects are still out there in the world, and "the run failed" is not an acceptable end state when money has moved. The saga pattern handles this: alongside each step that *does* something, you register how to *undo* it, and when the run fails the engine runs those undos in reverse order. `@adonis-agora/durable` builds this in via a `compensate` option — a **closure** on `ctx.localStep` for in-process work, or a **step ref** on the dispatched `ctx.step`.

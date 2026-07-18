@@ -1,6 +1,7 @@
 ---
 title: Queries & updates
 description: Read a live run's state with ctx.setEvent + engine.getEvent (side-effect-free queries), and steer it with ctx.onUpdate + engine.registerUpdateValidator + engine.update (validated, Temporal-style updates that can be rejected before they touch the run).
+icon: MessagesSquare
 ---
 
 A run is durable but it is not opaque. While it is in flight — suspended on a sleep, waiting on a remote step, parked on a signal — you often need to **read** what it has done so far, and sometimes to **steer** it from the outside. The engine gives you two distinct primitives, mirroring Temporal's split between *queries* (read-only) and *updates* (mutating, validated):

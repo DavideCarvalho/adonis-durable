@@ -1,0 +1,53 @@
+---
+title: Topologies
+description: Run durable as a single process, split the control plane from the workers, or spread store-less "thin" pods per tenant — one config field, no code changes to your workflows.
+icon: Network
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+By default `@adonis-agora/durable` runs as a **single process**: one engine that owns the store, dispatches work, and executes the step bodies itself. That is all most apps ever need. When you want to scale the executor pool independently, isolate tenants, or run a **store-less worker pod that never touches your database**, you select a different **topology** — a single `role` field in `config/durable.ts`. Your workflows and steps do not change.
+
+<Callout type="info">
+Every topology runs the **same durable engine over the same wire**. Splitting the control plane from the workers does not change execution semantics: each `ctx.step` is still dispatched and checkpointed. The only thing that moves is *where the code that executes the bodies lives*.
+</Callout>
+
+## The three roles
+
+| Role | Owns the store | Executes step bodies | Serves HTTP / dashboard | Read/control surface |
+|------|:---:|:---:|:---:|------|
+| `standalone` *(default)* | ✅ | ✅ (embedded worker) | optional | direct (store) |
+| `control-plane` | ✅ | ❌ | optional | direct (store) |
+| `tenant` (worker) | ❌ | ✅ | ❌ | proxied over the wire |
+| `tenant` (api/dashboard) | ❌ | ❌ | ✅ | proxied over the wire |
+
+- **`standalone`** — a control plane **plus an embedded worker** in one process. This is today's behavior, byte-for-byte: omit `role` and you get it. Zero infrastructure with the in-process transport and in-memory store; swap in the [queue transport](/docs/durable/transports/queue) and [Lucid store](/docs/durable/stores/lucid) for production.
+- **`control-plane`** — a pure coordinator. It owns the store and does everything *except* run your bodies: dispatch, crash recovery, timers, retention, and answering read/control requests from thin pods. Bodies execute on separate `tenant` worker pods.
+- **`tenant`** — a **store-less thin pod**. It never owns a store; every read, control action, and run-start round-trips over the wire to the control plane. Whether a tenant pod is a *worker* or an *api/dashboard* pod is decided by the **entrypoint you launch**, not extra config (see [Roles & config](/docs/durable/cluster/roles-and-config)).
+
+## When to reach for each
+
+<Callout type="warn">
+Reach for a split topology when you have a concrete driver — not by default. `standalone` is simpler to operate and is the right answer until one of these bites.
+</Callout>
+
+- **Scale the executor pool independently.** CPU-heavy steps shouldn't compete with the coordinator. `control-plane` + N `tenant` workers lets you scale the workers without touching the coordinator.
+- **Isolation & security.** A `tenant` worker pod has **no database credentials and no store binding at all** — a compromised worker cannot read or corrupt durable state. Isolation here is a structural fact, enforced at compile time (a `tenant` config *cannot name a store* — see [Roles & config](/docs/durable/cluster/roles-and-config)), not a runtime check.
+- **Per-tenant routing.** Route each tenant's runs to its own pool of pods with a `<name>@<tenant>` queue suffix, sharing one control plane and one store.
+- **Polyglot / thin workers.** Because the wire is byte-compatible with the aviary (`nestjs-durable`) engine, a **Python worker** or a **NestJS worker** can execute your workflows' steps against the *same* Adonis control plane. See [Cross-ecosystem interop](/docs/durable/cluster/interop).
+
+## What splits, and what doesn't
+
+The seam is the **control plane ↔ worker** boundary on the transport:
+
+- The **control plane** owns the store and the authoritative run state. It dispatches step/workflow tasks onto per-handler queues and consumes their results.
+- A **worker** pulls a task, runs the body through the shared step handler, and publishes the result. It holds no durable state.
+- A **store-less api/dashboard pod** never executes anything; it turns every read/control/start into a wire request answered by the control plane's `RunRequestResponder`.
+
+Your application code — `BaseWorkflow` subclasses in `app/workflows`, `@Step` handlers in `app/steps` — is **identical across every role**. The dashboard, routes, and `services/main` reads all go through one `RunGateway` interface that is either backed directly by the store or proxied over the wire, so nothing above that line can tell whether a store is present.
+
+## Next steps
+
+- **[Roles & config](/docs/durable/cluster/roles-and-config)** — the role-discriminated `config/durable.ts`, the worker vs api entrypoints, and layered tenant authentication.
+- **[Handshake & capability negotiation](/docs/durable/cluster/handshake)** — how a mixed fleet stays version-safe: descriptors, negotiation, capability-aware routing, and blocked runs.
+- **[Cross-ecosystem interop](/docs/durable/cluster/interop)** — run Adonis, NestJS, and Python workers on one control plane.
