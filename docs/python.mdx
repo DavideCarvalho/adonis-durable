@@ -1,0 +1,153 @@
+---
+title: Python
+description: Python is a first-class durable runtime for Agora too. Implement steps an AdonisJS workflow calls, OR author whole workflows in Python that the Adonis engine drives — both over the same Redis wire, with the engine owning durable state.
+icon: FileCode2
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Python is a **first-class durable runtime**, not just a place to run a step. The `durable-worker`
+SDK (the same one the aviary/`nestjs-durable` ecosystem ships) speaks the wire your Adonis engine
+speaks byte-for-byte, so one Python worker can do either — or both:
+
+- **Implement steps** an AdonisJS workflow calls — a `ctx.step('payments.charge-card', …)` reaches
+  a handler written in Python.
+- **Author whole workflows** in Python — the coordinator logic (`ctx.step`, `ctx.sleep`,
+  `ctx.gather_calls`, …) lives in Python, and the Adonis engine drives it turn by turn.
+
+Either way the engine stays the sole owner of durable state, recovery, and timers — the Python
+worker is a stateless consumer on the broker. Everything rides the same Redis queues the
+[BullMQ transport](/docs/durable/cluster/interop) uses.
+
+```bash
+pip install "durable-worker[redis]"
+```
+
+## A Python step worker
+
+```python
+import asyncio
+from durable_worker import Worker, FatalError
+from durable_worker.redis_runner import run_redis_worker
+
+worker = Worker()
+
+@worker.step("payments.charge-card")
+async def charge(data):
+    res = await stripe.charge(data["orderId"], data["amountCents"])
+    return {"chargeId": res.id}
+
+async def main():
+    await run_redis_worker(worker, connection="redis://localhost:6379")
+    await asyncio.Event().wait()
+
+asyncio.run(main())
+```
+
+The handler's argument is the step **input** (schema-validated by the engine); its return value is
+the **output**. Raise `FatalError` for a non-retryable failure (e.g. a declined card); any other
+exception is retryable and the engine applies the step's retry policy.
+
+## Connecting to the control plane
+
+There is **no direct connection** between the Python worker and your AdonisJS app — everything goes
+through the **broker** (Redis). Point the worker at the **same Redis** your engine's
+[`bullmq` transport](/docs/durable/cluster/interop) uses, and register a handler under the exact
+same **name**. Two things have to line up:
+
+| Must match | Engine side (`transports.bullmq`) | Worker side (`run_redis_worker`) | Why |
+| --- | --- | --- | --- |
+| **connection** | `connection: { host, port, … }` | `connection="redis://host:port"` | Same Redis instance — the meeting point. |
+| **prefix** | `prefix` (default `durable`) | `prefix` (default `durable`) | Namespaces the queue keys: `<prefix>-tasks-<name>`, `<prefix>-results`. |
+
+```ts title="config/durable.ts (Adonis engine side)"
+import { defineConfig, transports, stores } from '@adonis-agora/durable'
+
+export default defineConfig({
+  role: 'control-plane',
+  transport: 'bullmq',
+  transports: { bullmq: transports.bullmq({ connection: { host: '127.0.0.1', port: 6379 } }) },
+  store: 'lucid',
+  stores: { lucid: stores.lucid({ connection: 'pg' }) },
+})
+```
+
+Each registered step **name** gets its own queue — no separate group to declare. Sharing one broker
+across isolated deployments? Set the same `partition` on both sides (`transports.bullmq({ partition })`
+engine-side, `run_redis_worker(worker, partition=...)` worker-side) and every queue is suffixed
+`<name>@<partition>`.
+
+## Authoring workflows in Python
+
+A Python worker can own **the whole workflow function**, not just a step. The Adonis engine stays
+the sole owner of durable state, recovery, and timers: it advances a run one **turn** at a time by
+sending the run's history as a workflow task, the Python runtime **replays** the workflow function
+locally, and returns the commands the replay produced (a step dispatch, a sleep, a signal wait) for
+the engine to persist and act on — a pure, store-free coordinator.
+
+The simplest deployment registers the workflow **and** its step handlers on **one** `Worker` (each
+registered name gets its own queue — route-by-handler), run with `run_workers`:
+
+```python
+from durable_worker import Worker, WorkflowContext, redis_url_from_env, run_workers
+
+worker = Worker()
+
+@worker.step("ingestion")
+async def ingestion(data):
+    return {"rows": load(data["key"])}
+
+@worker.workflow("pipeline")
+def pipeline(ctx: WorkflowContext, data):
+    started_at = ctx.now()                               # replay-stable capture
+    results = ctx.gather_calls([                          # fan out parallel remote steps in this run
+        {"name": "ingestion", "input": {"key": f"/{data['id']}/a.csv"}},
+        {"name": "ingestion", "input": {"key": f"/{data['id']}/b.csv"}},
+    ])
+    ctx.sleep(60_000)                                    # durable timer
+    return {"rows": sum(r["rows"] for r in results), "startedAt": started_at}
+
+run_workers([worker], redis=redis_url_from_env())        # one loop, one Redis pool, graceful shutdown
+```
+
+`ctx` mirrors the TypeScript `WorkflowCtx` — each op is keyed by a deterministic seq, so a completed
+op replays its recorded result instead of re-running:
+
+| Op | Meaning |
+| --- | --- |
+| `ctx.step(name, input, group=...)` | Dispatch a step (routed by handler `name`, any language) and await its result. |
+| `ctx.now()` | A replay-stable epoch-ms timestamp — captured once, replayed thereafter. |
+| `ctx.side_effect(fn)` | Run `fn` once, checkpoint its result, replay the same value (ids/random/env). |
+| `ctx.sleep(ms)` | Durable timer — the run suspends and the engine resumes it. |
+| `ctx.wait_signal(name)` | Block until a signal `name` is delivered; returns its payload. |
+| `ctx.start_child(workflow, input)` | Start a child run and await its output. |
+| `ctx.gather_calls([{name, input}, …])` | Dispatch several steps in parallel within one run (flat, no child runs). |
+| `ctx.gather_children([…])` | Start several child runs in parallel. |
+
+Changing the op sequence under a run already in flight raises `NondeterminismError`. A failed step
+raises `StepFailed`; the `gather*` fan-outs default to `wait_all` (raising `GatherFailed`), with an
+opt-in `fail_fast`.
+
+## Dispatching a Python workflow from Adonis
+
+You **don't** register anything. Convention dispatch is **on by default**: when a run is started for
+a workflow name the engine has no local registration for, but a **live worker group of that name**
+does, the engine routes it there automatically. So starting the Python-authored `pipeline` is just:
+
+```ts
+import engine from '@adonis-agora/durable/services/main'
+
+await engine.start('pipeline', { id: baseId }, `pipeline-${baseId}`)
+```
+
+or, from inside another workflow, `await ctx.child('pipeline', { id: baseId })`. A live Python worker
+registered as `pipeline` picks up the turns — no `registerRemote` boilerplate.
+
+<Callout type="info">
+Opt out with `remoteByConvention: false` in `config/durable.ts` to make an unregistered workflow
+throw `is not registered` instead of routing by convention (fail-fast on unknown names). The queue
+name **is** the routing, so nothing else needs wiring.
+</Callout>
+
+The workflow-task/decision wire is language-neutral, so the same Python workflow runs unchanged
+against an Adonis, a [NestJS](/docs/durable/cluster/interop), or any other conformant control plane.
