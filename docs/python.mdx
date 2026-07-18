@@ -130,9 +130,9 @@ opt-in `fail_fast`.
 
 ## Dispatching a Python workflow from Adonis
 
-You **don't** register anything. Convention dispatch is **on by default**: when a run is started for
-a workflow name the engine has no local registration for, but a **live worker group of that name**
-does, the engine routes it there automatically. So starting the Python-authored `pipeline` is just:
+You **don't** register anything. When a run is started for a workflow name the engine has no local
+registration for, but a **live worker group of that name** does, the engine routes it there
+automatically. So starting the Python-authored `pipeline` is just:
 
 ```ts
 import engine from '@adonis-agora/durable/services/main'
@@ -141,7 +141,7 @@ await engine.start('pipeline', { id: baseId }, `pipeline-${baseId}`)
 ```
 
 or, from inside another workflow, `await ctx.child('pipeline', { id: baseId })`. A live Python worker
-registered as `pipeline` picks up the turns — no `registerRemote` boilerplate.
+registered as `pipeline` picks up the turns.
 
 <Callout type="info">
 There is nothing to configure — convention routing is always on, because the **queue name is the
