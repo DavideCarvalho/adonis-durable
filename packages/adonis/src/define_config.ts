@@ -109,6 +109,15 @@ export interface BaseDurableConfig {
   /** Where a freshly-started run executes. Defaults to in-process (microtask). */
   runDispatcher?: RunDispatcher;
   /**
+   * Route a run of a workflow this engine has no LOCAL registration for to a live worker group of the
+   * same NAME (discovered over the transport) — so a Python, NestJS, or thin-worker workflow is reached
+   * by name with **no `registerRemote` boilerplate**, exactly as the aviary engine does. **On by
+   * default.** Set `false` to opt out — then starting an unregistered workflow throws `is not
+   * registered` instead of routing by convention (fail-fast on unknown names). Needs a `transport`;
+   * a no-transport single-process engine has no remote groups to route to, so this is a no-op there.
+   */
+  remoteByConvention?: boolean;
+  /**
    * Recurring workflows to start on a schedule (fixed interval via `everyMs`, or cron via `cron` +
    * `timezone`). The `durable:work` worker loop fires any due windows on every tick (the 5th phase,
    * after timeouts are swept). `engine.start` is idempotent by each schedule's time-bucket run id, so

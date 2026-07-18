@@ -1,5 +1,13 @@
 # @adonis-agora/durable
 
+## 0.13.0
+
+### Minor Changes
+
+- Convention dispatch is now **on by default** — a run started for a workflow this engine has no local registration for is routed to a live worker group of the same name, with **no `registerRemote` boilerplate**. This matches the aviary engine (which has always routed by convention) and is what makes a Python/NestJS/thin-worker workflow reachable by name: just `engine.start('pipeline', input)` (or `ctx.child('pipeline', …)`) and a live `pipeline` worker group picks it up.
+
+  Opt out with `remoteByConvention: false` in `config/durable.ts` to restore the fail-fast "workflow is not registered" throw for unknown names. `registerRemote(...)` still exists for pinning a specific group/version, but is no longer required.
+
 ## 0.12.0
 
 ### Minor Changes

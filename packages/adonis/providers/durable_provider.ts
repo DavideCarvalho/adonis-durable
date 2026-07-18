@@ -190,6 +190,10 @@ export default class DurableProvider {
         ...(config.compensationRetries !== undefined
           ? { compensationRetries: config.compensationRetries }
           : {}),
+        // Convention-dispatch is on by default (parity with aviary); pass through an explicit opt-out.
+        ...(config.remoteByConvention !== undefined
+          ? { remoteByConvention: config.remoteByConvention }
+          : {}),
         // Where a freshly-started run executes: explicit config wins; else `control-plane` leaves it
         // pending for the poll loop (no inline execution), and `standalone` uses the engine's in-process
         // default (embedded worker).

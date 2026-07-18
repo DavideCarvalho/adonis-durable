@@ -324,9 +324,14 @@ export interface WorkflowEngineDeps {
   /**
    * Route a run of a workflow this engine has NO local registration for to a live worker group of the
    * SAME name (bare group, no partition suffix), discovered via `pool.listWorkerGroups()` — the
-   * convention-dispatch opt-in. When on and `start`/`resume` sees an unregistered workflow whose name
-   * matches a live worker group, it auto-registers a remote workflow routed to that group; when off
-   * (the default), an unregistered workflow throws exactly as before. Existing behaviour is unchanged.
+   * convention-dispatch default. When `start`/`resume` sees an unregistered workflow whose name
+   * matches a live worker group, it auto-registers a remote workflow routed to that group — so a
+   * Python/NestJS/thin-worker workflow is reached by NAME with **no `registerRemote` boilerplate**,
+   * exactly as the aviary engine has always done (it routes by convention unconditionally).
+   *
+   * **On by default.** Set `false` to opt out — then an unregistered workflow throws `is not
+   * registered` instead of routing by convention (the pre-1.0 behaviour, and the safe choice if you
+   * deliberately want unknown names to fail fast rather than reach a same-named worker group).
    */
   remoteByConvention?: boolean | undefined;
   /**
@@ -445,7 +450,7 @@ export class WorkflowEngine {
       deps.transports ?? (deps.transport ? [{ id: 'default', transport: deps.transport }] : []),
     );
     this.primaryTransport = deps.transports?.[0]?.transport ?? deps.transport;
-    this.remoteByConvention = deps.remoteByConvention ?? false;
+    this.remoteByConvention = deps.remoteByConvention ?? true;
     this.controlPlane = deps.controlPlane;
     this.clock = deps.clock ?? Date.now;
     this.admission = deps.admission ?? new InMemoryAdmissionBackend(this.clock);
@@ -827,7 +832,8 @@ export class WorkflowEngine {
     const name = workflowName(workflow);
     let registered = this.latest.get(name);
     // remoteByConvention: an unregistered workflow whose name matches a LIVE worker group is routed to
-    // it as a remote workflow (bare group). Off by default → the original "not registered" throw.
+    // it as a remote workflow (bare group). On by default (opt out with `remoteByConvention: false` →
+    // the fail-fast "not registered" throw below).
     if (!registered && (await this.ensureConventionWorkflow(name))) {
       registered = this.latest.get(name);
     }
