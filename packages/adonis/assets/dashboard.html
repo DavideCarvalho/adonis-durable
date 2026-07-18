@@ -177,12 +177,26 @@
         font-size: 12.5px;
       }
       .health .h-card.stalled { border-color: var(--red); }
+      .nav { display: flex; gap: 16px; }
+      .nav a { color: var(--muted); font-size: 13px; }
+      .nav a:hover, .nav a.active { color: var(--text); }
+      /* Fleet-health / protocol-compat badges — mirror src/dashboard/compat-view.ts outcomeClass(). */
+      .badge.c-ok { color: var(--green); background: rgba(63,185,80,0.12); border-color: rgba(63,185,80,0.3); }
+      .badge.c-degraded { color: var(--amber); background: rgba(210,153,34,0.12); border-color: rgba(210,153,34,0.3); }
+      .badge.c-bad { color: var(--red); background: rgba(248,81,73,0.12); border-color: rgba(248,81,73,0.3); }
+      .panel.flagged-panel { border-color: var(--red); }
+      tr.flagged { background: rgba(248,81,73,0.06); }
+      .flag-reason { color: var(--red); }
     </style>
   </head>
   <body>
     <header>
       <h1><span class="dot">●</span> Durable</h1>
       <span class="muted mono" id="crumb">runs</span>
+      <nav class="nav">
+        <a href="#" id="nav-runs">Runs</a>
+        <a href="#/health" id="nav-health">Fleet health</a>
+      </nav>
       <span class="spacer"></span>
       <span class="muted" id="health-strip"></span>
     </header>
@@ -414,6 +428,98 @@
         if (childrenPanel) app.appendChild(childrenPanel);
       }
 
+      // Mirrors src/dashboard/compat-view.ts — keep the two in lockstep (unit-tested there).
+      const OUTCOME = {
+        compatible: { cls: 'c-ok', label: 'compatible' },
+        degraded: { cls: 'c-degraded', label: 'degraded' },
+        incompatible: { cls: 'c-bad', label: 'incompatible' },
+      };
+      const protoRange = (r) =>
+        !r ? '—' : (r[0] === r[1] ? 'v' + r[0] : 'v' + r[0] + '–' + r[1]);
+
+      async function renderCompat() {
+        document.getElementById('crumb').textContent = 'fleet health';
+        const app = document.getElementById('app');
+        let data;
+        try {
+          data = await api('/compat');
+        } catch (e) {
+          app.innerHTML = '';
+          app.appendChild(el('div', { class: 'empty' }, 'Failed to load fleet health: ' + e.message));
+          return;
+        }
+
+        const cp = data.controlPlane;
+        const cpPanel = el('div', { class: 'panel' }, [
+          el('h2', {}, 'Control plane'),
+          el('dl', { class: 'kv' }, [
+            el('dt', {}, 'Instance'), el('dd', {}, el('code', {}, cp.instanceId)),
+            el('dt', {}, 'Protocol'), el('dd', {}, protoRange(cp.protocolRange)),
+            el('dt', {}, 'Capabilities'),
+            el('dd', { class: 'muted' }, (cp.capabilities || []).join(', ') || '—'),
+          ]),
+        ]);
+
+        const groupPanels = data.groups.map((g) => {
+          const rows = g.pods.map((p) => {
+            const o = OUTCOME[p.outcome] || { cls: '', label: p.outcome };
+            return el('tr', p.incompatible ? { class: 'flagged' } : {}, [
+              el('td', {}, el('code', {}, p.instanceId)),
+              el('td', { class: 'muted' }, p.runtime),
+              el('td', {}, protoRange(p.protocolRange)),
+              el('td', {}, el('span', { class: 'badge ' + o.cls }, o.label)),
+              el('td', { class: p.incompatible ? 'flag-reason' : 'muted' }, p.reason || '—'),
+            ]);
+          });
+          return el('div', { class: 'panel' + (g.incompatible ? ' flagged-panel' : '') }, [
+            el('h2', {}, (g.incompatible ? '⚠ ' : '') + g.token),
+            el('table', {}, [
+              el('thead', {}, el('tr', {}, [
+                el('th', {}, 'Pod'), el('th', {}, 'Runtime'), el('th', {}, 'Protocol'),
+                el('th', {}, 'Negotiated'), el('th', {}, 'Reason'),
+              ])),
+              el('tbody', {}, rows),
+            ]),
+          ]);
+        });
+
+        const blockedRows = data.blocked.map((b) =>
+          el('tr', { onclick: () => navigate(b.id) }, [
+            el('td', {}, el('code', {}, b.id)),
+            el('td', {}, b.workflow || '—'),
+            el('td', { class: 'flag-reason' }, b.reason),
+            el('td', { class: 'muted' }, (b.requires && b.requires.length) ? b.requires.join(', ') : '—'),
+            el('td', { class: 'muted mono' }, fmt(b.updatedAt)),
+          ]));
+        const blockedPanel = el('div', { class: 'panel' + (data.blocked.length ? ' flagged-panel' : '') }, [
+          el('h2', {}, (data.blocked.length ? '⚠ ' : '') + 'Blocked runs (' + data.blocked.length + ')'),
+          data.blocked.length
+            ? el('table', {}, [
+                el('thead', {}, el('tr', {}, [
+                  el('th', {}, 'Run id'), el('th', {}, 'Workflow'), el('th', {}, 'Reason'),
+                  el('th', {}, 'Requires'), el('th', {}, 'Updated'),
+                ])),
+                el('tbody', {}, blockedRows),
+              ])
+            : el('div', { class: 'muted' }, 'No blocked runs — every run has a compatible worker.'),
+        ]);
+
+        app.innerHTML = '';
+        app.appendChild(el('a', {
+          class: 'back', href: '#',
+          onclick: (e) => { e.preventDefault(); navigate(''); },
+        }, '← all runs'));
+        app.appendChild(cpPanel);
+        for (const panel of (data.groups.length ? groupPanels
+          : [el('div', { class: 'panel' }, [
+              el('h2', {}, 'Workers'),
+              el('div', { class: 'muted' }, 'No live worker descriptors advertised.'),
+            ])])) {
+          app.appendChild(panel);
+        }
+        app.appendChild(blockedPanel);
+      }
+
       async function act(action, id) {
         try {
           await api('/runs/' + encodeURIComponent(id) + '/' + action, {
@@ -433,9 +539,16 @@
 
       function route() {
         const hash = location.hash.replace(/^#/, '');
-        const m = /^\/runs\/(.+)$/.exec(hash);
-        if (m) renderDetail(decodeURIComponent(m[1]));
-        else renderList();
+        const onHealth = hash === '/health';
+        document.getElementById('nav-health').className = onHealth ? 'active' : '';
+        document.getElementById('nav-runs').className = onHealth ? '' : 'active';
+        if (onHealth) {
+          renderCompat();
+        } else {
+          const m = /^\/runs\/(.+)$/.exec(hash);
+          if (m) renderDetail(decodeURIComponent(m[1]));
+          else renderList();
+        }
         refreshHealth();
       }
 

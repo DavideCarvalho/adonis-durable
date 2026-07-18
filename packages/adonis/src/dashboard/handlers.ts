@@ -1,19 +1,19 @@
 import type {
   GroupHealth,
   RunQuery,
+  RunResult,
   RunStatus,
   StepCheckpoint,
-  WorkflowEngine,
   WorkflowRun,
 } from '../index.js';
 
 /**
- * Framework-light JSON handlers over a {@link WorkflowEngine}.
+ * Framework-light JSON handlers over a {@link DashboardEngine}.
  *
- * Each handler takes a {@link Deps} bundle (just the engine — runs and
- * checkpoints are read through the engine's own read API, {@link
- * WorkflowEngine.listRuns} / {@link WorkflowEngine.listCheckpoints}, so the
- * dashboard never reaches for the engine's private store) plus a plain {@link
+ * Each handler takes a {@link Deps} bundle (just the read/control port — runs
+ * and checkpoints are read through its own read API, {@link
+ * DashboardEngine.listRuns} / {@link DashboardEngine.listCheckpoints}, so the
+ * dashboard never reaches for a private store) plus a plain {@link
  * ApiRequest} (a thin view of the parts of an HTTP request it needs), and
  * returns a plain {@link ApiResponse} (status + JSON body). No AdonisJS types
  * leak in, so the handlers are unit-testable against a real in-memory engine
@@ -21,9 +21,28 @@ import type {
  * shapes.
  */
 
-/** The engine the handlers operate over. */
+/**
+ * The bounded read/control surface the JSON handlers drive — declared STRUCTURALLY (a port), not by
+ * importing the concrete `WorkflowEngine` class, so the same handlers serve BOTH durable topologies
+ * (design §8): a store role passes the real {@link import('../engine.js').WorkflowEngine} (structurally
+ * assignable — it has every method here); a store-less `tenant` pod passes an adapter over its
+ * {@link import('../run-gateway/interface.js').RunGateway} (see `gatewayDashboardEngine`). Store presence
+ * is therefore invisible to the handlers. Mirrors the `RunGatewayEngine` port pattern already used by
+ * `StoreRunGateway`.
+ */
+export interface DashboardEngine {
+  getRun(runId: string): Promise<WorkflowRun | null>;
+  listRuns(query: RunQuery): Promise<WorkflowRun[]>;
+  listCheckpoints(runId: string): Promise<StepCheckpoint[]>;
+  getRunChildren(runId: string): Promise<string[]>;
+  requeue(runId: string): Promise<RunResult | null>;
+  cancel(runId: string, opts?: { compensate?: boolean }): Promise<RunResult | null>;
+  workerHealth(extra?: string[]): Promise<GroupHealth[]>;
+}
+
+/** The read/control port the handlers operate over (a store engine or a tenant gateway adapter). */
 export interface Deps {
-  engine: WorkflowEngine;
+  engine: DashboardEngine;
 }
 
 /** The subset of an HTTP request the handlers read. */
@@ -42,7 +61,8 @@ export interface ApiResponse {
   body: unknown;
 }
 
-const ok = (body: unknown): ApiResponse => ({ status: 200, body });
+/** A `200 OK` JSON response. Exported so sibling handlers (e.g. `compat`) share one convention. */
+export const ok = (body: unknown): ApiResponse => ({ status: 200, body });
 const notFound = (message: string): ApiResponse => ({
   status: 404,
   body: { error: message },
