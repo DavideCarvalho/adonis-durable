@@ -8,11 +8,7 @@ import type {
   WorkflowRun,
 } from '../interfaces.js';
 import type { WorkflowRef } from '../workflow-ref.js';
-import type {
-  DurableTopology,
-  RunGateway,
-  StartRunOptions,
-} from './interface.js';
+import type { DurableTopology, RunGateway, StartRunOptions } from './interface.js';
 
 /**
  * The slice of {@link WorkflowEngine} the {@link StoreRunGateway} delegates to. Declared structurally
@@ -31,6 +27,7 @@ export interface RunGatewayEngine {
   getRun(runId: string): Promise<WorkflowRun | null>;
   listRuns(query: RunQuery): Promise<WorkflowRun[]>;
   listCheckpoints(runId: string): Promise<StepCheckpoint[]>;
+  getRunChildren(parentRunId: string): Promise<string[]>;
   workerHealth(extra?: string[]): Promise<GroupHealth[]>;
   start(
     workflow: string,
@@ -42,9 +39,7 @@ export interface RunGatewayEngine {
   cancel(runId: string, opts?: { compensate?: boolean }): Promise<RunResult | null>;
   subscribe(listener: (event: EngineEvent) => void): () => void;
   /** Optional — absent on the current AdonisJS engine; see {@link RunGatewayEngine} note. */
-  redispatchPending?(
-    runId: string,
-  ): Promise<(RunResult & { redispatched: number }) | null>;
+  redispatchPending?(runId: string): Promise<(RunResult & { redispatched: number }) | null>;
 }
 
 /** Options for {@link StoreRunGateway}. */
@@ -94,6 +89,10 @@ export class StoreRunGateway implements RunGateway {
     return this.#engine.listCheckpoints(runId);
   }
 
+  getRunChildren(runId: string): Promise<string[]> {
+    return this.#engine.getRunChildren(runId);
+  }
+
   async getSearchAttributes(runId: string): Promise<SearchAttributes | undefined> {
     const run = await this.#engine.getRun(runId);
     return run?.searchAttributes;
@@ -103,11 +102,7 @@ export class StoreRunGateway implements RunGateway {
     return this.#engine.workerHealth();
   }
 
-  async start(
-    workflow: WorkflowRef,
-    input: unknown,
-    opts?: StartRunOptions,
-  ): Promise<RunResult> {
+  async start(workflow: WorkflowRef, input: unknown, opts?: StartRunOptions): Promise<RunResult> {
     const runId = opts?.runId ?? globalThis.crypto.randomUUID();
     // `start` is overloaded per ref kind (class | string) on the engine; a `WorkflowRef` union fits
     // neither overload, so resolve to the string overload (the engine handles both at runtime).
@@ -137,9 +132,7 @@ export class StoreRunGateway implements RunGateway {
     return this.#engine.cancel(runId, opts);
   }
 
-  redispatchPending(
-    runId: string,
-  ): Promise<(RunResult & { redispatched: number }) | null> {
+  redispatchPending(runId: string): Promise<(RunResult & { redispatched: number }) | null> {
     // The AdonisJS engine doesn't yet expose per-step re-dispatch; degrade to null when absent so the
     // verb stays byte-compatible for a proxy without inventing engine behaviour. See RunGatewayEngine.
     return this.#engine.redispatchPending?.(runId) ?? Promise.resolve(null);

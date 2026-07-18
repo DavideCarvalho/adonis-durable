@@ -188,6 +188,8 @@ export class RunRequestResponder {
         return Promise.resolve(run);
       case 'getCheckpoints':
         return this.#gateway.getCheckpoints(body.runId);
+      case 'getRunChildren':
+        return this.#gateway.getRunChildren(body.runId);
       case 'getSearchAttributes':
         return this.#gateway.getSearchAttributes(body.runId);
       case 'signal':

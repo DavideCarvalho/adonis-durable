@@ -163,6 +163,10 @@ export class ProxyRunGateway implements RunGateway {
     return this.#request<StepCheckpoint[]>({ kind: 'getCheckpoints', runId });
   }
 
+  getRunChildren(runId: string): Promise<string[]> {
+    return this.#request<string[]>({ kind: 'getRunChildren', runId });
+  }
+
   getSearchAttributes(runId: string): Promise<SearchAttributes | undefined> {
     return this.#request<SearchAttributes | undefined>({ kind: 'getSearchAttributes', runId });
   }

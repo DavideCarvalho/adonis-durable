@@ -8,10 +8,7 @@ import type {
   StepCheckpoint,
   WorkflowRun,
 } from '../../src/interfaces.js';
-import {
-  type RunGatewayEngine,
-  StoreRunGateway,
-} from '../../src/run-gateway/store-run-gateway.js';
+import { type RunGatewayEngine, StoreRunGateway } from '../../src/run-gateway/store-run-gateway.js';
 import { startRun } from '../../src/test-helpers.js';
 import { InMemoryStateStore } from '../../src/testing/in-memory-state-store.js';
 
@@ -25,6 +22,11 @@ function makeEngine(): { engine: WorkflowEngine; store: InMemoryStateStore } {
   engine.register('await-go', '1', async (ctx) => ctx.waitForSignal('go'));
   // Runs a durable step then completes — its checkpoint gives getCheckpoints a timeline to read.
   engine.register('stepper', '1', async (ctx) => ctx.localStep('do-it', async () => 'stepped'));
+  // Spawns a child workflow — its `child:`/`signal:child:` bookkeeping gives getRunChildren a tree to read.
+  engine.register('parent', '1', async (ctx) => {
+    await ctx.child('echo', { from: 'parent' });
+    return 'parent-done';
+  });
   return { engine, store };
 }
 
@@ -91,6 +93,20 @@ describe('StoreRunGateway (store-backed RunGateway)', () => {
       // The completed durable step is recorded on the run's timeline.
       expect(cps.length).toBeGreaterThan(0);
       expect(cps.some((c) => c.name === 'do-it')).toBe(true);
+    });
+
+    it('getRunChildren() returns the ids of the runs a parent spawned', async () => {
+      const { engine } = makeEngine();
+      const gw = new StoreRunGateway(engine);
+      await startRun(engine, 'parent', {}, 'r-parent');
+      await engine.waitForRun('r-parent');
+      const children = await gw.getRunChildren('r-parent');
+      expect(children.length).toBe(1);
+      // The child really is a distinct spawned run (not the parent itself).
+      expect(children[0]).not.toBe('r-parent');
+      expect((await gw.getRun(children[0] as string))?.workflow).toBe('echo');
+      // A leaf run has no children.
+      expect(await gw.getRunChildren('r-leaf-unknown')).toEqual([]);
     });
 
     it('getSearchAttributes() reads the attributes stamped at start', async () => {
@@ -182,6 +198,7 @@ describe('StoreRunGateway (store-backed RunGateway)', () => {
         getRun: rec('getRun', Promise.resolve({ id: 'x' } as WorkflowRun)),
         listRuns: rec('listRuns', Promise.resolve([{ id: 'x' }] as WorkflowRun[])),
         listCheckpoints: rec('listCheckpoints', Promise.resolve([{ seq: 1 }] as StepCheckpoint[])),
+        getRunChildren: rec('getRunChildren', Promise.resolve(['c1', 'c2'])),
         workerHealth: rec('workerHealth', Promise.resolve([{ group: 'g' }] as GroupHealth[])),
         start: rec('start', Promise.resolve({ runId: 'x', status: 'pending' } as RunResult)),
         signal: rec('signal', Promise.resolve({ runId: 'x', status: 'completed' } as RunResult)),
@@ -217,6 +234,13 @@ describe('StoreRunGateway (store-backed RunGateway)', () => {
       expect(calls).toEqual([{ method: 'listCheckpoints', args: ['r1'] }]);
     });
 
+    it('getRunChildren -> engine.getRunChildren(runId) and passes the ids through', async () => {
+      const { engine, calls } = fakeEngine();
+      const out = await new StoreRunGateway(engine).getRunChildren('r1');
+      expect(calls).toEqual([{ method: 'getRunChildren', args: ['r1'] }]);
+      expect(out).toEqual(['c1', 'c2']);
+    });
+
     it('getSearchAttributes -> engine.getRun(runId).searchAttributes', async () => {
       const { engine, calls } = fakeEngine();
       engine.getRun = (...args: unknown[]) => {
@@ -236,7 +260,11 @@ describe('StoreRunGateway (store-backed RunGateway)', () => {
 
     it('start -> engine.start(workflow, input, runId, opts) and passes the result through', async () => {
       const { engine, calls } = fakeEngine();
-      const out = await new StoreRunGateway(engine).start('wf', { x: 1 }, { runId: 'r1', tags: ['t'] });
+      const out = await new StoreRunGateway(engine).start(
+        'wf',
+        { x: 1 },
+        { runId: 'r1', tags: ['t'] },
+      );
       expect(calls).toEqual([
         { method: 'start', args: ['wf', { x: 1 }, 'r1', { runId: 'r1', tags: ['t'] }] },
       ]);
