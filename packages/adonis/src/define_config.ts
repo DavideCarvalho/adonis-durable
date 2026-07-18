@@ -76,6 +76,15 @@ export interface BaseDurableConfig {
   /** Named state stores, built with the {@link stores} factory. */
   stores?: Record<string, StoreFactory>;
   /**
+   * Whether the provider provisions the selected store's schema at boot by calling its
+   * `ensureSchema()` (idempotent `CREATE TABLE IF NOT EXISTS`). Default `true` — the lib manages its
+   * own tables, matching the rest of the ecosystem (agent/authz/telescope). Set `false` to manage the
+   * schema yourself via a migration (`createDurableTables(db, connection)`) — e.g. when the app's DB
+   * user may not run DDL at boot, or you want explicit, reviewed schema changes. The in-memory store
+   * has no schema, so this is a no-op for it.
+   */
+  autoSchema?: boolean;
+  /**
    * Cross-instance broadcast for lifecycle events + cancellation. Omit for single-instance. Either a
    * ready {@link ControlPlane} instance, or a {@link ControlPlaneFactory} built with the
    * {@link controlPlanes} factory (e.g. `controlPlanes.redis({ connection: 'main' })`) so the peer

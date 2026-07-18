@@ -6,7 +6,15 @@ import type { ApplicationService } from '@adonisjs/core/types';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import DurableProvider from '../providers/durable_provider.js';
 import type { DurableConfig } from '../src/define_config.js';
-import { WorkflowEngine } from '../src/index.js';
+import { InMemoryStateStore, WorkflowEngine } from '../src/index.js';
+
+/** In-memory store that records `ensureSchema()` calls, to assert boot-time provisioning. */
+class SchemaSpyStore extends InMemoryStateStore {
+  ensureSchemaCalls = 0;
+  async ensureSchema(): Promise<void> {
+    this.ensureSchemaCalls += 1;
+  }
+}
 
 const SRC = fileURLToPath(new URL('../src', import.meta.url));
 
@@ -54,6 +62,26 @@ describe('DurableProvider', () => {
     const { app, resolve } = fakeApp({ instanceId: 'engine-a' });
     new DurableProvider(app).register();
     expect(await resolve()).toBeInstanceOf(WorkflowEngine);
+  });
+
+  it('provisions the store schema at boot by default (autoSchema on)', async () => {
+    const store = new SchemaSpyStore();
+    const { app, resolve } = fakeApp({ store: 'spy', stores: { spy: () => store } });
+    new DurableProvider(app).register();
+    await resolve();
+    expect(store.ensureSchemaCalls).toBe(1);
+  });
+
+  it('skips schema provisioning when autoSchema is false', async () => {
+    const store = new SchemaSpyStore();
+    const { app, resolve } = fakeApp({
+      store: 'spy',
+      stores: { spy: () => store },
+      autoSchema: false,
+    });
+    new DurableProvider(app).register();
+    await resolve();
+    expect(store.ensureSchemaCalls).toBe(0);
   });
 
   it('consumes the @agora/otel:traceparent global slot when present (no break)', async () => {

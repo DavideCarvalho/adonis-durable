@@ -15,15 +15,15 @@ import type { StepHandler } from '../../src/protocol.js';
 import { InMemoryTransport } from '../../src/testing/in-memory-transport.js';
 import { effectivePrefix, routingToken } from '../../src/transports/bullmq/naming.js';
 import { WORKER_HEARTBEAT_TTL_SECONDS } from '../../src/transports/bullmq/serialization.js';
-import type { WorkflowTurnHandler } from '../../src/workflow-turn.js';
 import {
   RedisWorkerRegistry,
   type WorkerRegistry,
-  type WorkerTransport,
   WorkerRuntime,
+  type WorkerTransport,
   workerDescriptorKey,
   workerHeartbeatKey,
 } from '../../src/worker-runtime/index.js';
+import type { WorkflowTurnHandler } from '../../src/workflow-turn.js';
 
 /** A registry that captures every advertisement + beat, so the two-tier handshake is assertable. */
 class FakeRegistry implements WorkerRegistry {
@@ -145,7 +145,7 @@ class WorkflowFakeTransport implements WorkerTransport {
    *  registration name (a misroute) still reaches a handler and gets the map's verdict (no_workflow). */
   async deliver(taskInput: WorkflowTask): Promise<WorkflowDecision> {
     const turn = this.#turns.get(taskInput.workflow) ?? [...this.#turns.values()][0];
-    if (!turn) throw new Error(`no workflow turn registered at all`);
+    if (!turn) throw new Error('no workflow turn registered at all');
     const decision = await turn(taskInput);
     this.decisions.push(decision);
     return decision;

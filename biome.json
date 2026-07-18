@@ -3,7 +3,14 @@
   "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
   "files": {
     "ignoreUnknown": false,
-    "ignore": ["dist/**", "node_modules/**", ".turbo/**", "coverage/**", "**/*.stub"]
+    "ignore": [
+      "dist/**",
+      "node_modules/**",
+      ".turbo/**",
+      "coverage/**",
+      "**/*.stub",
+      "**/test/fixtures/**"
+    ]
   },
   "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2, "lineWidth": 100 },
   "javascript": {

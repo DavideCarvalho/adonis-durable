@@ -65,9 +65,9 @@ describe('descriptorHash — stability + sensitivity', () => {
 
   // --- Sensitivity: mutating ANY content-bearing field changes the hash (mutation proof). ---
   it('changes when a capability is added', () => {
-    expect(descriptorHash(makeDescriptor({ capabilities: ['saga', 'signals', 'priority'] }))).not.toBe(
-      descriptorHash(makeDescriptor()),
-    );
+    expect(
+      descriptorHash(makeDescriptor({ capabilities: ['saga', 'signals', 'priority'] })),
+    ).not.toBe(descriptorHash(makeDescriptor()));
   });
 
   it('changes when a workflow changes', () => {

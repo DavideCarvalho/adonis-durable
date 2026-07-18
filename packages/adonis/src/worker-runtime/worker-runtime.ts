@@ -12,11 +12,7 @@ import {
   WORKER_HEARTBEAT_TTL_SECONDS,
   buildInstanceId,
 } from '../transports/bullmq/serialization.js';
-import {
-  type WorkflowBody,
-  type WorkflowTurnHandler,
-  runWorkflowTurn,
-} from '../workflow-turn.js';
+import { type WorkflowBody, type WorkflowTurnHandler, runWorkflowTurn } from '../workflow-turn.js';
 import {
   effectivePrefix,
   routingToken,
@@ -211,7 +207,10 @@ export class WorkerRuntime {
         runWorkflowTurn(this.#workflowBodies, task, {
           partition: this.#partition,
           ...(this.#transport.dispatchStepEvent
-            ? { onStep: (event: WorkflowStepEvent) => void this.#transport.dispatchStepEvent?.(event) }
+            ? {
+                onStep: (event: WorkflowStepEvent) =>
+                  void this.#transport.dispatchStepEvent?.(event),
+              }
             : {}),
         }),
       );

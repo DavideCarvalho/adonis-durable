@@ -5,9 +5,9 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 import { WorkflowEngine } from '../../src/engine.js';
 import { startRun } from '../../src/test-helpers.js';
-import { createBullMQDeps } from '../../src/transports/bullmq/deps.js';
-import { BullMQTransport } from '../../src/transports/bullmq/bullmq-transport.js';
 import { InMemoryStateStore } from '../../src/testing/in-memory-state-store.js';
+import { BullMQTransport } from '../../src/transports/bullmq/bullmq-transport.js';
+import { createBullMQDeps } from '../../src/transports/bullmq/deps.js';
 
 /**
  * CROWN-JEWEL cross-ecosystem interop proof (store-less cluster design §11): an Adonis control-plane
@@ -40,7 +40,11 @@ afterAll(async () => {
 });
 
 /** Poll `fn` until it returns truthy or the deadline passes; throws with `label` on timeout. */
-async function waitFor<T>(label: string, fn: () => Promise<T | undefined>, timeoutMs: number): Promise<T> {
+async function waitFor<T>(
+  label: string,
+  fn: () => Promise<T | undefined>,
+  timeoutMs: number,
+): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const got = await fn();
@@ -70,9 +74,12 @@ describe.skipIf(!REDIS_URL)('Adonis control-plane -> Python worker interop (real
 
     // The workflow owns a single durable step named `py-echo` — a step NAME the Python worker owns.
     engine.register('py-interop', '1', async (ctx) => {
-      const out = await ctx.step<{ echoed: unknown; runtime: string; nPlusOne: number }>('py-echo', {
-        n: 41,
-      });
+      const out = await ctx.step<{ echoed: unknown; runtime: string; nPlusOne: number }>(
+        'py-echo',
+        {
+          n: 41,
+        },
+      );
       return out;
     });
 
@@ -112,7 +119,10 @@ describe.skipIf(!REDIS_URL)('Adonis control-plane -> Python worker interop (real
     // read back + JSON-parsed by the Adonis transport — proving the descriptor bytes cross-read.
     const descriptors = await transport.listWorkerDescriptors('py-echo');
     const pyDescriptor = descriptors.find((d) => d.runtime === 'python');
-    expect(pyDescriptor, `expected a python worker descriptor, got ${JSON.stringify(descriptors)}`).toBeDefined();
+    expect(
+      pyDescriptor,
+      `expected a python worker descriptor, got ${JSON.stringify(descriptors)}`,
+    ).toBeDefined();
     expect(pyDescriptor?.steps).toContain('py-echo');
 
     // --- Drive it: start the run; the step suspends, the Python result resumes it --------------

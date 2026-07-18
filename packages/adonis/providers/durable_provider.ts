@@ -403,7 +403,16 @@ export default class DurableProvider {
         `@agora/durable: config.store is "${name}", but config.stores.${name} is not defined`,
       );
     }
-    return factory(ctx);
+    const store = await factory(ctx);
+    // Autoschema (default on): provision the store's tables at boot. Idempotent
+    // (`CREATE TABLE IF NOT EXISTS`); the store resolves its Lucid db from the container's
+    // `'lucid.db'` alias, which is available at boot. `autoSchema: false` opts out (manage via a
+    // migration with `createDurableTables`). The in-memory store omits `ensureSchema` — the optional
+    // call is then a no-op.
+    if (config.autoSchema !== false) {
+      await store.ensureSchema?.();
+    }
+    return store;
   }
 
   /** Resolve the configured transport (a key of `config.transports`), or the in-memory default. */
