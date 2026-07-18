@@ -1,5 +1,23 @@
 # @adonis-agora/durable
 
+## 0.12.0
+
+### Minor Changes
+
+- [#15](https://github.com/DavideCarvalho/adonis-durable/pull/15) [`ae3fbee`](https://github.com/DavideCarvalho/adonis-durable/commit/ae3fbee7e00a32ff9d2463d616aeea8a1a5ac566) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - O provider agora **provisiona o schema do store no boot** por padrão — o durable passa a gerenciar as próprias tabelas, como o resto do ecossistema (agent/authz/telescope), em vez de exigir uma migration.
+
+  Novo `autoSchema?: boolean` no config (default `true`): quando ligado, `DurableProvider` chama `store.ensureSchema()` ao resolver o store (idempotente, `CREATE TABLE IF NOT EXISTS`; o store lucid resolve o db pelo alias `'lucid.db'`, disponível no boot). O store in-memory não tem schema, então é no-op.
+
+  ```ts
+  // dev/prod: sem migration, a lib cria as tabelas
+  export default defineConfig({ store: 'lucid', stores: { lucid: stores.lucid({ connection: 'main' }) } })
+
+  // opt-out: gerencie via migration com createDurableTables(db, connection)
+  export default defineConfig({ autoSchema: false, store: 'lucid', stores: { lucid: stores.lucid(...) } })
+  ```
+
+  **Mudança de comportamento:** apps existentes que criavam as tabelas via migration passam a também provisioná-las no boot (idempotente — as tabelas já existentes são um no-op). Para manter o comportamento anterior (só migration, sem DDL no boot), setar `autoSchema: false`.
+
 ## 0.11.0
 
 ### Minor Changes
