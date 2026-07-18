@@ -13,6 +13,7 @@ export * from './interfaces.js';
 export * from './protocol.js';
 export * from './queue.js';
 export * from './remote-workflow-executor.js';
+export * from './workflow-turn.js';
 export * from './tenant-group.js';
 export {
   DURABLE_STEP_CONFIG,
