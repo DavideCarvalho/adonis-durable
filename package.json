@@ -35,7 +35,11 @@
     "vitest": "^3.0.0"
   },
   "pnpm": {
-    "ignoredBuiltDependencies": [
+    "onlyBuiltDependencies": [
+      "@biomejs/biome",
+      "@swc/core",
+      "better-sqlite3",
+      "esbuild",
       "msgpackr-extract"
     ]
   }
