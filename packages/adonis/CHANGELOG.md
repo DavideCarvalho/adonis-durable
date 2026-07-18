@@ -1,5 +1,11 @@
 # @adonis-agora/durable
 
+## 0.10.0
+
+### Minor Changes
+
+- Parity sync from nestjs-durable: retry now re-executes failed runs (was a no-op), self-heal event-waiting suspends orphaned by a lost wake (`reconcileMs`), recover a remote step whose dispatched job was lost (`redispatchPending` + `remoteRedispatchMs`), cascade retry + retry-adoption, and `ctx.all` failFast cancels surviving siblings + `webhook().wait({ timeoutMs })`.
+
 ## 0.9.1
 
 ### Patch Changes
