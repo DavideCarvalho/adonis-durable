@@ -322,19 +322,6 @@ export interface WorkflowEngineDeps {
    */
   runDispatcher?: RunDispatcher | undefined;
   /**
-   * Route a run of a workflow this engine has NO local registration for to a live worker group of the
-   * SAME name (bare group, no partition suffix), discovered via `pool.listWorkerGroups()` — the
-   * convention-dispatch default. When `start`/`resume` sees an unregistered workflow whose name
-   * matches a live worker group, it auto-registers a remote workflow routed to that group — so a
-   * Python/NestJS/thin-worker workflow is reached by NAME with **no `registerRemote` boilerplate**,
-   * exactly as the aviary engine has always done (it routes by convention unconditionally).
-   *
-   * **On by default.** Set `false` to opt out — then an unregistered workflow throws `is not
-   * registered` instead of routing by convention (the pre-1.0 behaviour, and the safe choice if you
-   * deliberately want unknown names to fail fast rather than reach a same-named worker group).
-   */
-  remoteByConvention?: boolean | undefined;
-  /**
    * Capabilities the control-plane itself advertises in its handshake descriptor (design §7.3). The
    * CP is a router, not an executor, so this is rarely needed — leave empty. Never gates which workers
    * are dispatchable (that's the worker descriptors); it only shapes the `missingOnLocal` delta.
@@ -375,10 +362,8 @@ export class WorkflowEngine {
   /** Ordered transport pool (dispatch + failover). Empty = no remote steps. */
   private readonly pool: TransportPool;
   /** The primary task transport (first of the pool), used to build an on-the-fly remote-workflow
-   *  executor for {@link WorkflowEngineDeps.remoteByConvention}. Undefined when no transport is wired. */
+   *  executor for convention dispatch. Undefined when no transport is wired. */
   private readonly primaryTransport?: Transport | undefined;
-  /** Convention-dispatch opt-in — see {@link WorkflowEngineDeps.remoteByConvention}. */
-  private readonly remoteByConvention: boolean;
   private readonly controlPlane?: ControlPlane | undefined;
   private readonly clock: () => number;
   private readonly instanceId: string;
@@ -450,7 +435,6 @@ export class WorkflowEngine {
       deps.transports ?? (deps.transport ? [{ id: 'default', transport: deps.transport }] : []),
     );
     this.primaryTransport = deps.transports?.[0]?.transport ?? deps.transport;
-    this.remoteByConvention = deps.remoteByConvention ?? true;
     this.controlPlane = deps.controlPlane;
     this.clock = deps.clock ?? Date.now;
     this.admission = deps.admission ?? new InMemoryAdmissionBackend(this.clock);
@@ -686,14 +670,16 @@ export class WorkflowEngine {
   }
 
   /**
-   * Convention-dispatch resolution (opt-in via {@link WorkflowEngineDeps.remoteByConvention}): when
-   * `name` isn't locally registered but a LIVE worker group of the same name exists, auto-register a
-   * remote workflow routed to that group (bare group, no partition) so its runs advance over the
-   * broker like any `registerRemote`'d one. Returns whether `name` is registered afterwards. A no-op
-   * (returns `false`) when the opt-in is off, no transport is wired, or no matching group is live.
+   * Convention-dispatch resolution: when `name` isn't locally registered but a LIVE worker group of
+   * the same name exists, auto-register a remote workflow routed to that group (bare group, no
+   * partition) so its runs advance over the broker like any `registerRemote`'d one. Always on — the
+   * queue name IS the routing, exactly as the aviary engine does — so a Python/NestJS/thin-worker
+   * workflow is reached by NAME with no `registerRemote` boilerplate. Returns whether `name` is
+   * registered afterwards. A no-op (returns `false`) when no transport is wired (nothing to route
+   * over) or no matching worker group is live (then `start`/`resume` throws `is not registered`).
    */
   private async ensureConventionWorkflow(name: string): Promise<boolean> {
-    if (!this.remoteByConvention || !this.primaryTransport) return false;
+    if (!this.primaryTransport) return false;
     if (this.latest.get(name)) return true;
     const groups = await this.pool.listWorkerGroups();
     if (!groups.includes(name)) return false;
@@ -831,9 +817,9 @@ export class WorkflowEngine {
   ): Promise<RunResult> {
     const name = workflowName(workflow);
     let registered = this.latest.get(name);
-    // remoteByConvention: an unregistered workflow whose name matches a LIVE worker group is routed to
-    // it as a remote workflow (bare group). On by default (opt out with `remoteByConvention: false` →
-    // the fail-fast "not registered" throw below).
+    // Convention dispatch: an unregistered workflow whose name matches a LIVE worker group is routed
+    // to it as a remote workflow (bare group). No registration needed — the queue name is the routing;
+    // when no matching group is live this is a no-op and the "not registered" throw below fires.
     if (!registered && (await this.ensureConventionWorkflow(name))) {
       registered = this.latest.get(name);
     }
@@ -944,7 +930,7 @@ export class WorkflowEngine {
     // Pin to the version the run STARTED on — replay is positional, so running a changed
     // workflow body against old checkpoints would corrupt the run.
     let registered = this.workflows.get(versionKey(run.workflow, run.workflowVersion));
-    // remoteByConvention: a run recovered on an instance that never registered this workflow (e.g. a
+    // Convention dispatch: a run recovered on an instance that never registered this workflow (e.g. a
     // crash-recovery pickup) is re-routed to a live worker group of the same name, if one exists.
     if (!registered && (await this.ensureConventionWorkflow(run.workflow))) {
       registered =

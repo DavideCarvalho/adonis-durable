@@ -1,5 +1,13 @@
 # @adonis-agora/durable
 
+## 0.14.0
+
+### Minor Changes
+
+- Convention dispatch is now **unconditional** — there is no `remoteByConvention` config/engine option anymore (it was added in 0.13.0 and is removed here). Nothing is registered by default; a run started for a workflow name this engine has no local registration for is routed to a live worker group of the same name, exactly as the aviary engine has always done. The queue name **is** the routing.
+
+  If no live worker group matches the name, `start`/`resume` still throws `is not registered` (unchanged fail-fast). Runtime behaviour is identical to 0.13.0's default; only the now-pointless opt-out knob is gone. `registerRemote(...)` remains for pinning a specific group/version.
+
 ## 0.13.0
 
 ### Minor Changes

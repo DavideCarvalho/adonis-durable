@@ -144,9 +144,9 @@ or, from inside another workflow, `await ctx.child('pipeline', { id: baseId })`.
 registered as `pipeline` picks up the turns — no `registerRemote` boilerplate.
 
 <Callout type="info">
-Opt out with `remoteByConvention: false` in `config/durable.ts` to make an unregistered workflow
-throw `is not registered` instead of routing by convention (fail-fast on unknown names). The queue
-name **is** the routing, so nothing else needs wiring.
+There is nothing to configure — convention routing is always on, because the **queue name is the
+routing**. If no live worker group matches the name, starting the run still throws `is not
+registered` (the unchanged fail-fast), so a typo'd name never silently hangs.
 </Callout>
 
 The workflow-task/decision wire is language-neutral, so the same Python workflow runs unchanged
