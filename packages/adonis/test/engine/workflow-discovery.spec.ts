@@ -6,7 +6,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WorkflowEngine } from '../../src/engine.js';
 import { startRun } from '../../src/test-helpers.js';
 import { InMemoryStateStore } from '../../src/testing/in-memory-state-store.js';
-import { discoverWorkflows, registerWorkflowsFromDir } from '../../src/workflow-discovery.js';
+import {
+  discoverWorkflows,
+  registerWorkflowClass,
+  registerWorkflowsFromDir,
+} from '../../src/workflow-discovery.js';
 import { workflowMeta, workflowName } from '../../src/workflow-ref.js';
 
 // Absolute path to the package src so a temp workflow module can import BaseWorkflow without the alias.
@@ -116,5 +120,47 @@ describe('app/workflows auto-discovery', () => {
   it('ignores non-workflow modules', async () => {
     await writeFile(join(dir, 'helpers.ts'), 'export const x = 1');
     expect(await discoverWorkflows(dir)).toEqual([]);
+  });
+});
+
+describe('registerWorkflowClass colocated schedules', () => {
+  it('registers a class`s `static schedule` on the engine (derived key = workflow name)', () => {
+    class ReportWorkflow {
+      static workflow = { name: 'report' };
+      static schedule = { cron: '0 4 * * *', timezone: 'America/Sao_Paulo' };
+      async run() {
+        return 'ok';
+      }
+    }
+    const engine = new WorkflowEngine({ store: new InMemoryStateStore() });
+    expect(registerWorkflowClass(engine, ReportWorkflow)).toBe(true);
+    expect(engine.discoveredSchedules).toEqual([
+      { workflow: 'report', key: 'report', cron: '0 4 * * *', timezone: 'America/Sao_Paulo' },
+    ]);
+  });
+
+  it('registers nothing for a workflow class without `static schedule`', () => {
+    class PlainWorkflow {
+      static workflow = { name: 'plain' };
+      async run() {}
+    }
+    const engine = new WorkflowEngine({ store: new InMemoryStateStore() });
+    registerWorkflowClass(engine, PlainWorkflow);
+    expect(engine.discoveredSchedules).toEqual([]);
+  });
+
+  it('dedupes on key across repeated registration (first wins, idempotent)', () => {
+    class ReportWorkflow {
+      static workflow = { name: 'report' };
+      static schedule = { everyMs: 60_000 };
+      async run() {}
+    }
+    const engine = new WorkflowEngine({ store: new InMemoryStateStore() });
+    registerWorkflowClass(engine, ReportWorkflow);
+    // Re-scan of the same class (both discovery paths funnel through here) must not double-register.
+    registerWorkflowClass(engine, ReportWorkflow);
+    expect(engine.discoveredSchedules).toEqual([
+      { workflow: 'report', key: 'report', everyMs: 60_000 },
+    ]);
   });
 });
