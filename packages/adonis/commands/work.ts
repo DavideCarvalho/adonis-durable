@@ -1,6 +1,6 @@
 import { BaseCommand, flags } from '@adonisjs/core/ace';
 import type { CommandOptions } from '@adonisjs/core/types/ace';
-import { runWorkerLoop } from '../src/commands/worker.js';
+import { mergeSchedules, runWorkerLoop } from '../src/commands/worker.js';
 import type { DurableConfig } from '../src/define_config.js';
 import { WorkflowEngine } from '../src/index.js';
 
@@ -25,9 +25,11 @@ export default class DurableWork extends BaseCommand {
 
   override async run(): Promise<void> {
     const engine = await this.app.container.make(WorkflowEngine);
-    // Recurring schedules registered in `config/durable.ts` — fired as the worker tick's 5th phase.
+    // Recurring schedules fired as the worker tick's 5th phase: those registered in `config/durable.ts`
+    // merged with any colocated `static schedule` discovered on workflow classes at boot. Config wins
+    // on a key collision (see `mergeSchedules`).
     const config = this.app.config.get<DurableConfig>('durable', {});
-    const schedules = config.schedules ?? [];
+    const schedules = mergeSchedules(config.schedules ?? [], engine.discoveredSchedules);
 
     // Resolve `stopSignal` once a termination signal arrives, so the loop finishes its current tick,
     // drains, and exits cleanly instead of being hard-killed mid-run.

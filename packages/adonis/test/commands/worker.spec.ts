@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { type WorkerLogger, runTick, runWorkerLoop } from '../../src/commands/worker.js';
+import {
+  type WorkerLogger,
+  mergeSchedules,
+  runTick,
+  runWorkerLoop,
+} from '../../src/commands/worker.js';
 import {
   InMemoryStateStore,
   InMemoryTransport,
@@ -90,6 +95,32 @@ describe('runTick', () => {
     await runTick(engine, { schedules, now });
     await engine.waitForRun('sched:hourly:2');
     expect(runs).toBe(1);
+  });
+});
+
+describe('mergeSchedules (config + colocated `static schedule`)', () => {
+  it('concatenates config schedules with disjoint colocated ones', () => {
+    const config: ScheduledWorkflow[] = [{ key: 'a', workflow: 'a', everyMs: 1000 }];
+    const discovered: ScheduledWorkflow[] = [{ key: 'b', workflow: 'b', cron: '0 4 * * *' }];
+    expect(mergeSchedules(config, discovered)).toEqual([
+      { key: 'a', workflow: 'a', everyMs: 1000 },
+      { key: 'b', workflow: 'b', cron: '0 4 * * *' },
+    ]);
+  });
+
+  it('config WINS on a key collision — the colocated schedule is dropped', () => {
+    const config: ScheduledWorkflow[] = [{ key: 'report', workflow: 'report', everyMs: 5000 }];
+    const discovered: ScheduledWorkflow[] = [
+      { key: 'report', workflow: 'report', cron: '0 4 * * *', timezone: 'America/Sao_Paulo' },
+    ];
+    expect(mergeSchedules(config, discovered)).toEqual([
+      { key: 'report', workflow: 'report', everyMs: 5000 },
+    ]);
+  });
+
+  it('returns colocated schedules alone when config has none', () => {
+    const discovered: ScheduledWorkflow[] = [{ key: 'b', workflow: 'b', everyMs: 1000 }];
+    expect(mergeSchedules([], discovered)).toEqual(discovered);
   });
 });
 

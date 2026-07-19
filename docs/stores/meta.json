@@ -1,8 +1,5 @@
 {
   "title": "State stores",
   "icon": "Database",
-  "pages": [
-    "index",
-    "lucid"
-  ]
+  "pages": ["index", "lucid"]
 }

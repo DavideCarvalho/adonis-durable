@@ -1,6 +1,7 @@
 import { WorkflowEngine } from './engine.js';
 import type { StartOptions } from './engine.js';
 import type { WorkflowCtx } from './interfaces.js';
+import type { WorkflowScheduleConfig } from './scheduler.js';
 import { getCurrentWorkflowCtx } from './workflow-als.js';
 import type {
   WorkflowClass,
@@ -79,6 +80,17 @@ export abstract class BaseWorkflow {
    * `app/workflows` auto-discovery. Omit it and the class is not a registrable workflow.
    */
   static workflow?: WorkflowOptions;
+
+  /**
+   * Recurring schedule(s) for this workflow, colocated on the class (an alternative to listing them in
+   * `config/durable.ts` → `schedules`). Discovered by `app/workflows` auto-discovery and merged with
+   * the config schedules — the `durable:work` worker tick fires both identically. A single object
+   * declares one schedule; an array declares several. `key` defaults to the workflow name (or
+   * `${name}:${i}` for an array) and must stay stable — it is part of the deterministic run id. On a
+   * key collision, an explicit `config.schedules` entry wins. Cron schedules need the optional
+   * `cron-parser` peer dependency. See {@link WorkflowScheduleConfig}.
+   */
+  static schedule?: WorkflowScheduleConfig | WorkflowScheduleConfig[];
 
   /** The workflow body. `ctx` is the durable context; `input` is the run's typed input. */
   abstract run(ctx: WorkflowCtx, input: unknown): unknown;

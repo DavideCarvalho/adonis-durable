@@ -2,7 +2,12 @@ import { readdir } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { WorkflowEngine } from './engine.js';
-import { type WorkflowClass, type WorkflowMeta, workflowMeta } from './workflow-ref.js';
+import {
+  type WorkflowClass,
+  type WorkflowMeta,
+  workflowMeta,
+  workflowSchedules,
+} from './workflow-ref.js';
 
 /** A discovered workflow class plus its resolved {@link WorkflowMeta} — from a `BaseWorkflow`
  *  subclass's `static workflow` config. */
@@ -33,6 +38,11 @@ export function registerWorkflowClass(engine: WorkflowEngine, cls: unknown): boo
       ...(meta.onEvent ? { onEvent: meta.onEvent } : {}),
     },
   );
+  // Collect any colocated `static schedule` on the class so the worker loop can fire it alongside the
+  // config schedules. Both discovery paths (dir scan + generated barrel) funnel through here, so this
+  // is the single place that wires colocation.
+  const schedules = workflowSchedules(cls);
+  if (schedules.length > 0) engine.registerSchedules(schedules);
   return true;
 }
 
