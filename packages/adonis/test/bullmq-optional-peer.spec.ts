@@ -82,9 +82,7 @@ function reachableBareSpecifiers(entry: string): Set<string> {
 }
 
 describe('bullmq is an optional peer dependency, never a hard dependency', () => {
-  const pkg = JSON.parse(
-    readFileSync(resolve(ROOT, 'package.json'), 'utf8'),
-  ) as {
+  const pkg = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8')) as {
     dependencies?: Record<string, string>;
     peerDependencies?: Record<string, string>;
     peerDependenciesMeta?: Record<string, { optional?: boolean }>;
