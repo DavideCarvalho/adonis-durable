@@ -1,5 +1,11 @@
 # @adonis-agora/durable
 
+## 0.15.0
+
+### Minor Changes
+
+- [#17](https://github.com/DavideCarvalho/adonis-durable/pull/17) [`f0a79a3`](https://github.com/DavideCarvalho/adonis-durable/commit/f0a79a3231099d176d3220edbe60f2bb2b0a803a) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Add colocated `static schedule` on workflow classes. A `BaseWorkflow` subclass can now declare its recurring schedule(s) inline — `static schedule = { cron, timezone, paused, … }` (a single object or an array) — instead of only listing them in `config/durable.ts` → `schedules`. Colocated schedules are discovered by `app/workflows` auto-discovery and merged with the config schedules; the `durable:work` worker tick fires both identically. The default `key` is derived deterministically from the workflow name (`${name}:${i}` for an array), keeping the schedule's time-bucket run id stable. On a `key` collision, an explicit `config.schedules` entry wins. Also exports the `WorkflowScheduleConfig` type and the `workflowSchedules(cls)` reader.
+
 ## 0.14.0
 
 ### Minor Changes
