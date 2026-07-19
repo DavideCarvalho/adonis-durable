@@ -109,7 +109,6 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "bullmq": "^5.0.0",
     "zod": "^3.23.0"
   },
   "peerDependencies": {
@@ -119,12 +118,16 @@
     "@adonisjs/queue": "^0.6.0",
     "@adonisjs/redis": "^9.2.0",
     "@opentelemetry/api": "^1.0.0",
+    "bullmq": "^5.0.0",
     "cron-parser": "^4.0.0 || ^5.0.0",
     "ioredis": "^5.0.0",
     "vitest": "^3.0.0"
   },
   "peerDependenciesMeta": {
     "@adonisjs/assembler": {
+      "optional": true
+    },
+    "bullmq": {
       "optional": true
     },
     "@adonisjs/lucid": {
@@ -160,6 +163,7 @@
     "@opentelemetry/sdk-trace-base": "^1.30.0",
     "@types/node": "^20.0.0",
     "better-sqlite3": "^11.0.0",
+    "bullmq": "^5.0.0",
     "cron-parser": "^4.9.0",
     "ioredis": "^5.4.0",
     "typescript": "^5.4.0",
