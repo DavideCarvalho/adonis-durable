@@ -58,6 +58,7 @@ import type { HistoryEvent } from './interfaces.js';
 import { breakpointToken, stepId } from './protocol.js';
 import type { QueueConfig } from './queue.js';
 import { RemoteWorkflowExecutor } from './remote-workflow-executor.js';
+import type { ScheduledWorkflow } from './scheduler.js';
 import { SingletonGate } from './singleton-gate.js';
 import { sanitizeQueueToken, tenantGroup } from './tenant-group.js';
 import { TransportPool } from './transport-pool.js';
@@ -400,6 +401,8 @@ export class WorkflowEngine {
   private readonly eventTriggers = new Map<string, Set<string>>();
   /** Durable-entity subsystem (registers the `__entity` runner; see `registerEntity`). */
   private readonly entities: Entities;
+  /** Colocated schedules (from `static schedule`) collected during auto-discovery; see `registerSchedules`. */
+  readonly #discoveredSchedules: ScheduledWorkflow[] = [];
   /** Event debounce/batch accumulators (register the `__evt_*` runners; see `accumulators.route`). */
   private readonly accumulators: EventAccumulators;
   /** In-flight remote steps awaiting a worker result, keyed by stepId. */
@@ -555,6 +558,32 @@ export class WorkflowEngine {
    */
   registerEntity<S>(name: string, config: EntityConfig<S>): void {
     this.entities.register(name, config);
+  }
+
+  /**
+   * Register colocated schedules (from a workflow class's `static schedule`) discovered during
+   * `app/workflows` auto-discovery. Inert bookkeeping — this does NOT touch execution or determinism;
+   * it just collects the schedules the `durable:work` worker loop later merges with `config.schedules`
+   * and fires. Idempotent per `key`: the first schedule registered for a key wins and a later duplicate
+   * key is ignored with a warning (so re-scanning, or a config entry overriding it, can't double-fire).
+   */
+  registerSchedules(schedules: readonly ScheduledWorkflow[]): void {
+    const seen = new Set(this.#discoveredSchedules.map((s) => s.key));
+    for (const schedule of schedules) {
+      if (seen.has(schedule.key)) {
+        console.warn(
+          `[adonis-durable] duplicate schedule key "${schedule.key}" ignored (first registration wins).`,
+        );
+        continue;
+      }
+      seen.add(schedule.key);
+      this.#discoveredSchedules.push(schedule);
+    }
+  }
+
+  /** Colocated schedules discovered from `static schedule`, for the worker loop to merge with config. */
+  get discoveredSchedules(): readonly ScheduledWorkflow[] {
+    return this.#discoveredSchedules;
   }
 
   /** Send an operation to an entity (fire-and-forget). Ordered + exactly-once per key. */
