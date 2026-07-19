@@ -49,6 +49,19 @@ export interface ScheduledWorkflow {
   backfill?: { maxCatchup: number };
 }
 
+/**
+ * Schedule declared ON THE WORKFLOW CLASS (`static schedule`) — the colocated form of a
+ * {@link ScheduledWorkflow}. `workflow` is derived from the class itself (its `static workflow.name`),
+ * so it isn't repeated here; `key` is optional and defaults to the workflow name (or `${name}:${i}`
+ * when the class declares several). Every other field (`cron`/`everyMs`/`timezone`/`paused`/`overlap`/
+ * `jitter`/`backfill`/`input`) is identical to {@link ScheduledWorkflow}.
+ */
+export interface WorkflowScheduleConfig extends Omit<ScheduledWorkflow, 'workflow' | 'key'> {
+  /** Stable key identifying this schedule — part of the deterministic run id. Defaults to the
+   *  workflow name (`${name}:${i}` when the class declares multiple schedules). Keep it stable. */
+  key?: string;
+}
+
 /** Injectable dispatch-path effects (kept out of the deterministic run-id logic). Defaults to real
  *  `Math.random` + `setTimeout`; overridden in tests so jitter is deterministic and instant. */
 export interface RunSchedulesOptions {
