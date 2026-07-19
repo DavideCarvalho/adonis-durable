@@ -6,6 +6,8 @@
  * string stays available for the cross-runtime case.
  */
 
+import type { ScheduledWorkflow, WorkflowScheduleConfig } from './scheduler.js';
+
 /** Options for a workflow's `static workflow = { name, version, … }` config (see {@link BaseWorkflow}). */
 export interface WorkflowOptions {
   /** The registered workflow name (the cross-runtime identity, e.g. `order`). */
@@ -38,6 +40,31 @@ export function workflowMeta(target: unknown): WorkflowMeta | undefined {
     return { ...config, version: config.version ?? '1' };
   }
   return undefined;
+}
+
+/**
+ * Read a class's colocated schedule(s) from its `static schedule` config and normalize each into a
+ * full {@link ScheduledWorkflow} (the same shape `config.schedules` uses), so the worker tick fires
+ * class-declared and config-declared schedules identically. `workflow` is filled from the class's
+ * `static workflow.name`; a missing `key` defaults to the workflow name (or `${name}:${i}` when the
+ * class declares several).
+ *
+ * The default key is **derived from the class's workflow name, never random** — it becomes part of the
+ * schedule's deterministic time-bucket run id, so two ticks (or two racing workers) resolve the same
+ * key and thus start each window exactly once. Returns `[]` for a class carrying no `static workflow`
+ * (not a registrable workflow) or no `static schedule`.
+ */
+export function workflowSchedules(target: unknown): ScheduledWorkflow[] {
+  const meta = workflowMeta(target);
+  if (!meta) return [];
+  const raw = (target as { schedule?: WorkflowScheduleConfig | WorkflowScheduleConfig[] }).schedule;
+  if (!raw) return [];
+  const arr = Array.isArray(raw) ? raw : [raw];
+  return arr.map((s, i) => ({
+    ...s,
+    workflow: meta.name,
+    key: s.key ?? (arr.length > 1 ? `${meta.name}:${i}` : meta.name),
+  }));
 }
 
 /** Structural shape of a workflow class — its `run(ctx, input)` carries the input/output types. */
