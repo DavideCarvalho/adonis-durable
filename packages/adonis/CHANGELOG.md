@@ -1,5 +1,11 @@
 # @adonis-agora/durable
 
+## 0.15.1
+
+### Patch Changes
+
+- [#19](https://github.com/DavideCarvalho/adonis-durable/pull/19) [`cc45f89`](https://github.com/DavideCarvalho/adonis-durable/commit/cc45f8988171db16a93700839a8745dffdb0d577) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Fix `transports.bullmq()`/`createBullMQDeps()` silently minting a Redis client bound to ioredis's own default (`127.0.0.1:6379`) instead of the caller's Redis when `connection` is falsy or an empty object — it now throws a clear, actionable error at boot instead of a silent misconnect that only surfaces as an `ECONNREFUSED 6379` retry loop once the real Redis is unreachable on the default host/port.
+
 ## 0.15.0
 
 ### Minor Changes
