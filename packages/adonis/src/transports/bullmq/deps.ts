@@ -61,6 +61,10 @@ export interface BullMQDeps {
  * Workers require `maxRetriesPerRequest: null`; a plain-options connection is cloned with it set (a
  * passed-in `Redis` instance is preserved as-is). A standalone client for pub/sub / heartbeat keys is
  * a `duplicate()` of a passed-in instance, or a fresh client with a keepalive floor from the options.
+ *
+ * @throws when `connection` is falsy or an empty object — otherwise `makeRedis()` would silently mint
+ * an ioredis client with NO host/port, landing on ioredis's own default (`127.0.0.1:6379`) instead of
+ * the caller's Redis.
  */
 export async function createBullMQDeps(connection: unknown, concurrency = 1): Promise<BullMQDeps> {
   // Non-literal specifiers: keep `tsc` from resolving 'bullmq'/'ioredis' at build time (they are a
@@ -77,6 +81,23 @@ export async function createBullMQDeps(connection: unknown, concurrency = 1): Pr
 
   const isRedisInstance = (value: unknown): value is RedisLike & { duplicate(): RedisLike } =>
     value instanceof (Redis as unknown as abstract new (...args: never[]) => object);
+
+  // A falsy/empty `connection` would otherwise reach `makeRedis()`'s `{ keepAlive: 10_000, ...connection }`
+  // spread with nothing useful in it, silently minting an ioredis client bound to ioredis's OWN default
+  // (127.0.0.1:6379) instead of the caller's Redis — a footgun that reads as "it connected" right up until
+  // it hits the wrong instance (see adonis-durable's redis-connection-standalone regression). Fail loudly
+  // instead, the same way `resolveQueueAdapter` does for a missing `transports.queue()` connection: an
+  // existing `Redis` instance, a connection string, or a non-empty options object is required.
+  const hasUsableConnection =
+    isRedisInstance(connection) ||
+    typeof connection === 'string' ||
+    (typeof connection === 'object' && connection !== null && Object.keys(connection).length > 0);
+  if (!hasUsableConnection) {
+    const got = connection === undefined ? 'undefined' : JSON.stringify(connection);
+    throw new Error(
+      `@agora/durable: transports.bullmq() needs a \`connection\` — an ioredis \`Redis\` instance, a connection string, or ConnectionOptions (host/port/path/sentinels/…). Got ${got}, which would otherwise silently fall back to ioredis's own default (127.0.0.1:6379) instead of your app's Redis.`,
+    );
+  }
 
   // Workers require `maxRetriesPerRequest: null`; preserve a passed-in Redis instance as-is.
   const workerConnection = (): unknown =>

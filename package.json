@@ -22,7 +22,7 @@
     "format": "biome format --write .",
     "changeset": "changeset",
     "release": "pnpm --filter './packages/*' build && changeset publish",
-    "version-packages": "changeset version && biome check --write ."
+    "version-packages": "changeset version && node scripts/sync-version-literals.mjs && biome check --write ."
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",
