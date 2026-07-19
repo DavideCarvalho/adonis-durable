@@ -1,9 +1,5 @@
 {
   "title": "Concepts",
   "icon": "Lightbulb",
-  "pages": [
-    "durability",
-    "workflows-and-steps",
-    "sleep-and-signals"
-  ]
+  "pages": ["durability", "workflows-and-steps", "sleep-and-signals"]
 }
