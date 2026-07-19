@@ -16,6 +16,10 @@ interface {{ workflowName }}Input {
 export default class {{ workflowName }}Workflow extends BaseWorkflow {
   static workflow = { name: '{{ registeredName }}', version: '1' }
 
+  // Optional: run this workflow on a recurring schedule (colocated with the class), fired by the
+  // durable:work worker. Cron needs the optional cron-parser peer dependency.
+  // static schedule = { cron: '0 4 * * *', timezone: 'America/Sao_Paulo' }
+
   async run(ctx: WorkflowCtx, input: {{ workflowName }}Input) {
     // Your workflow logic here — compose ctx.step / ctx.localStep / ctx.child / ctx.sleep …
     return input

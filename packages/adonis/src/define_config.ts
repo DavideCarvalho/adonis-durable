@@ -114,6 +114,10 @@ export interface BaseDurableConfig {
    * after timeouts are swept). `engine.start` is idempotent by each schedule's time-bucket run id, so
    * racing worker instances start every window **exactly once**. Cron schedules need the optional
    * `cron-parser` peer dependency. Omit (or leave empty) to register no schedules.
+   *
+   * Schedules can also be declared **on the workflow class** via `static schedule` (colocation) — those
+   * are discovered by `app/workflows` auto-discovery and merged with this list, and fired identically.
+   * On a `key` collision, an entry here **wins** (an explicit config override of the colocated one).
    */
   schedules?: ScheduledWorkflow[];
   /**
