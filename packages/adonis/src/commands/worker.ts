@@ -37,6 +37,22 @@ export interface TickOptions {
   schedules?: readonly ScheduledWorkflow[];
 }
 
+/**
+ * Merge the schedules declared in `config/durable.ts` → `schedules` with those discovered from
+ * workflow classes' `static schedule` (colocation). **Config wins on a key collision**: a config entry
+ * is an explicit, reviewed declaration and overrides a colocated schedule that shares its `key`
+ * (the colocated one is dropped so the window isn't double-registered). Config schedules come first,
+ * then the surviving discovered ones. Pure — the command wires it, the tests assert on it.
+ */
+export function mergeSchedules(
+  configSchedules: readonly ScheduledWorkflow[],
+  discovered: readonly ScheduledWorkflow[],
+): ScheduledWorkflow[] {
+  const configKeys = new Set(configSchedules.map((s) => s.key));
+  const surviving = discovered.filter((s) => !configKeys.has(s.key));
+  return [...configSchedules, ...surviving];
+}
+
 const settledCount = (results: RunResult[]): number => results.length;
 
 /** Execute a single poll-loop tick. See {@link TickResult}. Never throws — phase errors are collected. */
