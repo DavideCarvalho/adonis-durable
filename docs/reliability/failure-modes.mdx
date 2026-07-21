@@ -1,0 +1,90 @@
+---
+title: Failure modes & recovery
+description: An operator-facing map from symptom to knob — where a run actually executes (runDispatcher), what reclaims a worker that crashed mid-run, why a lost remote dispatch does NOT auto-redrive by design, the three nets that catch it (timeoutMs, remoteRedispatchMs, redispatchPending), queue-transport specifics, namespaces, and how to reproduce each failure in a test.
+icon: LifeBuoy
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+The other pages in this section explain each reliability *primitive* on its own — retries, sagas, flow control, the dead-letter queue. This page is the other direction: you're staring at a `suspended` run that isn't moving, and you need to know **which** failure that is and **which** knob heals it. Everything below is a paraphrase of the JSDoc on `WorkflowEngine` (`packages/adonis/src/engine.ts`) and the transports — read the source for the full picture; this is the fast path to a diagnosis.
+
+## Where a run actually executes
+
+Before diagnosing anything, know which of the three `runDispatcher` modes your app runs — it changes who is on the hook when a run doesn't move:
+
+| Dispatcher | What happens on `engine.start()` | Who runs the body |
+| --- | --- | --- |
+| **In-process (default)** | The run is created `'pending'` and dispatched on a microtask *on the calling instance* | Whatever process called `start` — an HTTP handler included |
+| **No-op** (`NOOP_RUN_DISPATCHER`) | The run is created `'pending'` and left there | Nothing, until a worker's `engine.runPending()` poll picks it up |
+| **Broker-backed** | Custom `RunDispatcher.dispatch(runId)` hands the run id to a queue | Whatever consumes that queue |
+
+<Callout type="warn">
+**The in-process default surprise.** `start()` never blocks the caller — it dispatches on a microtask — but that microtask still runs **on the same instance, on the same event loop, against the same DB connection pool** as the HTTP request that called it. If that instance is your API/dashboard pod, a CPU-heavy step or a burst of concurrent runs competes with the traffic it's meant to be serving, and a saturated DB pool starves both the workflow and the request that started it. This is exactly why `NOOP_RUN_DISPATCHER` exists: pass it to an API-only engine so `start()` never executes a body there, and run `node ace durable:work` (which drives `runPending`) as a separate worker process. See [Durability & replay](/docs/durable/concepts/durability#the-execution-model-start-enqueues-a-worker-runs-the-body).
+</Callout>
+
+## The matrix
+
+| Symptom | Failure mode | Detection | Fix |
+| --- | --- | --- | --- |
+| Run stuck `running` forever after a deploy/crash | Worker crashed mid-run (leased run) | `recoveryAttempts` climbing on the run; dashboard shows `running` with no progress | Nothing to do — `recoverIncomplete()` self-heals within `leaseMs`. Cap poison pills with `maxRecoveryAttempts` |
+| Run stuck `suspended`, one step frozen `pending`, nothing happens for hours | Lost remote dispatch (worker died after claiming the job, or the transport dropped it) | See [the stranded signature](#the-stranded-signature) below | `engine.redispatchPending(runId)` now; `remoteRedispatchMs` to self-heal future ones |
+| Remote step just... never fails or completes, run `running` the whole time, no dashboard `pending` step | `timeoutMs` step whose coordinating process crashed (the liveness timer died with it) | Run's lease is stale (`lockedUntil` passed) — same signature as any crashed leased run | `recoverIncomplete()` reclaims it like any other orphaned run; the step re-dispatches from scratch on replay |
+| `/durable/api/health` shows nothing for a pool you know is stalled | You're on the `queue` or `db` transport — `groupHealth` is BullMQ-only | `engine.workerHealth()` returns `[]` | Use the stranded-signature query instead of the health panel |
+| Two pools sharing one Redis/DB seem to steal each other's runs | No `namespace` set — both engines default to `'default'` | A run started by pool A gets executed by a worker in pool B | Set a distinct `namespace` per pool (see below) |
+
+## Worker crashes mid-run (leased run)
+
+Covered in depth by [Durability & replay](/docs/durable/concepts/durability#consequences) and the [dead-letter queue](/docs/durable/reliability/dead-letter) — the short version, for this matrix: a live worker renews a recovery **lease** while it executes a run; a crashed worker stops renewing, so `engine.recoverIncomplete()` (called on boot and every `durable:work` tick) reclaims the orphaned run within ~`leaseMs`. Every reclaim increments the run's `recoveryAttempts` *before* resuming — that field is the trace of how many times this run has been picked back up. Set `maxRecoveryAttempts` in `config/durable.ts` so a genuine poison pill (a run that crashes the process every time it's resumed) moves to the terminal `dead` status instead of crash-looping the instance forever.
+
+This net catches **any** crash while a run is actively executing, including a `timeoutMs` remote step whose in-memory liveness timer died with the coordinating process (see below) — the run is still `running`/leased the whole time it awaits, so it's still reachable by the same lease-expiry path.
+
+## Lost remote dispatch: the run suspends and nothing auto-redrives it
+
+This is the failure mode that actually costs an on-call engineer a night: a dispatched `ctx.step` (no `timeoutMs`) persists a `pending` checkpoint and suspends the run **durably** — it is not held in memory. If the worker that claimed the job then crashes before producing a result, or the transport drops the job outright (a Redis eviction, a broker moving a stalled job to `failed` and removing it), that checkpoint just sits `pending` forever. The run's status reads `suspended`, not `failed` — there's no error to alert on.
+
+**By design, this does not self-heal by default.** The run does periodically wake — a suspend with no natural timer gets a fallback `wakeAt` (`reconcileMs`, default 5 minutes) so it isn't literally invisible — but the reconcile re-drive replays straight back into the same guard, finds the step still `pending`, and **re-suspends** rather than re-dispatching. That's deliberate: the engine cannot tell "the worker died" apart from "the worker is just slow," and re-dispatching on every 5-minute reconcile would double-run a slow-but-live worker's step. So by default a lost dispatch cycles quietly through `suspended → reconcile → suspended` forever, never erroring, never progressing.
+
+There are exactly three nets, in order of preference:
+
+1. **Per-step `timeoutMs` (+ `retries`/`backoff`).** Opts the step out of the durable-suspend path entirely into an in-memory await with heartbeat-rearmed liveness: if the worker produces neither a result nor a heartbeat within `timeoutMs`, the engine presumes it dead and retries. The catch: the timer is `setTimeout` inside the **coordinating process** — if that process (not the worker) dies, the timer dies with it, and the run just sits `running` until `recoverIncomplete` reclaims it on lease expiry (see above). Reach for this only when you genuinely need to detect and replace a stuck worker.
+2. **`remoteRedispatchMs` / `remoteRedispatchMax` (engine config).** The store-driven net for a no-`timeoutMs` step. Unset by default — opt in explicitly. Once a `pending` checkpoint has sat past `remoteRedispatchMs`, the next reconcile re-drive re-dispatches the same `stepId` instead of re-suspending, bumping `attempts` each time, bounded by `remoteRedispatchMax` (default 10) before it gives up and fails the step with a `RemoteStepError` (`code: 'remote_step_lost'`). Two requirements the JSDoc is explicit about: the window **must exceed the longest legitimate step** (or you double-run a slow-but-live worker), and **steps must be idempotent** (re-dispatch can genuinely double-execute a step whose original job merely arrives late).
+3. **`engine.redispatchPending(runId)` — the operator escape hatch.** Re-enqueues every `pending` remote checkpoint on a run right now, regardless of how long they've been sitting. It's explicitly documented as safe to call on a **healthy** run — it only touches checkpoints already `pending`, and a dispatched step is idempotent by its stable `stepId` (`runId:seq`) by contract, so a redundant re-dispatch just produces a duplicate (dedupable) attempt rather than corrupting state. This is what you reach for at 2am on a run you've confirmed is stuck, without waiting for `remoteRedispatchMs` to be configured or to elapse.
+
+### The stranded signature
+
+Query for this pattern to confirm "lost dispatch" before reaching for `redispatchPending`:
+
+- The run's `status` is `'suspended'` and its `updatedAt` is stale (older than a few reconcile cycles).
+- Its most recent checkpoint has `kind: 'remote'`, `status: 'pending'`, and an `enqueuedAt` far older than the step should ever take.
+- `attempts` on that checkpoint is `1` (never re-dispatched) if `remoteRedispatchMs` is unset, or climbing but still `pending` if it is set and still under `remoteRedispatchMax`.
+
+That combination — suspended run, one `pending` remote checkpoint, old `enqueuedAt`, stale `updatedAt` — is the signature. A run that's merely waiting on a slow-but-live worker looks identical for a while, which is exactly why the engine won't auto-redispatch it; the operator's judgment call ("this has been pending for way longer than the step ever legitimately takes") is what `redispatchPending` exists to encode manually.
+
+## Queue-transport specifics
+
+The `queue` driver (`transports.queue(...)`, `QueueTransport` in `src/transports/queue.ts`) rides `@adonisjs/queue`'s adapter (`pushOn`/`popFrom`/`completeJob`/`retryJob`). Its own redelivery logic only covers **one** case: a job whose handler *threw* — `#startLoop` catches that and calls `retryJob` to redeliver it one poll interval later. It does **not** implement a stalled-job / claim-lease reclaim of its own: a worker that crashes silently mid-job (no throw, just gone) leaves nothing to trigger redelivery on this transport — the job was already popped and is not coming back. That's the same "lost dispatch" failure mode above, just with a transport-specific cause; `engine.redispatchPending(runId)` is the fix, since the checkpoint (not the queue job) is the source of truth the engine acts on.
+
+<Callout type="info">
+For contrast, the [`db` transport](/docs/durable/transports/db) claims rows with a `leaseMs` (default 30s) and reclaims a crashed worker's claimed-but-undeleted rows automatically — no `redispatchPending` needed for that class of failure on `db`. The `queue` transport has no equivalent built in; if you need automatic reclaim there, lean on `remoteRedispatchMs` at the engine level instead, since it acts on the checkpoint regardless of which transport lost the job.
+</Callout>
+
+<Callout type="warn">
+`engine.workerHealth()` (and the dashboard's `/durable/api/health`) reads `groupHealth()` off the transport pool — and only the BullMQ transport implements it. On `queue`, `db`, or `eventEmitter` it returns an empty list, not an error. Don't read "no stalled groups reported" as "nothing is stalled" on those transports — use the stranded-signature query above instead.
+</Callout>
+
+## Namespaces: the classic two-pools mistake
+
+`namespace` (set on the engine in `config/durable.ts`) partitions a deployment: it's stamped on every run the engine creates, scopes `runPending` / `recoverIncomplete` / `resumeDueTimers` / `sweepTimeouts` to that namespace, and (for the `queue`/`eventEmitter` transports) folds into every queue/channel name. Two engines that both leave `namespace` unset both default to `'default'` — if they share one state store or one broker, they are, by construction, **the same pool**: pool B's worker can lease and execute a run pool A created, because nothing distinguishes them.
+
+That's the classic mistake: standing up a second, supposedly-isolated worker pool (a second environment, a second tenant) against the same Postgres/Redis without giving it its own `namespace`. The symptom isn't an error — it's runs quietly executing on the "wrong" pool, or (calling `resume` directly rather than through the poll paths) a `NamespaceMismatch` thrown for a run that belongs to another pool. The fix is a one-line config change, not a topology change: set a distinct `namespace` per pool. See [Namespaces — sharing one broker across pools](/docs/durable/transports/queue#namespaces-sharing-one-broker-across-pools) for the full mechanics and the exact queue-name scheme.
+
+## Testing failure modes
+
+The two in-process transports behave **differently** on an unregistered handler, which matters when you're writing a test for any of the above:
+
+- **`InMemoryTransport`** (`@adonis-agora/durable/testing`, the default in `createTestEngine()`) drives `dispatch` straight into `runStepHandler`. With no handler registered for the step name, `runStepHandler` returns immediately with `status: 'failed'`, `error: { message: 'no handler for <name>', retryable: false }` — the step **fails**, synchronously and non-retryably. Good for testing "the worker doesn't have this handler."
+- **`EventEmitterTransport`** (the *production* in-process transport, `transports.eventEmitter()`) is closer to a real broker: dispatch emits an event, and if nothing is listening for that step name, `#process` just returns — no result is ever emitted. The step's `pending` checkpoint sits there exactly like a lost broker job. Use this transport in a test to reproduce the "lost remote dispatch" failure mode above (e.g. to exercise `remoteRedispatchMs` or `redispatchPending` against a step that will never complete on its own), by never registering a handler for the step you want to strand.
+
+<Callout type="info">
+Both funnel through `runStepHandler`, so a *registered* handler behaves identically either way — the difference is only what happens when nothing answers.
+</Callout>
