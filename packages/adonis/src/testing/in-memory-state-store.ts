@@ -93,6 +93,19 @@ export class InMemoryStateStore implements StateStore {
     this.checkpoints.set(this.key(checkpoint.runId, checkpoint.seq), { ...checkpoint });
   }
 
+  /** Mirror of `LucidStateStore.recordStepHeartbeat`: mutate in place, no-op when absent. */
+  async recordStepHeartbeat(
+    runId: string,
+    seq: number,
+    at: Date,
+    progress?: unknown,
+  ): Promise<void> {
+    const cp = this.checkpoints.get(this.key(runId, seq));
+    if (!cp) return;
+    cp.lastHeartbeatAt = at;
+    cp.heartbeatProgress = progress;
+  }
+
   async listIncompleteRuns(namespace?: string): Promise<WorkflowRun[]> {
     return [...this.runs.values()]
       .filter(

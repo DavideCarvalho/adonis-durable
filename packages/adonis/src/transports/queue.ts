@@ -329,7 +329,9 @@ export class QueueTransport implements Transport, ControlPlane {
       token,
       this.#startLoop(this.#tasksQueue(token), async (job) => {
         const task = fromJson<TaskPayload>(job.payload);
-        const result = await runStepHandler(task, this.#handlers.get(task.name));
+        const result = await runStepHandler(task, this.#handlers.get(task.name), (beat) =>
+          this.heartbeat(beat),
+        );
         await this.#adapter.pushOn(this.#resultsQueue(), this.#job('result', result));
       }),
     );

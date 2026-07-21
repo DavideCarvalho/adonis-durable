@@ -184,6 +184,24 @@ describe('attachLiveness / filterStale — telling "working" apart from "strande
     expect(filterStale(freshLive, DEFAULT_STALE_MS)).toHaveLength(0);
   });
 
+  it('a pending step with a FRESH worker heartbeat is alive, not stranded — however old', async () => {
+    const { store, enqueuedAt } = await makeStrandedRun();
+    const run = await store.getRun('stuck1');
+    const now = enqueuedAt + 40 * 60_000; // 40 minutes in flight — a long browser batch, say
+
+    // The worker beat 10 seconds ago: mid-flight and healthy.
+    const [cp] = await store.listCheckpoints('stuck1');
+    await store.recordStepHeartbeat?.('stuck1', cp!.seq, new Date(now - 10_000), { done: 38 });
+    const beating = await attachLiveness(store, [run as NonNullable<typeof run>], now);
+    expect(beating[0]?.stalePending?.heartbeatAgeMs).toBe(10_000);
+    expect(filterStale(beating, DEFAULT_STALE_MS)).toHaveLength(0);
+
+    // The same step SILENT past the threshold flips back to stranded.
+    await store.recordStepHeartbeat?.('stuck1', cp!.seq, new Date(now - 16 * 60_000));
+    const silent = await attachLiveness(store, [run as NonNullable<typeof run>], now);
+    expect(filterStale(silent, DEFAULT_STALE_MS)).toHaveLength(1);
+  });
+
   it('renders the PENDING column with age + attempts for a stranded run', async () => {
     const { store, enqueuedAt } = await makeStrandedRun();
     const run = await store.getRun('stuck1');

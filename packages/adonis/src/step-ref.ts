@@ -1,5 +1,5 @@
 import type { z } from 'zod';
-import type { BackoffStrategy } from './interfaces.js';
+import type { BackoffStrategy, StepLogger } from './interfaces.js';
 import {
   DURABLE_STEP_CONFIG,
   DURABLE_STEP_NAME,
@@ -121,7 +121,7 @@ export function Step(nameOrOptions?: string | StepDecoratorOptions): MethodDecor
  */
 export function defineStep<TInput, TOutput>(
   name: string,
-  fn: (input: TInput) => TOutput | Promise<TOutput>,
+  fn: (input: TInput, log: StepLogger) => TOutput | Promise<TOutput>,
   config?: Omit<StepDecoratorOptions, 'name'>,
 ): StepRef<TInput, TOutput> {
   const meta: DurableStepMeta = {

@@ -15,7 +15,15 @@ function withDuration(start: number, now: () => number, data?: unknown): Record<
  * the same {@link StepEvent} shape wherever it runs — the TypeScript twin of the Python SDK's
  * `StepContext`.
  */
-export function createStepLogger(events: StepEvent[], now: () => number): StepLogger {
+/** Min ms between heartbeat EMISSIONS (see {@link StepLogger.heartbeat}) — a per-item beat in a hot
+ *  loop must not flood the transport; the freshest progress payload still wins on each emission. */
+const HEARTBEAT_MIN_INTERVAL_MS = 5_000;
+
+export function createStepLogger(
+  events: StepEvent[],
+  now: () => number,
+  emitBeat?: (progress?: unknown) => void,
+): StepLogger {
   // The sub-process a `subProcess(...)` body is currently inside; debug/info/warn/error emitted while
   // inside get tagged with its id, so the dashboard groups that log trail under the sub-process.
   let currentSub: { id: string } | undefined;
@@ -70,11 +78,23 @@ export function createStepLogger(events: StepEvent[], now: () => number): StepLo
       currentSub = prevSub;
     }
   };
+  // Throttle EMISSION, not intent: a beat inside the window is dropped (the next allowed one carries
+  // the then-freshest progress). `-Infinity` lets the first call emit immediately.
+  let lastBeatAt = Number.NEGATIVE_INFINITY;
+  const heartbeat = (progress?: unknown): void => {
+    if (!emitBeat) return;
+    const at = now();
+    if (at - lastBeatAt < HEARTBEAT_MIN_INTERVAL_MS) return;
+    lastBeatAt = at;
+    emitBeat(progress);
+  };
+
   return {
     debug: (m, d) => push('debug', m, d),
     info: (m, d) => push('info', m, d),
     warn: (m, d) => push('warn', m, d),
     error: (m, d) => push('error', m, d),
+    heartbeat,
     sub: (name, status, message, data) =>
       events.push({
         at: now(),

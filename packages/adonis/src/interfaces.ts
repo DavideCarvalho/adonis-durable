@@ -132,6 +132,14 @@ export interface StepCheckpoint {
   /** When processing actually began: worker pickup for a remote step, execution start for a local one. */
   startedAt: Date;
   finishedAt: Date;
+  /**
+   * The last worker heartbeat the engine persisted for this step (throttled — the true beat cadence
+   * may be finer). A `pending` remote step with a RECENT beat is alive mid-flight; one silent past
+   * its expected cadence is hung or lost. Absent when the handler never called `log.heartbeat`.
+   */
+  lastHeartbeatAt?: Date | undefined;
+  /** The progress payload carried by that last persisted heartbeat, verbatim. */
+  heartbeatProgress?: unknown;
 }
 
 /**
@@ -179,6 +187,19 @@ export interface StepLogger {
   info(message: string, data?: unknown): void;
   warn(message: string, data?: unknown): void;
   error(message: string, data?: unknown): void;
+  /**
+   * Signal "this step is ALIVE mid-flight" — the missing half of step liveness. Logs and sub-events
+   * ship WITH the result when the step finishes, so a long step (a 15-minute browser batch) is
+   * indistinguishable from a hung one until its `timeoutMs` fires. A heartbeat travels NOW: it
+   * rearms the step's `timeoutMs` window on the engine (a beating step never falsely times out —
+   * so `timeoutMs` can be tightened to "max silence", not "max duration") and the engine persists
+   * the latest beat on the step's checkpoint (throttled), making liveness visible cross-process
+   * (`durable:runs`, status commands, dashboard). Optional `progress` is any JSON-safe payload
+   * (`log.heartbeat({done: 12, total: 50})`). Throttled internally (min ~5s between emissions) —
+   * call it as often as you like, e.g. once per item of a batch. No-op where no emitter is wired
+   * (local steps run in-process; the run itself is live).
+   */
+  heartbeat(progress?: unknown): void;
   /** Record a sub-step / sub-process outcome (e.g. one of N parallel p-processes). */
   sub(name: string, status: 'ok' | 'failed' | 'skipped', message?: string, data?: unknown): void;
   /** Record a sub-process event. Typically pass `phase` for an intermediate transition (carrying no
@@ -369,6 +390,15 @@ export interface StateStore {
   listCheckpoints(runId: string): Promise<StepCheckpoint[]>;
 
   /**
+   * Persist the latest worker heartbeat for the step at (`runId`, `seq`) — see
+   * {@link StepCheckpoint.lastHeartbeatAt}. Optional: the engine calls it best-effort and throttled
+   * (a store without it simply has no persisted step liveness; nothing else degrades). A no-matching-
+   * checkpoint update is a silent no-op (the beat may race the checkpoint's own insert or outlive a
+   * completed step).
+   */
+  recordStepHeartbeat?(runId: string, seq: number, at: Date, progress?: unknown): Promise<void>;
+
+  /**
    * The LATEST checkpoint for `runId` whose `name` equals `name` exactly (highest `seq` wins), or
    * `undefined` if none. A targeted read that avoids fetching + deserializing every checkpoint just to
    * keep one match — the store does the filter (`WHERE name = … ORDER BY seq DESC LIMIT 1`). Preserves
@@ -516,6 +546,14 @@ export interface Heartbeat {
   seq: number;
   stepId: string;
   group: string;
+  /** Worker-side emission time (epoch ms). Optional on the wire for back-compat with 0.17-era workers. */
+  at?: number | undefined;
+  /**
+   * Opaque JSON-safe progress payload the step handler attached (`log.heartbeat({done: 12, total: 50})`).
+   * The engine persists the latest one on the step's checkpoint (throttled), so ops surfaces can show
+   * "alive AND advancing: 12/50" instead of inferring liveness from domain tables.
+   */
+  progress?: unknown;
 }
 
 // ---------------------------------------------------------------------------
