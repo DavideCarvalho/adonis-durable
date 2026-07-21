@@ -26,13 +26,42 @@ export function setBootedApp(app: ApplicationService): void {
   resolveBootedApp(app);
 }
 
+/** Default window `whenBootedApp` waits for `DurableProvider.register()` before rejecting. */
+const DEFAULT_BOOTED_APP_TIMEOUT_MS = 5_000;
+
 /**
  * Resolves with the provider-captured booted app. `services/main` awaits this (instead of importing
  * `@adonisjs/core/services/app`) before reading the container, so its eager top-level population is
  * driven by the SAME app copy `bin/server` booted — see the module doc above for the pnpm hazard.
+ *
+ * If the {@link DurableProvider} never registers, the underlying promise would otherwise stay pending
+ * FOREVER — a silent top-level-await hang in `services/main` that's worse DX than a clear failure. So
+ * this rejects after `timeoutMs` (default 5s) with an actionable message. The normal path is
+ * unaffected: the provider registers during boot before this is awaited, so the fast path returns an
+ * already-resolved promise (no timer armed); and even when a timer is armed it's cleared — and
+ * `unref`'d so it never keeps the process alive — the moment the app arrives.
  */
-export function whenBootedApp(): Promise<ApplicationService> {
-  return bootedAppPromise;
+export function whenBootedApp(
+  timeoutMs: number = DEFAULT_BOOTED_APP_TIMEOUT_MS,
+): Promise<ApplicationService> {
+  // Fast path: the provider already registered — resolve immediately, arm no timer.
+  if (bootedApp) return Promise.resolve(bootedApp);
+  return new Promise<ApplicationService>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(
+        new Error(
+          `@adonis-agora/durable: DurableProvider did not register within ${timeoutMs}ms. Add "@adonis-agora/durable/durable_provider" to your adonisrc.ts providers.`,
+        ),
+      );
+    }, timeoutMs);
+    // Don't let the timeout keep the process alive on an otherwise-idle boot.
+    (timer as { unref?: () => void }).unref?.();
+    // `bootedAppPromise` only ever resolves (via `setBootedApp`), never rejects.
+    void bootedAppPromise.then((app) => {
+      clearTimeout(timer);
+      resolve(app);
+    });
+  });
 }
 
 /**
