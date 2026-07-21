@@ -36,6 +36,7 @@ import {
   hasProxyCapability,
   hasResponderCapability,
 } from '../src/role_bindings.js';
+import { setBootedApp } from '../src/services/booted_app.js';
 import {
   NoopWorkerRegistry,
   RedisWorkerRegistry,
@@ -97,6 +98,9 @@ export default class DurableProvider {
   constructor(protected app: ApplicationService) {}
 
   register() {
+    // Hand the booted app to `services/main` so its eager population reads the SAME @adonisjs/core
+    // copy bin/server booted, never a pnpm-split non-booted one (see services/booted_app.ts).
+    setBootedApp(this.app);
     const config = this.app.config.get<DurableConfig>('durable', {});
     const role = config.role ?? 'standalone';
     if (role === 'tenant') {

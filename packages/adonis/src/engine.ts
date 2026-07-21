@@ -430,6 +430,17 @@ export class WorkflowEngine {
   private readonly stepQueue = new Map<string, string>();
   /** Executions currently in flight, so a graceful shutdown can wait for them to settle. */
   private readonly inflight = new Set<Promise<RunResult>>();
+  /**
+   * Post-settle side effects (parent notify, singleton wake) fired fire-and-forget AFTER a run's
+   * status was persisted. They run OFF the `execute()` path — the caller of `execute()` must never
+   * block on them — but they still issue store writes (waking a suspended parent, dispatching a
+   * gated singleton run), so `drain()` has to wait for them too. Left untracked, those writes can
+   * land after a test's global Lucid transaction rolled back ("Transaction query already complete"
+   * as an unhandled rejection) or after a graceful shutdown thought it was done. See {@link track}
+   * vs {@link trackEffect}: `inflight` is the execute() path, `postSettle` is everything that
+   * escapes it.
+   */
+  private readonly postSettle = new Set<Promise<unknown>>();
   private draining = false;
 
   constructor(deps: WorkflowEngineDeps) {
@@ -982,18 +993,40 @@ export class WorkflowEngine {
   }
 
   /**
+   * Track a post-settle side effect (parent notify, singleton wake) so {@link drain} waits for it,
+   * WITHOUT the `execute()`/`settleRun` caller ever blocking on it — the run's result is returned
+   * to its caller the moment its status is persisted; this only holds the effect for `drain()`.
+   * Errors are swallowed (these are best-effort wakeups; the durable timer is the real fallback),
+   * exactly as the original `void ....catch(() => undefined)` fire-and-forget did.
+   */
+  private trackEffect(p: Promise<unknown>): void {
+    const tracked = p.catch(() => undefined);
+    this.postSettle.add(tracked);
+    void tracked.finally(() => this.postSettle.delete(tracked));
+  }
+
+  /**
    * Graceful shutdown: stop picking up new runs (recovery/timer become no-ops) and wait for
    * in-flight executions to settle, up to `timeoutMs`. Call from your app's shutdown hook so a
    * deploy hands off cleanly instead of leaving runs to the lease timeout.
    */
   async drain(timeoutMs = 10_000): Promise<void> {
     this.draining = true;
-    if (this.inflight.size === 0) return;
-    const timer = new Promise<void>((resolve) => {
-      const t = setTimeout(resolve, timeoutMs);
+    if (this.inflight.size === 0 && this.postSettle.size === 0) return;
+    const timer = new Promise<'timeout'>((resolve) => {
+      const t = setTimeout(() => resolve('timeout'), timeoutMs);
       (t as { unref?: () => void }).unref?.();
     });
-    await Promise.race([Promise.allSettled([...this.inflight]), timer]);
+    // Loop, don't snapshot-once: settling an in-flight run fires post-settle effects (parent notify,
+    // singleton wake) that can resume — and thus re-inflight — another run, which settles and fires
+    // more effects. Wait until BOTH sets reach steady-state empty, or the shared timer wins. The
+    // `Promise<'timeout'>` sentinel is distinguishable from `allSettled`'s array so the race is
+    // unambiguous even when everything resolves in the same tick.
+    while (this.inflight.size > 0 || this.postSettle.size > 0) {
+      const pending = Promise.allSettled([...this.inflight, ...this.postSettle]);
+      const outcome = await Promise.race([pending, timer]);
+      if (outcome === 'timeout') return;
+    }
   }
 
   /**
@@ -1560,7 +1593,9 @@ export class WorkflowEngine {
    * knowing about the child feature.
    */
   private notifyParent(runId: string, completion: Completion<unknown>): void {
-    void this.signal(`child:${runId}`, completion).catch(() => undefined);
+    // Tracked, not bare fire-and-forget: `signal` can wake a suspended parent and resume it, issuing
+    // store writes that must be awaited by `drain()` even though the settling child returned already.
+    this.trackEffect(this.signal(`child:${runId}`, completion));
     // A fix-and-replay run (`<origin>~retry~<hash>`) is standalone, but its SUCCESS is the
     // origin's outcome for all practical purposes: deliver it on the ORIGIN's token too, so a
     // parent that failed on that child and is retried later consumes this success (buffered or
@@ -1568,7 +1603,7 @@ export class WorkflowEngine {
     // fix attempt must not poison the origin's token.
     const at = runId.lastIndexOf('~retry~');
     if (at !== -1 && completion.ok) {
-      void this.signal(`child:${runId.slice(0, at)}`, completion).catch(() => undefined);
+      this.trackEffect(this.signal(`child:${runId.slice(0, at)}`, completion));
     }
   }
 
@@ -1656,7 +1691,7 @@ export class WorkflowEngine {
         .catch(() => undefined);
     }
     // A cancelled singleton run frees its slot — wake the next gated waiter now (notify-on-release).
-    void this.singletons.wakeNext(run).catch(() => undefined);
+    this.trackEffect(this.singletons.wakeNext(run));
     return { runId, status: 'cancelled', error };
   }
 
@@ -1957,7 +1992,7 @@ export class WorkflowEngine {
           result.status === 'cancelled' ||
           result.status === 'dead')
       ) {
-        void this.singletons.wakeNext(run).catch(() => undefined);
+        this.trackEffect(this.singletons.wakeNext(run));
       }
       return result;
     } finally {
@@ -1995,7 +2030,7 @@ export class WorkflowEngine {
         namespace: run.namespace,
         output: outcome.output,
       });
-      void this.notifyParent(run.id, { ok: true, value: outcome.output });
+      this.notifyParent(run.id, { ok: true, value: outcome.output });
       return { runId: run.id, status: 'completed', output: outcome.output };
     }
     if (outcome.kind === 'failed') {
@@ -2007,7 +2042,7 @@ export class WorkflowEngine {
         namespace: run.namespace,
         error: outcome.error,
       });
-      void this.notifyParent(run.id, { ok: false, error: outcome.error.message });
+      this.notifyParent(run.id, { ok: false, error: outcome.error.message });
       return { runId: run.id, status: 'failed', error: outcome.error };
     }
     // This outcome was computed by a turn that started from a possibly-stale run snapshot. If the run
@@ -2420,7 +2455,7 @@ export class WorkflowEngine {
           workflow: run.workflow,
           namespace: run.namespace,
         });
-        void this.notifyParent(run.id, { ok: true, value: undefined });
+        this.notifyParent(run.id, { ok: true, value: undefined });
         const nextId = nextContinuationId(run.id);
         queueMicrotask(
           () => void this.start(run.workflow, err.input, nextId).catch(() => undefined),
