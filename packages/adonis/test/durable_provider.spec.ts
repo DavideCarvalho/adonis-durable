@@ -19,11 +19,12 @@ class SchemaSpyStore extends InMemoryStateStore {
 const SRC = fileURLToPath(new URL('../src', import.meta.url));
 
 /** Minimal Adonis container/app stand-in capturing the singleton factory. */
-function fakeApp(config: DurableConfig = {}, appRoot = '/app') {
+function fakeApp(config: DurableConfig = {}, appRoot = '/app', environment = 'web') {
   let factory: (() => unknown) | undefined;
   let singletonInstance: unknown;
   const app = {
     config: { get: (key: string, fallback?: unknown) => (key === 'durable' ? config : fallback) },
+    getEnvironment: () => environment,
     makePath: (...parts: string[]) => join(appRoot, ...parts),
     container: {
       singleton: (_key: unknown, f: () => unknown) => {
@@ -178,5 +179,56 @@ describe('DurableProvider — app/workflows auto-discovery (boot)', () => {
     const provider = new DurableProvider(app);
     provider.register();
     await expect(provider.boot()).resolves.toBeUndefined();
+  });
+});
+
+describe('DurableProvider: consumer deferral by environment', () => {
+  /** A transport double recording the deferral calls the provider makes on it. */
+  function spyTransport() {
+    const calls: string[] = [];
+    const transport = {
+      deferConsumers: () => void calls.push('defer'),
+      startConsumers: () => void calls.push('start'),
+      onResult: () => {},
+      onHeartbeat: () => {},
+      dispatch: async () => {},
+      useNamespace: () => {},
+    };
+    return { transport, calls };
+  }
+
+  const resolveWith = async (environment: string, config: Partial<DurableConfig> = {}) => {
+    const { transport, calls } = spyTransport();
+    const { app, resolve } = fakeApp(
+      {
+        transport: 'spy',
+        transports: { spy: () => transport as never },
+        ...config,
+      } as DurableConfig,
+      '/app',
+      environment,
+    );
+    new DurableProvider(app).register();
+    const engine = await resolve();
+    return { engine, calls };
+  };
+
+  it("defers a console process's consumers; engine.startConsumers() flushes them", async () => {
+    const { engine, calls } = await resolveWith('console');
+    expect(calls).toEqual(['defer']);
+    // What durable:work's loop does before its first tick.
+    engine.startConsumers();
+    expect(calls).toEqual(['defer', 'start']);
+  });
+
+  it('a repl process defers too; web and test processes stay eager', async () => {
+    expect((await resolveWith('repl')).calls).toEqual(['defer']);
+    expect((await resolveWith('web')).calls).toEqual([]);
+    expect((await resolveWith('test')).calls).toEqual([]);
+  });
+
+  it("consumers: 'always' keeps a console process eager (the pre-0.17 behavior)", async () => {
+    const { calls } = await resolveWith('console', { consumers: 'always' });
+    expect(calls).toEqual([]);
   });
 });

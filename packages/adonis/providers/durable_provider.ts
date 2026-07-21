@@ -175,6 +175,18 @@ export default class DurableProvider {
       const ctx: TransportContext & StoreContext & ControlPlaneContext = { app: this.app };
       const store = await this.#resolveStore(config, ctx);
       const transport = await this.#resolveTransport(config, ctx);
+      // Console/REPL processes must not become broker consumers (`consumers: 'auto'`, the default):
+      // a one-off `node ace` process that subscribes competes with the worker fleet for point-to-point
+      // jobs — it claims steps it dies with, steals results addressed to the real engine, and a boot
+      // command with queued jobs never exits (the burst-drain loop keeps feeding it). Deferring keeps
+      // such a process a pure producer; `durable:work` re-enables consumption for itself via
+      // `engine.startConsumers()`. Web/test processes keep today's eager behavior, as does
+      // `consumers: 'always'`. Transports without `deferConsumers` (in-process) are unaffected.
+      if ((config.consumers ?? 'auto') === 'auto') {
+        // Optional call: naive test doubles of ApplicationService may not carry getEnvironment.
+        const environment = this.app.getEnvironment?.();
+        if (environment === 'console' || environment === 'repl') transport.deferConsumers?.();
+      }
       // Hold the transport so `shutdown()` can release broker workers/connections cleanly.
       this.#transport = transport;
       const controlPlane = await this.#resolveControlPlane(config, ctx);

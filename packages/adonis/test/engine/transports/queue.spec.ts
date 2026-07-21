@@ -298,4 +298,79 @@ describe('QueueTransport', () => {
     await until(() => seen.length === 1);
     expect(seen[0]).toEqual({ keep: 1 });
   });
+
+  describe('deferred consumers', () => {
+    /** Enough real time for a POLL-interval loop to have claimed a ready job, had one been running. */
+    const settle = () => new Promise((r) => setTimeout(r, POLL * 10));
+
+    it('a deferred transport never claims tasks or results until startConsumers()', async () => {
+      const adapter = new MockAdapter();
+      const producer = make(adapter);
+      const deferred = make(adapter);
+      deferred.deferConsumers();
+
+      const results: StepResult[] = [];
+      const handled: unknown[] = [];
+      deferred.onResult(async (r) => void results.push(r));
+      deferred.handle('ext.echo', async (input) => {
+        handled.push(input);
+        return 'ok';
+      });
+
+      await producer.dispatch(task());
+      await adapter.pushOn('durable:results', {
+        id: 'res-1',
+        name: 'result',
+        payload: JSON.stringify({ stepId: 'r9:1', status: 'completed', output: 1 }),
+      });
+
+      // The jobs sit on their queues — a pure producer claims nothing.
+      await settle();
+      expect(handled).toEqual([]);
+      expect(results).toEqual([]);
+      expect(await adapter.sizeOf(`durable:tasks:${sanitizeQueueToken('ext.echo')}`)).toBe(1);
+      expect(await adapter.sizeOf('durable:results')).toBe(1);
+
+      // The explicit "this process IS a worker" declaration flushes every parked loop: the task is
+      // handled AND its round-trip result joins the seeded one on the results consumer.
+      deferred.startConsumers();
+      await until(() => handled.length === 1 && results.length === 2);
+    });
+
+    it('a subscription made AFTER startConsumers() consumes eagerly again', async () => {
+      const adapter = new MockAdapter();
+      const t = make(adapter);
+      t.deferConsumers();
+      t.startConsumers();
+
+      const handled: unknown[] = [];
+      t.handle('ext.echo', async (input) => {
+        handled.push(input);
+        return 'ok';
+      });
+      await t.dispatch(task());
+      await until(() => handled.length === 1);
+    });
+
+    it('a parked loop stopped before the flush never starts', async () => {
+      const adapter = new MockAdapter();
+      const t = make(adapter);
+      t.deferConsumers();
+
+      const results: StepResult[] = [];
+      t.onResult(async (r) => void results.push(r));
+      // A transport closed while its loops were still parked: flushing afterwards must not
+      // resurrect consumption on a closed transport.
+      await t.close();
+      t.startConsumers();
+
+      await adapter.pushOn('durable:results', {
+        id: 'res-2',
+        name: 'result',
+        payload: JSON.stringify({ stepId: 'r9:2', status: 'completed', output: 1 }),
+      });
+      await settle();
+      expect(results).toEqual([]);
+    });
+  });
 });

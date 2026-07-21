@@ -748,6 +748,17 @@ export class WorkflowEngine {
     this.admission.register(config);
   }
 
+  /**
+   * Declare this process a worker: flush consumer subscriptions parked by a transport whose
+   * consumption was deferred (see {@link Transport.deferConsumers}). The `durable:work` loop calls
+   * this before its first tick; until then a deferred-transport process (an ace command, a REPL)
+   * dispatches and reads but never claims broker jobs. Idempotent; a no-op on transports that
+   * never defer (in-process transports, or a broker transport left eager).
+   */
+  startConsumers(): void {
+    this.pool.startConsumers();
+  }
+
   /** Subscribe to lifecycle events. Returns an unsubscribe function. */
   subscribe(listener: EngineListener): () => void {
     this.listeners.add(listener);
