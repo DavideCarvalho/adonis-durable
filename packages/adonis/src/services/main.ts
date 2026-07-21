@@ -1,8 +1,8 @@
-import app from '@adonisjs/core/services/app';
 import type { DurableConfig } from '../define_config.js';
 import { WorkflowEngine } from '../engine.js';
 import { DURABLE_RUN_GATEWAY } from '../role_bindings.js';
 import type { RunGateway } from '../run-gateway/interface.js';
+import { whenBootedApp } from './booted_app.js';
 
 /**
  * The ACTIVE role's {@link RunGateway} — the store-less-cluster read/control/start surface (design §8).
@@ -28,6 +28,11 @@ let runGateway: RunGateway;
  */
 let engine: WorkflowEngine;
 
+// Source the app from the provider-captured booted instance, NOT `@adonisjs/core/services/app` — a
+// pnpm dual-package split can make that import resolve a non-booted core copy (undefined app). See
+// {@link ./booted_app.js}. This waits for `DurableProvider.register()` (which feeds `booted_app`),
+// then for the boot phase, preserving the eager top-level population consumers already rely on.
+const app = await whenBootedApp();
 await app.booted(async () => {
   const config = app.config.get<DurableConfig>('durable', {});
   const role = config.role ?? 'standalone';
