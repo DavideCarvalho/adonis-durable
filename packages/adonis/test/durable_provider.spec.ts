@@ -200,7 +200,11 @@ describe('DurableProvider: consumer deferral by environment', () => {
   const resolveWith = async (environment: string, config: Partial<DurableConfig> = {}) => {
     const { transport, calls } = spyTransport();
     const { app, resolve } = fakeApp(
-      { transport: 'spy', transports: { spy: () => transport as never }, ...config } as DurableConfig,
+      {
+        transport: 'spy',
+        transports: { spy: () => transport as never },
+        ...config,
+      } as DurableConfig,
       '/app',
       environment,
     );
