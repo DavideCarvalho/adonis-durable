@@ -43,6 +43,20 @@ export type ControlPayload = ControlMessage;
 /** How often the engine-side / worker-side poll loops ask the adapter for the next job. */
 const DEFAULT_POLL_INTERVAL_MS = 200;
 
+/** How often (ms) the stalled-job reclaim sweep runs — a coarse, low-frequency check, NOT per poll
+ *  tick. Mirrors `DbTransport`'s crash-recovery cadence (its stale-lease default is also 30s). */
+const DEFAULT_STALLED_CHECK_INTERVAL_MS = 30_000;
+/** How old (ms) a claim must be before the sweep presumes its worker dead and re-delivers the job.
+ *  Deliberately generous: re-delivery double-runs a step whose worker is merely slow, so this must
+ *  comfortably exceed the longest legitimate step execution (see the reclaim doc block for why this
+ *  is safe under the durable idempotency contract). The claim's `acquiredAt` is never renewed while
+ *  the worker processes — long-running steps hold one claim for their whole duration — so this
+ *  default clears real steps in the tens of minutes; a step routinely longer should raise it. */
+const DEFAULT_STALLED_THRESHOLD_MS = 1_800_000;
+/** How many times a single job may be reclaimed before the adapter fails it permanently instead of
+ *  re-delivering — bounds a poison job that stalls every worker it touches. */
+const DEFAULT_MAX_STALLED_COUNT = 3;
+
 /** Where a poll-loop failure goes when the caller doesn't supply an `onError`. Mirrors `DbTransport`:
  *  a transport error must never vanish — an invisible one is how a stalled run stays invisible. */
 const DEFAULT_LOG = (err: unknown): void => console.error('[QueueTransport] poll failed', err);
@@ -100,6 +114,26 @@ export interface QueueTransportOptions {
   namespace?: string;
   /** Poll interval (ms) for the result/task/heartbeat/control loops. Default 200ms. */
   pollIntervalMs?: number;
+  /**
+   * How often (ms) the stalled-job reclaim sweep runs. Reclaim is ON by default (default 30s); set to
+   * `0` to disable it entirely. This is a coarse background check, NOT run on every poll tick — see
+   * the reclaim doc block on {@link QueueTransport} for what it recovers and why default-on is safe.
+   */
+  stalledCheckIntervalMs?: number;
+  /**
+   * How old (ms) a claim must be before the reclaim sweep presumes its worker dead and re-delivers the
+   * job. Default 30min — intentionally generous, because the claim's `acquiredAt` is never renewed
+   * while the worker processes: a legitimately long step holds one claim for its entire duration, and
+   * re-delivery double-runs a step whose worker is merely slow. Raise it above your longest step. Only used when the adapter implements
+   * `recoverStalledJobs` and the sweep is enabled.
+   */
+  stalledThresholdMs?: number;
+  /**
+   * How many times one job may be reclaimed before the adapter fails it permanently rather than
+   * re-delivering (bounds a poison job). Default 3. Passed straight through to
+   * `adapter.recoverStalledJobs`.
+   */
+  maxStalledCount?: number;
   /** Stable id for this process (stamped on heartbeats / control `from`). Default a random id. */
   instanceId?: string;
   /**
@@ -138,6 +172,8 @@ export class QueueTransport implements Transport, ControlPlane {
   #namespace: string | undefined;
   readonly #explicitNamespace: boolean;
   readonly #pollIntervalMs: number;
+  readonly #stalledThresholdMs: number;
+  readonly #maxStalledCount: number;
   readonly #instanceId: string;
   readonly #onError: (err: unknown) => void;
   readonly #handlers = new Map<string, StepHandler>();
@@ -145,6 +181,14 @@ export class QueueTransport implements Transport, ControlPlane {
   /** One task poll loop per subscribed routing token (`tenantGroup(sanitizeQueueToken(name), partition)`)
    *  — a dedicated queue per handler name, never a single shared group queue. */
   readonly #taskLoops = new Map<string, PollLoop>();
+  /** Every queue this instance POPS from (task queues on the worker, results/heartbeats/control on the
+   *  engine). Populated by {@link QueueTransport.#startLoop} — the reclaim sweep walks exactly this set,
+   *  so it covers whatever loops the instance actually started, worker- or engine-side. */
+  readonly #poppedQueues = new Set<string>();
+  /** Drives the stalled-job reclaim sweep on its own (coarse) interval. Absent when reclaim is disabled
+   *  (`stalledCheckIntervalMs <= 0`) or the adapter can't `recoverStalledJobs`. Separate from
+   *  {@link #pollers} because the sweep cadence is unrelated to the fast job-poll cadence. */
+  readonly #reclaimPollers: Pollers | undefined;
 
   constructor(options: QueueTransportOptions) {
     this.#adapter = options.adapter();
@@ -153,11 +197,16 @@ export class QueueTransport implements Transport, ControlPlane {
     this.#namespace = options.namespace;
     this.#explicitNamespace = options.namespace !== undefined;
     this.#pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    this.#stalledThresholdMs = options.stalledThresholdMs ?? DEFAULT_STALLED_THRESHOLD_MS;
+    this.#maxStalledCount = options.maxStalledCount ?? DEFAULT_MAX_STALLED_COUNT;
     this.#instanceId = options.instanceId ?? randomUUID();
     this.#onError = options.onError ?? DEFAULT_LOG;
     // pop()/popFrom() require a worker id be set on the adapter before consuming.
     this.#adapter.setWorkerId(this.#instanceId);
     this.#pollers = new Pollers(this.#pollIntervalMs, this.#onError);
+    this.#reclaimPollers = this.#startReclaimSweep(
+      options.stalledCheckIntervalMs ?? DEFAULT_STALLED_CHECK_INTERVAL_MS,
+    );
   }
 
   /** Stable id stamped on heartbeats and control `from`. */
@@ -307,6 +356,8 @@ export class QueueTransport implements Transport, ControlPlane {
    * invisible.
    */
   #startLoop(queue: string, onJob: (job: JobData) => Promise<void>): PollLoop {
+    // Record every queue we consume from so the reclaim sweep can walk exactly this set.
+    this.#poppedQueues.add(queue);
     return this.#pollers.start(async () => {
       let job: AcquiredJob | null;
       try {
@@ -331,9 +382,61 @@ export class QueueTransport implements Transport, ControlPlane {
     });
   }
 
+  // ---------------------------------------------------------------------------
+  // stalled-job reclaim
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Periodically re-deliver jobs whose claiming worker died mid-flight.
+   *
+   * WHY this lives here at all: this transport drives the adapter directly (`pushOn` / `popFrom` /
+   * `completeJob`) instead of the broker's `Worker` class — see the class header for the reason. But
+   * `recoverStalledJobs` (the Lua/SQL that moves a claim whose `acquiredAt` is older than a cutoff back
+   * from `active` to `pending`) is ONLY ever called from that same `Worker` class we bypass. So in this
+   * transport nothing reclaimed a claimed job: a worker (or the engine, for result/heartbeat/control
+   * jobs) that crashed between `popFrom` and `completeJob` left the job wedged in the adapter's `active`
+   * set forever — there is no `waiting` state to fall back to, so the task was simply lost (observed in
+   * production: jobs stuck in `…:tasks:…::active`, each stamped with a distinct dead `workerId`). This
+   * sweep restores the recovery the `Worker` class would have done.
+   *
+   * WHY re-delivery is safe (and why default-on): durable steps are idempotent by contract, and the
+   * engine ignores results for a checkpoint that already completed — so re-running a reclaimed step, or
+   * re-delivering the two production shapes (result published but `completeJob` never reached; or claimed
+   * and died before any result), cannot corrupt a run. The only cost is wasted work when a merely-slow
+   * worker's job is re-delivered, which is why {@link DEFAULT_STALLED_THRESHOLD_MS} is deliberately
+   * generous. A permanently lost job is a worse failure than a rare double-run of an idempotent step, so
+   * this defaults ON; set `stalledCheckIntervalMs: 0` to opt out.
+   *
+   * Feature-detected: an adapter that doesn't implement `recoverStalledJobs` (not every driver does)
+   * simply gets no sweep — skipped silently, since a missing capability is not a transport error.
+   */
+  #startReclaimSweep(intervalMs: number): Pollers | undefined {
+    const reclaim = (this.#adapter as { recoverStalledJobs?: unknown }).recoverStalledJobs;
+    if (typeof reclaim !== 'function' || intervalMs <= 0) return undefined;
+    const pollers = new Pollers(intervalMs, this.#onError);
+    // Returns `false` every round so {@link Pollers} sleeps the FULL interval between sweeps — the
+    // reclaim check is coarse and must not ride the fast burst-drain of the job-poll loops.
+    pollers.start(async () => {
+      for (const queue of this.#poppedQueues) {
+        try {
+          await this.#adapter.recoverStalledJobs(
+            queue,
+            this.#stalledThresholdMs,
+            this.#maxStalledCount,
+          );
+        } catch (err) {
+          this.#onError(err);
+        }
+      }
+      return false;
+    });
+    return pollers;
+  }
+
   /** Stop every poll loop and destroy the adapter so the process can exit. */
   async close(): Promise<void> {
     this.#pollers.stopAll();
+    this.#reclaimPollers?.stopAll();
     this.#taskLoops.clear();
     await this.#adapter.destroy();
   }

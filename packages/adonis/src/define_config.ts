@@ -109,6 +109,27 @@ export interface BaseDurableConfig {
   /** Where a freshly-started run executes. Defaults to in-process (microtask). */
   runDispatcher?: RunDispatcher;
   /**
+   * Opt-in self-heal window (ms) for a remote step with no `timeoutMs` whose dispatched job was LOST
+   * — the worker crashed mid-step, or the transport dropped the job (a store flush/eviction, or a
+   * broker moving a stalled job to `failed`). By design, the reconcile re-drive re-suspends a
+   * still-`pending` step rather than re-dispatching it (so a slow-but-live worker is never
+   * double-run) — which means a genuinely lost dispatch would otherwise hang forever. When set, a
+   * reconcile pass that finds a remote step still `pending` PAST this window re-dispatches it
+   * (bounded by {@link BaseDurableConfig.remoteRedispatchMax}). Off by default: re-dispatch can
+   * double-run a step whose original job is merely slow, so **this window MUST exceed the longest
+   * legitimate run of that step, and the step MUST be idempotent**. Prefer a per-step `timeoutMs`
+   * where you can (tighter, heartbeat-aware); this is the store-driven net for no-timeout steps that
+   * must survive a lost dispatch. The engine's `redispatchPending(runId)` is the manual counterpart
+   * for an operator to re-drive a stuck run by hand.
+   */
+  remoteRedispatchMs?: number;
+  /**
+   * Max times {@link BaseDurableConfig.remoteRedispatchMs} re-dispatches one lost remote step before
+   * giving up and failing it (`code: 'remote_step_lost'`), so the run fails / dead-letters instead of
+   * re-dispatching forever. Default 10. Ignored when `remoteRedispatchMs` is unset.
+   */
+  remoteRedispatchMax?: number;
+  /**
    * Recurring workflows to start on a schedule (fixed interval via `everyMs`, or cron via `cron` +
    * `timezone`). The `durable:work` worker loop fires any due windows on every tick (the 5th phase,
    * after timeouts are swept). `engine.start` is idempotent by each schedule's time-bucket run id, so

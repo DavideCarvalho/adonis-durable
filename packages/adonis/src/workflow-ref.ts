@@ -6,6 +6,7 @@
  * string stays available for the cross-runtime case.
  */
 
+import type { SingletonConfig } from './engine.js';
 import type { ScheduledWorkflow, WorkflowScheduleConfig } from './scheduler.js';
 
 /** Options for a workflow's `static workflow = { name, version, … }` config (see {@link BaseWorkflow}). */
@@ -20,6 +21,16 @@ export interface WorkflowOptions {
   executionTimeout?: string | number;
   /** Event names that start a run of this workflow when published (see `onEvent`). */
   onEvent?: string[];
+  /**
+   * Per-key serialization for runs of this workflow (see {@link SingletonConfig}): `key` derives the
+   * serialization key from the run input, `limit` (default 1) caps concurrent runs sharing it, and
+   * excess runs gate (suspended) until a slot frees. Declared here so the `app/workflows` convention
+   * carries it — before this, `SingletonConfig` was reachable only through a manual
+   * `engine.register(name, version, fn, { singleton })`, which forced anyone needing a mutexed
+   * scheduled workflow (a colocated `static schedule` fires a NEW run per window, active or not) to
+   * bypass discovery entirely.
+   */
+  singleton?: SingletonConfig;
 }
 
 /** The metadata read off a workflow class's `static workflow` config for discovery + registration. */

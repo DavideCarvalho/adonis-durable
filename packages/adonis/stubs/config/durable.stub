@@ -42,6 +42,15 @@ export default defineConfig({
   // leaseMs: 30_000,
 
   /**
+   * Opt-in self-heal net for a remote step whose dispatched job was LOST (worker crashed mid-step, or
+   * the transport dropped it) and has no per-step `timeoutMs`. Off by default — turn it on only once
+   * `remoteRedispatchMs` comfortably exceeds the longest legitimate run of any such step, and every
+   * step is idempotent (a re-dispatch can double-run a step whose original job was merely slow).
+   */
+  // remoteRedispatchMs: 5 * 60 * 1000,
+  // remoteRedispatchMax: 10,
+
+  /**
    * Recurring workflows fired by the `durable:work` worker loop on every tick. Each window starts
    * exactly once even with several worker instances racing (idempotent by the schedule's time-bucket
    * run id). Use `everyMs` for a fixed interval, or `cron` + `timezone` for a calendar schedule (cron

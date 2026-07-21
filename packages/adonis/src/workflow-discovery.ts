@@ -36,6 +36,7 @@ export function registerWorkflowClass(engine: WorkflowEngine, cls: unknown): boo
       ...(meta.tags ? { tags: meta.tags } : {}),
       ...(meta.executionTimeout !== undefined ? { executionTimeout: meta.executionTimeout } : {}),
       ...(meta.onEvent ? { onEvent: meta.onEvent } : {}),
+      ...(meta.singleton ? { singleton: meta.singleton } : {}),
     },
   );
   // Collect any colocated `static schedule` on the class so the worker loop can fire it alongside the
