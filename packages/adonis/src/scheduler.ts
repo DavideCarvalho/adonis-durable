@@ -172,6 +172,15 @@ export async function runSchedules(
     // once per schedule, before firing — the run ids below are unaffected, so idempotency holds.
     if (s.jitter && s.jitter > 0) await sleep(Math.floor(random() * s.jitter));
     for (const runId of scheduleRunIdsAt(s, nowMs)) {
+      // Only fire (and report) windows that don't exist yet. `start` is idempotent by run id
+      // anyway, but counting its no-op re-ticks made every tick report "N scheduled" forever —
+      // a due window's bucket id exists for the rest of that window, so an operator tailing the
+      // worker read "starts a run every second" out of a system starting nothing. The pre-check
+      // costs no extra I/O: `start` did the same getRun internally before its no-op return.
+      // A same-boundary race between instances can still double-fire `start` here; idempotency
+      // holds (one createRun wins) — only this tick's REPORT may briefly overcount, not the runs.
+      const existing = await engine.getRun(runId);
+      if (existing) continue;
       await engine.start(s.workflow, s.input, runId);
       ids.push(runId);
     }

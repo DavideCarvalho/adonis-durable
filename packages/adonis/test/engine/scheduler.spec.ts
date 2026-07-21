@@ -37,6 +37,22 @@ describe('runSchedules', () => {
     expect((await store.getRun('sched:beat:2'))?.output).toBe('tick');
   });
 
+  it('reports only genuinely NEW windows (a re-tick over an existing bucket returns [])', async () => {
+    const store = new InMemoryStateStore();
+    const engine = new WorkflowEngine({ store });
+    engine.register('beat', '1', async () => 'tick');
+    const schedules = [{ key: 'beat', workflow: 'beat', everyMs: 1000 }];
+
+    const first = await fireAndSettle(engine, schedules, 1000);
+    expect(first).toEqual(['sched:beat:1']);
+
+    // Same bucket, next worker tick: the window's run already exists — nothing fired, nothing
+    // REPORTED. (Counting the idempotent no-op made `durable:work` log "1 scheduled" every tick
+    // for the rest of the window.)
+    const retick = await runSchedules(engine, schedules, 1500);
+    expect(retick).toEqual([]);
+  });
+
   it('skips a paused schedule', async () => {
     const store = new InMemoryStateStore();
     const engine = new WorkflowEngine({ store });
