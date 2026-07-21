@@ -206,19 +206,27 @@ function summarizeRun(run: WorkflowRun) {
     tags: run.tags ?? [],
     createdAt: run.createdAt.toISOString(),
     updatedAt: run.updatedAt.toISOString(),
+    // Liveness signal #1 of 2 (see `src/commands/runs.ts`'s module doc): `suspended` alone can't tell
+    // a run mid-step apart from one stuck on a lost dispatch. `updatedAt` (above) already lets a
+    // client derive age; `recoveryAttempts` is the other cheap tell — it's already on the run row, so
+    // exposing it here is free. The other signal, the oldest pending REMOTE checkpoint's age, is
+    // deliberately NOT added to this list endpoint: it would need one `listCheckpoints` call per row
+    // (an N+1 the list view doesn't currently pay), whereas `GET /runs/:id` already returns the full
+    // checkpoint `timeline` a client can scan for it.
+    recoveryAttempts: run.recoveryAttempts ?? 0,
   };
 }
 
 /** Fuller run shape for the detail view. */
 function detailRun(run: WorkflowRun) {
   return {
+    // recoveryAttempts already comes through from summarizeRun.
     ...summarizeRun(run),
     input: run.input,
     output: run.output,
     error: run.error,
     searchAttributes: run.searchAttributes,
     wakeAt: run.wakeAt,
-    recoveryAttempts: run.recoveryAttempts,
   };
 }
 
