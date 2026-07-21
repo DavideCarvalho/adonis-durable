@@ -1,5 +1,5 @@
 /** Keep in sync with this package's `version` in package.json. */
-export const VERSION = '0.16.0';
+export const VERSION = '0.16.1';
 
 export { defineConfig, defaultAuthorize, resolveConfig } from './define_config.js';
 export type {
