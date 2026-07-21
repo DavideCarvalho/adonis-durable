@@ -385,6 +385,14 @@ export class WorkflowEngine {
   private readonly trackStepStart: boolean;
   /** Where a freshly-started run executes — in-process by default (see {@link RunDispatcher}). */
   private readonly runDispatcher: RunDispatcher;
+  /**
+   * True when NO custom `runDispatcher` was supplied — i.e. runs execute in-process via the default
+   * fire-and-forget dispatcher. Only then does an internal handoff (continue-as-new, a deferred child)
+   * own the run's pickup itself (a tracked {@link runOne}) so {@link drain} spans it end to end; with a
+   * custom (no-op / broker) dispatcher the run executes off this instance, so the handoff guarantees
+   * only the durable persist (the in-process rolled-back-transaction hazard doesn't apply there).
+   */
+  private readonly usesInProcessDispatch: boolean;
   /** The control-plane's OWN handshake descriptor — negotiated against each worker's descriptor to
    *  detect protocol incompatibility before dispatch (design §7.3/§7.4). Built once at construction. */
   private readonly cpDescriptor: WorkerDescriptor;
@@ -490,6 +498,7 @@ export class WorkflowEngine {
     // Default: execute the run on this instance, asynchronously, so `start` never blocks on the body.
     // A failed pickup is swallowed here (the run stays `pending` for a `runPending` poll to retry);
     // run failures themselves are handled inside `execute` and surfaced as the run's `failed` state.
+    this.usesInProcessDispatch = deps.runDispatcher === undefined;
     this.runDispatcher = deps.runDispatcher ?? {
       dispatch: (runId) => queueMicrotask(() => void this.runOne(runId).catch(() => {})),
     };
@@ -849,11 +858,31 @@ export class WorkflowEngine {
     runId: string,
     opts?: StartOptions,
   ): Promise<RunResult>;
-  async start(
+  start(
     workflow: WorkflowRef,
     input: unknown,
     runId: string,
     opts?: StartOptions,
+  ): Promise<RunResult> {
+    // Return startCore's promise directly (no async wrapper): the extra microtask an `async`
+    // delegator inserts would shift `start`'s resolution one tick later, which is observable in the
+    // dispatch timing (a freshly-dispatched run reaching `running` before `start` resolves).
+    return this.startCore(workflow, input, runId, opts, true);
+  }
+
+  /**
+   * The shared body of {@link start}. `dispatch` gates the fire-and-forget hand-off to the run
+   * dispatcher (+ the control-plane `enqueued` nudge): the public `start` always dispatches, while an
+   * internal in-process handoff ({@link handoffRun}) passes `false` to persist the run and then OWN
+   * its pickup with a tracked {@link runOne} — so no detached dispatcher run races it and {@link drain}
+   * spans the handoff from the parent's settle until the new run has entered `inflight` and settled.
+   */
+  private async startCore(
+    workflow: WorkflowRef,
+    input: unknown,
+    runId: string,
+    opts: StartOptions | undefined,
+    dispatch: boolean,
   ): Promise<RunResult> {
     const name = workflowName(workflow);
     let registered = this.latest.get(name);
@@ -902,15 +931,72 @@ export class WorkflowEngine {
     await this.store.createRun(run);
     // The run is durably enqueued; a dispatcher (in-process by default) executes it — `start` does
     // NOT run the body inline. Await the terminal/suspended state with `waitForRun(runId)` if needed.
-    await this.runDispatcher.dispatch(runId);
-    // Nudge worker instances to pick it up now instead of on their next poll (no-op without a control
-    // plane; self-receipt is filtered, so it only helps OTHER pods — e.g. an API pod's enqueue).
-    if (this.controlPlane) {
-      void this.controlPlane
-        .publishControl({ kind: 'enqueued', runId, from: this.instanceId })
-        .catch(() => undefined);
+    // An internal in-process handoff persists with `dispatch: false` and drives the pickup itself.
+    if (dispatch) {
+      await this.runDispatcher.dispatch(runId);
+      // Nudge worker instances to pick it up now instead of on their next poll (no-op without a control
+      // plane; self-receipt is filtered, so it only helps OTHER pods — e.g. an API pod's enqueue).
+      if (this.controlPlane) {
+        void this.controlPlane
+          .publishControl({ kind: 'enqueued', runId, from: this.instanceId })
+          .catch(() => undefined);
+      }
     }
     return { runId, status: 'pending' };
+  }
+
+  /**
+   * Bridge an INTERNAL run handoff — the next execution of a `continue-as-new`, or a deferred child
+   * start — into the {@link postSettle} registry so {@link drain} cannot slip through the microtask +
+   * store-I/O gap between the parent settling and the new run entering `inflight`. The bare
+   * `queueMicrotask(() => void this.start(...))` these replaced left exactly that window open: the
+   * parent's `execute()` promise had already left `inflight` and its post-settle effects could have
+   * drained before the deferred `start` even ran — so `drain()` could observe both sets empty and
+   * return early, letting the continuation's/child's store writes escape onto a torn-down connection
+   * (the rolled-back Lucid test transaction → "Transaction query already complete").
+   *
+   * The tracked promise is registered SYNCHRONOUSLY (at the parent's settle), then defers ONE microtask
+   * — preserving the original reentrancy guard so a fast child can't resume a still-suspending parent —
+   * before starting. With the default in-process dispatcher it then OWNS the pickup via {@link runOne}
+   * (persisting with `dispatch: false` so no detached dispatcher run races it), so the promise stays in
+   * `postSettle` until the run has entered `inflight` and settled here; the run is briefly in BOTH sets,
+   * which is harmless because {@link drain}'s loop re-snapshots both each iteration. With a custom
+   * dispatcher the run executes off-instance, so only the durable persist is guaranteed. A start that
+   * throws is handed to `onStartError` (a child delivers it to its waiting parent) instead of vanishing.
+   */
+  private handoffRun(
+    workflow: WorkflowRef,
+    input: unknown,
+    runId: string,
+    opts?: StartOptions,
+    onStartError?: (err: unknown) => void,
+  ): void {
+    this.trackEffect(
+      (async () => {
+        // Defer one microtask: never reentrantly resume the parent that is still suspending/settling.
+        await Promise.resolve();
+        try {
+          if (this.usesInProcessDispatch) {
+            // Persist WITHOUT the fire-and-forget dispatch, then drive the pickup ourselves so this
+            // promise is the SOLE executor of the run (no race with a detached dispatcher `runOne`) and
+            // stays tracked until the run has entered `inflight` and settled. `runOne` no-ops (returns
+            // null) on replay (the run already exists) or while draining (the run is left `pending` for
+            // recovery) — the durable persist above is what matters on those paths.
+            const result = await this.startCore(workflow, input, runId, opts, false);
+            // Guard-free pickup: the continuation/child is in-flight work `drain()` is waiting on, so it
+            // runs even while draining (a `runOne` here would no-op on `this.draining`, stranding it
+            // `pending` after its persist — persisted-but-not-processed). Mirrors a signal-driven resume.
+            if (result.status === 'pending') await this.leaseAndResume(runId);
+          } else {
+            // Custom dispatcher owns execution (possibly on another pod); guarantee the persist + its
+            // normal dispatch/broadcast. The in-process rolled-back-transaction hazard doesn't apply.
+            await this.startCore(workflow, input, runId, opts, true);
+          }
+        } catch (err) {
+          if (onStartError) onStartError(err);
+        }
+      })(),
+    );
   }
 
   /** Read a run's current persisted state (or null if unknown). A thin pass-through to the store. */
@@ -1148,6 +1234,17 @@ export class WorkflowEngine {
    */
   async runOne(runId: string): Promise<RunResult | null> {
     if (this.draining) return null;
+    return this.leaseAndResume(runId);
+  }
+
+  /**
+   * Lease and resume a run WITHOUT the {@link runOne} draining guard. The guard's job is to stop
+   * picking up NEW work once shutdown began; but an internal handoff ({@link handoffRun}) completing a
+   * continue-as-new continuation or a deferred child is finishing work already in flight — the very
+   * work {@link drain} is waiting on — so it must run even while draining, exactly as a signal-driven
+   * resume ({@link deliverSignal}) already does. Returns null if another instance holds the lease.
+   */
+  private async leaseAndResume(runId: string): Promise<RunResult | null> {
     const nowMs = this.clock();
     const acquired = await this.store.tryLockRun(
       runId,
@@ -1625,16 +1722,16 @@ export class WorkflowEngine {
     childId: string,
     opts?: StartOptions,
   ): void {
-    queueMicrotask(
-      () =>
-        void this.start(workflow, input, childId, opts).catch((err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err);
-          this.notifyParent(childId, {
-            ok: false,
-            error: `child workflow "${workflow}" failed to start: ${message}`,
-          });
-        }),
-    );
+    // Tracked handoff (see {@link handoffRun}): the deferral + reentrancy guard are preserved, but the
+    // start is now held in `postSettle` so `drain()` waits for the child to enter `inflight` and settle
+    // rather than slipping through the gap before the deferred start ran.
+    this.handoffRun(workflow, input, childId, opts, (err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      this.notifyParent(childId, {
+        ok: false,
+        error: `child workflow "${workflow}" failed to start: ${message}`,
+      });
+    });
   }
 
   /**
@@ -2457,9 +2554,10 @@ export class WorkflowEngine {
         });
         this.notifyParent(run.id, { ok: true, value: undefined });
         const nextId = nextContinuationId(run.id);
-        queueMicrotask(
-          () => void this.start(run.workflow, err.input, nextId).catch(() => undefined),
-        );
+        // Tracked handoff (see {@link handoffRun}): held in `postSettle` from this settle until the
+        // continuation has entered `inflight` and settled, so `drain()` can't return before the next
+        // run's store writes land. Still deferred + idempotent by the continuation id.
+        this.handoffRun(run.workflow, err.input, nextId);
         return { runId: run.id, status: 'completed' };
       }
       if (err instanceof WorkflowBlocked) {
