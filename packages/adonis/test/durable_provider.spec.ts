@@ -119,6 +119,26 @@ describe('DurableProvider', () => {
       delete g[CONTEXT_ACCESSOR];
     }
   });
+
+  it('forwards remoteRedispatchMs/remoteRedispatchMax to the engine', async () => {
+    const { app, resolve } = fakeApp({ remoteRedispatchMs: 5 * 60 * 1000, remoteRedispatchMax: 3 });
+    new DurableProvider(app).register();
+    const engine = await resolve();
+    const deps = engine as unknown as { remoteRedispatchMs?: number; remoteRedispatchMax?: number };
+    expect(deps.remoteRedispatchMs).toBe(5 * 60 * 1000);
+    expect(deps.remoteRedispatchMax).toBe(3);
+  });
+
+  it('leaves the engine defaults when remoteRedispatchMs/Max are omitted (net off by default)', async () => {
+    const { app, resolve } = fakeApp();
+    new DurableProvider(app).register();
+    const engine = await resolve();
+    const deps = engine as unknown as { remoteRedispatchMs?: number; remoteRedispatchMax?: number };
+    // Unset window means the self-heal net is off; `remoteRedispatchMax` still falls back to the
+    // engine's default (10) even though it's never consulted while the window is off.
+    expect(deps.remoteRedispatchMs).toBeUndefined();
+    expect(deps.remoteRedispatchMax).toBe(10);
+  });
 });
 
 describe('DurableProvider — app/workflows auto-discovery (boot)', () => {
