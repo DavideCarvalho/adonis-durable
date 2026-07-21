@@ -15,6 +15,24 @@ Corrige problemas de robustez no engine e no bootstrap:
   retomar outro run), sem que o caminho do `execute()` passe a bloquear neles — o retorno ao chamador
   continua imediato ao persistir o status.
 
+- **Mais três efeitos fire-and-forget internos passam a ser aguardados pelo `drain()`.** Eram da mesma
+  classe do `notifyParent`/`wakeNext` — `queueMicrotask(...)` sem tracking, com escrita no store,
+  disparados de dentro de um run que settla/cancela — e pré-existiam desde antes deste PR, expondo
+  consumidores de cancelamento de child, entidades duráveis e compensação saga ao mesmo
+  "Transaction query already complete" pós-teardown que este PR combate:
+  - **`ctx.cancelChild`** (usado pelo `ctx.all` failFast p/ cancelar os irmãos sobreviventes): o
+    `cancel()` — que escreve o filho e toda a cascata de cancelamento no store — agora entra no
+    `postSettle` (defer de reentrância preservado, promise registrada de forma síncrona).
+  - **`ctx.signalEntity`** (entidades duráveis): o `entities.dispatch` persiste via `signalWithStart`
+    (createRun/signal do run da entidade), então a op passa a ser aguardada pelo `drain()`.
+  - **Resume da compensação no cancel-compensate** (`engine.cancel({ compensate: true })`): o resume em
+    background que replaya o run e roda as compensações até o `cancelled` terminal era um
+    `queueMicrotask` não-rastreado, e o `resume()` só entra no `inflight` quando de fato é chamado (um
+    microtask depois) — então o `drain()` podia ver os dois registries vazios nessa janela pré-`inflight`
+    e retornar antes das escritas de compensação. Agora o resume deferido é segurado no `postSettle`
+    (não é um `handoffRun`: aqui um run EXISTENTE é retomado, e sua execução já se auto-rastreia no
+    `inflight` — só a janela antes da chamada precisava ser coberta).
+
 - **Os handoffs internos de run (`continue-as-new` e child deferido) também são aguardados pelo
   `drain()`.** Antes, ambos entravam por um `queueMicrotask(() => void this.start(...))` fire-and-forget:
   entre o settle do pai e o novo run entrar no `inflight` havia hops de microtask + I/O de store, e essa

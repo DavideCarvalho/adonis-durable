@@ -1095,6 +1095,14 @@ export class WorkflowEngine {
    * Graceful shutdown: stop picking up new runs (recovery/timer become no-ops) and wait for
    * in-flight executions to settle, up to `timeoutMs`. Call from your app's shutdown hook so a
    * deploy hands off cleanly instead of leaving runs to the lease timeout.
+   *
+   * Because an internal handoff ({@link handoffRun}) is finishing work already in flight, `drain()`
+   * follows a `continue-as-new` chain across its links (and a deferred child through its parent's
+   * resume). A HOT continue-as-new loop — one that hands off to a fresh link faster than it settles —
+   * therefore keeps `postSettle`/`inflight` non-empty and consumes the ENTIRE `timeoutMs` before this
+   * returns. That is by design (tearing down mid-continuation would orphan the continuation's writes);
+   * on timeout the frontier link is left persisted and leased, so the next boot's recovery re-drives it
+   * (no loss) — the cost is spending the full timeout on shutdown. Size `timeoutMs` accordingly.
    */
   async drain(timeoutMs = 10_000): Promise<void> {
     this.draining = true;
@@ -1760,11 +1768,19 @@ export class WorkflowEngine {
           .publishControl({ kind: 'cancel', runId, from: this.instanceId })
           .catch(() => undefined);
       }
-      queueMicrotask(() => {
-        void this.resume(runId)
-          .then(() => this.notifyCancelled(runId))
-          .catch(() => undefined);
-      });
+      // Tracked (see {@link trackEffect}): the background resume replays the run and drives its saga
+      // compensations to the terminal `cancelled` write. As a bare `queueMicrotask` that whole sequence
+      // ran untracked — and because `resume()` only enters `inflight` once it is actually called (a
+      // microtask later), `drain()` could observe both registries empty in the gap and return BEFORE the
+      // compensation writes, letting them land on a torn-down connection ("Transaction query already
+      // complete"). Holding the deferred resume in `postSettle` closes that gap; `resume()` then also
+      // tracks its own execution in `inflight`, so the run is briefly in both sets (harmless — the drain
+      // loop re-snapshots each iteration). NOT a `handoffRun`: that STARTS a new run via `startCore`;
+      // here an EXISTING run is resumed, whose execution already self-tracks — only the pre-call gap
+      // needed covering. The one-microtask defer is preserved; the promise is registered synchronously.
+      this.trackEffect(
+        Promise.resolve().then(() => this.resume(runId).then(() => this.notifyCancelled(runId))),
+      );
       await this.cancelChildren(runId, opts);
       return { runId, status: run.status };
     }
@@ -2713,8 +2729,13 @@ export class WorkflowEngine {
       // Deferred for the same reentrancy reason as `startChild` above. `cancel()` is already
       // idempotent on a terminal/cancelled run (returns its existing status without side effects), so
       // no extra guard is needed here for the failFast replay case (re-issuing the same cancel calls).
+      // Tracked (see {@link trackEffect}): `cancel()` writes the child — and its whole cancel cascade —
+      // to the store, so this fire-and-forget is held in `postSettle`. Fired from a settling parent
+      // (e.g. failFast cancelling surviving siblings), an untracked cancel's writes could otherwise
+      // escape `drain()` onto a torn-down connection ("Transaction query already complete"). The
+      // one-microtask defer is preserved; the promise is registered synchronously.
       cancelChild: (childId) => {
-        queueMicrotask(() => void this.cancel(childId).catch(() => undefined));
+        this.trackEffect(Promise.resolve().then(() => this.cancel(childId)));
       },
       // Shallow-merge into the run's searchAttributes (the ctx primitive makes this exactly-once).
       upsertSearchAttributes: async (runId, attrs) => {
@@ -2724,9 +2745,14 @@ export class WorkflowEngine {
           updatedAt: new Date(),
         });
       },
+      // Tracked (see {@link trackEffect}): `entities.dispatch` persists via `signalWithStart`
+      // (createRun/signal on the entity's run), so this fire-and-forget is held in `postSettle` — else
+      // an entity op signalled from a settling workflow could write after `drain()` returned (torn-down
+      // connection → "Transaction query already complete"). The one-microtask defer is preserved; the
+      // promise is registered synchronously.
       signalEntity: (name, key, op, arg, reply) => {
-        queueMicrotask(
-          () => void this.entities.dispatch(name, key, op, arg, reply).catch(() => undefined),
+        this.trackEffect(
+          Promise.resolve().then(() => this.entities.dispatch(name, key, op, arg, reply)),
         );
       },
       interceptStep: (invocation, body) => this.interceptStep(invocation, body),
