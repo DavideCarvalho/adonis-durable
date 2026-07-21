@@ -1,5 +1,29 @@
 # @adonis-agora/durable
 
+## 0.16.0
+
+### Minor Changes
+
+- [#28](https://github.com/DavideCarvalho/adonis-durable/pull/28) [`024b7b5`](https://github.com/DavideCarvalho/adonis-durable/commit/024b7b54929284f2e88b782d108d2051af3d9d44) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `static workflow` now accepts `singleton` (a `SingletonConfig`), and `app/workflows` discovery carries it through to `engine.register`. Before this, per-key run serialization was reachable only via a manual `engine.register(name, version, fn, { singleton })` — which forced anyone who needed a mutexed _scheduled_ workflow to bypass the discovery convention entirely, because a colocated `static schedule` fires a new run per window whether or not the previous one is still active. Declaring `singleton: { key: () => '...' }` next to the schedule now serializes those windows natively: excess runs gate (suspended) and admit in creation order when the slot frees.
+
+- [#24](https://github.com/DavideCarvalho/adonis-durable/pull/24) [`390a7c1`](https://github.com/DavideCarvalho/adonis-durable/commit/390a7c120e32f9f859f8b31936eb0a7b8471a63d) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `defineConfig` now carries `remoteRedispatchMs` / `remoteRedispatchMax` through to the engine. The engine has always implemented this store-driven net for a remote step whose dispatched job was LOST (worker crashed after claiming it, or the transport dropped the job) — but the AdonisJS provider built the engine from an explicit allowlist that omitted both keys, so the net could not be turned on from `config/durable.ts` at all, leaving `engine.redispatchPending(runId)` as the only (manual) recovery.
+
+  Off by default, unchanged semantics: when set, a reconcile pass that finds a remote step still `pending` past the window re-dispatches it, bounded by `remoteRedispatchMax` (default 10). The window must exceed the longest legitimate run of the step, and steps must be idempotent — re-dispatch can double-run a step whose original job is merely slow.
+
+- [#25](https://github.com/DavideCarvalho/adonis-durable/pull/25) [`a0dae13`](https://github.com/DavideCarvalho/adonis-durable/commit/a0dae13be123aebbd29b6cdafcf827b3191e410e) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - The `queue` transport now reclaims stalled jobs. It drives the `@adonisjs/queue` adapter directly (`pushOn`/`popFrom`/`completeJob`) instead of the broker's `Worker` class — but `recoverStalledJobs` was only ever called from that same `Worker` class, so a worker that died after claiming a job left it in the broker's `active` state forever, with no re-delivery and no error (observed in production: jobs orphaned across container restarts, their steps `pending` indefinitely).
+
+  A coarse background sweep (default every 30s) now calls `adapter.recoverStalledJobs` for every queue this instance pops from — per-handler task queues on the worker side, and the results/heartbeats/control queues on the engine side (a dead engine orphans claimed result jobs the same way). New `QueueTransportOptions`: `stalledCheckIntervalMs` (default 30s; `0` disables), `stalledThresholdMs` (default 30min — the claim's `acquiredAt` is never renewed while a worker processes, so the threshold must exceed your longest legitimate step; re-delivery double-runs a merely-slow worker's step, which the durable idempotency contract makes safe but not free), `maxStalledCount` (default 3 — bounds a poison job). Adapters without `recoverStalledJobs` are detected and skipped.
+
+- [#26](https://github.com/DavideCarvalho/adonis-durable/pull/26) [`fc1f9b7`](https://github.com/DavideCarvalho/adonis-durable/commit/fc1f9b7ff33ad0cc4abc4a611401de7545487ec6) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `durable:runs` now surfaces liveness signals so a `suspended` run's listing stops looking identical whether it's mid-step or stranded. `suspended` is the run's normal resting state while a remote step is in flight — it's also the only symptom a lost dispatch (worker died after claiming the job) ever produces, and nothing auto-redrives it (see `redispatchPending`'s own doc).
+
+  Each row now shows RECOVERY (`recovery_attempts`, blank unless > 0) and PENDING (the age + attempt count of the oldest `pending` REMOTE checkpoint, for `running`/`suspended` runs) alongside the existing columns; UPDATED now renders as a compact duration (`4h32m`) instead of `"4h ago"`.
+
+  A new `--stale[=<duration>]` flag (default threshold 15m, e.g. `--stale=1h`) narrows the listing to runs whose pending remote step exceeds that age — the "these are probably stranded" view — and prints a hint pointing at the two recovery paths that actually exist: `engine.redispatchPending(runId)` and `node ace durable:retry <runId>`.
+
+  The dashboard's `GET /runs` list payload also gains `recoveryAttempts` per run (free — already on the row); the oldest-pending-checkpoint age was deliberately left off that endpoint to avoid an N+1 `listCheckpoints` per row — `GET /runs/:id` already returns the full checkpoint timeline for that.
+
+  New exports from `@adonis-agora/durable/*` command surface: `attachLiveness`, `filterStale`, `parseDurationMs`, `staleHint`, `DEFAULT_STALE_MS`, `RunLiveness`, `StalePendingStep`. `RunLister` now also requires `listCheckpoints` (both `WorkflowEngine` and every `StateStore` already implement it) and `renderRunsTable` now takes `RunLiveness[]` instead of `WorkflowRun[]`.
+
 ## 0.15.2
 
 ### Patch Changes
