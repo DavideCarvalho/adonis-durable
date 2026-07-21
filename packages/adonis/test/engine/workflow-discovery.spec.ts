@@ -164,3 +164,56 @@ describe('registerWorkflowClass colocated schedules', () => {
     ]);
   });
 });
+
+describe('registerWorkflowClass colocated singleton', () => {
+  it('carries `static workflow.singleton` through to the engine: same-key runs serialize', async () => {
+    // The functional proof, not a metadata echo: before the passthrough existed, this class
+    // registered fine but BOTH runs below would execute concurrently — `SingletonConfig` was
+    // reachable only via a manual `engine.register(..., { singleton })`, never via discovery.
+    const ran: string[] = [];
+    class MutexedWorkflow {
+      static workflow = {
+        name: 'mutexed',
+        singleton: { key: () => 'the-one' },
+      };
+      async run(
+        ctx: {
+          localStep: (n: string, f: () => Promise<void>) => Promise<void>;
+          waitForSignal: (s: string) => Promise<unknown>;
+        },
+        input: unknown,
+      ) {
+        const { id } = input as { id: string };
+        await ctx.localStep('enter', async () => void ran.push(id));
+        await ctx.waitForSignal(`go:${id}`); // hold the slot until signalled
+        return 'done';
+      }
+    }
+    const engine = new WorkflowEngine({ store: new InMemoryStateStore() });
+    expect(registerWorkflowClass(engine, MutexedWorkflow)).toBe(true);
+
+    // A takes the slot and holds it on its signal wait; B shares the key so it must gate.
+    await startRun(engine, 'mutexed', { id: 'A' }, 'a');
+    await startRun(engine, 'mutexed', { id: 'B' }, 'b');
+    expect(ran).toEqual(['A']);
+
+    // Releasing A admits B via notify-on-release (no timer tick needed) — the gate is the
+    // engine's own singleton admission, fed by discovery. The wake is dispatched
+    // asynchronously, so poll for B's `enter` like the engine's own singleton spec does.
+    await engine.signal('go:A', undefined);
+    await engine.waitForRun('a', { terminal: true });
+    for (let i = 0; i < 100 && !ran.includes('B'); i++) await new Promise((r) => setTimeout(r, 2));
+    expect(ran).toEqual(['A', 'B']);
+    await engine.signal('go:B', undefined);
+    await engine.waitForRun('b', { terminal: true });
+  });
+
+  it('workflowMeta echoes the singleton config verbatim', () => {
+    const singleton = { key: () => 'k', limit: 2 };
+    class Limited {
+      static workflow = { name: 'limited', singleton };
+      async run() {}
+    }
+    expect(workflowMeta(Limited)?.singleton).toBe(singleton);
+  });
+});
