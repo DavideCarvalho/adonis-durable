@@ -69,6 +69,10 @@ export interface StalePendingStep {
   attempts: number;
   /** Milliseconds since the step was enqueued to the transport. */
   ageMs: number;
+  /** Milliseconds since the worker's last persisted heartbeat for this step, or `null` when the
+   *  handler never beat (see `StepCheckpoint.lastHeartbeatAt`). THE disambiguator for a long pending
+   *  step: old + beating = alive mid-flight; old + silent = hung or lost. */
+  heartbeatAgeMs: number | null;
 }
 
 /** A run plus the liveness signals that tell "working" apart from "stranded" (see module doc above). */
@@ -105,6 +109,7 @@ async function oldestPendingRemoteStep(
     name: oldest.name,
     attempts: oldest.attempts,
     ageMs: now - oldest.enqueuedAt.getTime(),
+    heartbeatAgeMs: oldest.lastHeartbeatAt ? now - oldest.lastHeartbeatAt.getTime() : null,
   };
 }
 
@@ -135,12 +140,19 @@ export async function attachLiveness(
 }
 
 /** Keep only runs whose oldest pending remote step has been unresolved for at least `thresholdMs` —
- *  the "these are probably stranded" view behind `--stale`. */
+ *  the "these are probably stranded" view behind `--stale`. A step whose worker heartbeat is
+ *  YOUNGER than the threshold is excluded however old the step is: a beating worker is mid-flight
+ *  (a 40-minute browser batch is working, not stranded), and re-driving it would double-run it. */
 export function filterStale(
   liveRuns: RunLiveness[],
   thresholdMs: number = DEFAULT_STALE_MS,
 ): RunLiveness[] {
-  return liveRuns.filter((rl) => rl.stalePending !== null && rl.stalePending.ageMs >= thresholdMs);
+  return liveRuns.filter(
+    (rl) =>
+      rl.stalePending !== null &&
+      rl.stalePending.ageMs >= thresholdMs &&
+      (rl.stalePending.heartbeatAgeMs === null || rl.stalePending.heartbeatAgeMs >= thresholdMs),
+  );
 }
 
 /** Parse a compact single-unit duration (`90s`, `15m`, `4h`, `2d`) into milliseconds. Returns
@@ -177,7 +189,13 @@ export function renderRunsTable(liveRuns: RunLiveness[]): string {
     run.status,
     compactAge(ageMs),
     recoveryAttempts > 0 ? String(recoveryAttempts) : '-',
-    stalePending ? `${compactAge(stalePending.ageMs)} (attempt ${stalePending.attempts})` : '-',
+    stalePending
+      ? `${compactAge(stalePending.ageMs)} (attempt ${stalePending.attempts}${
+          stalePending.heartbeatAgeMs !== null
+            ? `, hb ${compactAge(stalePending.heartbeatAgeMs)}`
+            : ''
+        })`
+      : '-',
   ]);
   return table(['RUN', 'WORKFLOW', 'STATUS', 'UPDATED', 'RECOVERY', 'PENDING'], rows);
 }

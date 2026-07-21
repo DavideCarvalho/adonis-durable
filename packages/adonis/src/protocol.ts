@@ -1,4 +1,4 @@
-import type { RemoteTask, StepEvent, StepLogger, StepResult } from './interfaces.js';
+import type { Heartbeat, RemoteTask, StepEvent, StepLogger, StepResult } from './interfaces.js';
 import { createStepLogger } from './step-logger.js';
 
 /**
@@ -52,6 +52,7 @@ export type StepHandler = (input: unknown, log: StepLogger) => Promise<unknown> 
 export async function runStepHandler(
   task: RemoteTask,
   handler: StepHandler | undefined,
+  emitBeat?: (beat: Heartbeat) => void | Promise<void>,
 ): Promise<StepResult> {
   // Stamp the worker's pickup time so the engine can report queue-wait (startedAt − enqueuedAt).
   // This is the one place every transport funnels through, so timing comes for free everywhere.
@@ -70,9 +71,26 @@ export async function runStepHandler(
   // the task snapshot, so cross-process propagation is automatic — `ctx.call(remoteStep, input)`
   // carries the caller's context with zero manual serialize/deserialize, and each task runs in its
   // own scope (no cross-task bleed on a long-lived worker). No-op without `@adonis-agora/context`.
+  // Wire `log.heartbeat(progress)` to the transport's heartbeat lane (fire-and-forget — a lost beat
+  // costs one liveness update, never the step). Absent emitter (a transport without heartbeats, or a
+  // local in-process run) → the logger's heartbeat is a no-op.
+  const beat = emitBeat
+    ? (progress?: unknown): void => {
+        void Promise.resolve(
+          emitBeat({
+            runId: task.runId,
+            seq: task.seq,
+            stepId: task.stepId,
+            group: task.group,
+            at: Date.now(),
+            ...(progress === undefined ? {} : { progress }),
+          }),
+        ).catch(() => undefined);
+      }
+    : undefined;
   return withRestoredContext(task.context, async () => {
     try {
-      const output = await handler(task.input, createStepLogger(events, Date.now));
+      const output = await handler(task.input, createStepLogger(events, Date.now, beat));
       return withEvents({ ...base, status: 'completed', output });
     } catch (err) {
       // Carry `code`/`retryable` off the thrown error if present, so the engine's durable retry can

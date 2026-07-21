@@ -53,6 +53,10 @@ export interface CheckpointRow {
   enqueued_at: number | string | null;
   started_at: number | string;
   finished_at: number | string;
+  /** Nullable + optional: both columns arrived in a later schema wave (heartbeat persistence);
+   *  rows selected on an un-migrated/older schema simply don't carry them. */
+  last_heartbeat_at?: number | string | null;
+  heartbeat_progress?: string | null;
 }
 
 /** Serialize an arbitrary payload to a TEXT column, preserving the "absent" distinction as NULL. */
@@ -211,6 +215,10 @@ export function rowToCheckpoint(row: CheckpointRow): StepCheckpoint {
   const wakeAt = toNum(row.wake_at);
   if (wakeAt !== undefined) cp.wakeAt = wakeAt;
   if (row.parallel_group != null) cp.parallelGroup = row.parallel_group;
+  const lastHeartbeatAt = toNum(row.last_heartbeat_at);
+  if (lastHeartbeatAt !== undefined) cp.lastHeartbeatAt = new Date(lastHeartbeatAt);
+  const heartbeatProgress = fromJson(row.heartbeat_progress ?? null);
+  if (heartbeatProgress !== undefined) cp.heartbeatProgress = heartbeatProgress;
   return cp;
 }
 

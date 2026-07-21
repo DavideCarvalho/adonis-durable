@@ -27,6 +27,7 @@ import type {
   EngineEvent,
   EngineListener,
   GroupHealth,
+  Heartbeat,
   NamedTransport,
   RemoteTask,
   RunDispatcher,
@@ -535,9 +536,11 @@ export class WorkflowEngine {
         // instance) → complete the checkpoint and resume the run here.
         await this.completeRemoteResult(result);
       },
-      // A heartbeat for an in-flight long step resets its liveness window (see callRemote).
+      // A heartbeat for an in-flight long step resets its liveness window (see callRemote) and is
+      // persisted (throttled) on the step's checkpoint so liveness is visible cross-process.
       async (beat) => {
         this.heartbeatResets.get(beat.stepId)?.();
+        this.persistHeartbeat(beat);
       },
       // A remote workflow worker streams each local step's lifecycle (running → completed/failed) so
       // it's checkpointed live, not all-at-once when the long turn ends.
@@ -746,6 +749,29 @@ export class WorkflowEngine {
    */
   registerQueue(config: QueueConfig): void {
     this.admission.register(config);
+  }
+
+  /** Last persisted-beat time per stepId — the write throttle for {@link persistHeartbeat}. */
+  private readonly heartbeatPersists = new Map<string, number>();
+
+  /**
+   * Persist a worker heartbeat on its step's checkpoint (see {@link StepCheckpoint.lastHeartbeatAt}),
+   * best-effort and THROTTLED per step (≥10s between writes) — beats may arrive every few seconds
+   * from a hot batch loop, and liveness observability must not turn into a per-item UPDATE storm.
+   * Optional store capability: no `recordStepHeartbeat` → no-op. Failures are swallowed (a lost
+   * liveness update never harms the run). The throttle map is cleared wholesale past 1024 entries —
+   * a rare extra write, never a leak.
+   */
+  private persistHeartbeat(beat: Heartbeat): void {
+    if (!this.store.recordStepHeartbeat) return;
+    const now = this.clock();
+    const last = this.heartbeatPersists.get(beat.stepId);
+    if (last !== undefined && now - last < 10_000) return;
+    if (this.heartbeatPersists.size > 1024) this.heartbeatPersists.clear();
+    this.heartbeatPersists.set(beat.stepId, now);
+    void this.store
+      .recordStepHeartbeat(beat.runId, beat.seq, new Date(beat.at ?? now), beat.progress)
+      .catch(() => undefined);
   }
 
   /**
@@ -3219,6 +3245,27 @@ export class WorkflowEngine {
     for (let attempt = 1; ; attempt += 1) {
       const resultPromise = new Promise<RemoteResolution>((resolve, reject) => {
         this.pending.set(id, { resolve, reject });
+      });
+      // Persist the in-flight `pending` checkpoint BEFORE dispatching. The in-memory await needs no
+      // row to resume — but without one this step was INVISIBLE outside this process (no liveness
+      // surface, nowhere for worker heartbeats to land) and a result consumed by another engine
+      // instance (shared results queue) found no checkpoint and was dropped. Replay-safe: a replayed
+      // `timeoutMs` step routes back here regardless of a pending row (see callRemote's routing),
+      // and `completeStep` below overwrites this row when the result lands.
+      const attemptAt = attempt === 1 ? enqueuedAt : new Date();
+      await this.store.saveCheckpoint({
+        runId,
+        seq,
+        name: step.name,
+        kind: 'remote',
+        stepId: id,
+        status: 'pending',
+        input: validInput,
+        attempts: attempt,
+        workerGroup: token,
+        enqueuedAt: attemptAt,
+        startedAt: attemptAt,
+        finishedAt: attemptAt,
       });
       await this.pool.dispatch(
         {

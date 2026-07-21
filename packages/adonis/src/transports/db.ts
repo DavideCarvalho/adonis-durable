@@ -307,7 +307,9 @@ export class DbTransport implements Transport, ControlPlane {
         ...(row.context != null ? { context: fromJson(row.context) } : {}),
         ...(row.transport != null ? { transport: row.transport } : {}),
       };
-      const result = await runStepHandler(task, this.#handlers.get(task.name));
+      const result = await runStepHandler(task, this.#handlers.get(task.name), (beat) =>
+        this.heartbeat(beat),
+      );
       await this.#insertResult(result);
       await this.#client().from(TRANSPORT_TABLES.tasks).where('step_id', task.stepId).delete();
     }

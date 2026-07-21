@@ -160,3 +160,33 @@ describe('createStepLogger', () => {
     });
   });
 });
+
+describe('createStepLogger — heartbeat', () => {
+  it('emits through the wire hook with the given progress, throttled to one per 5s window', () => {
+    let t = 0;
+    const beats: unknown[] = [];
+    const events: StepEvent[] = [];
+    const log = createStepLogger(
+      events,
+      () => t,
+      (progress) => beats.push(progress),
+    );
+
+    log.heartbeat({ done: 1 }); // first call emits immediately
+    t = 3_000;
+    log.heartbeat({ done: 2 }); // inside the window → dropped
+    t = 5_000;
+    log.heartbeat({ done: 3 }); // window elapsed → emits
+    t = 5_001;
+    log.heartbeat(); // inside again → dropped
+
+    expect(beats).toEqual([{ done: 1 }, { done: 3 }]);
+    // Liveness is a wire signal, not a log line: nothing lands in the step's event trail.
+    expect(events).toEqual([]);
+  });
+
+  it('is a safe no-op when no emitter is wired (local in-process steps)', () => {
+    const log = createStepLogger([], at);
+    expect(() => log.heartbeat({ done: 1 })).not.toThrow();
+  });
+});

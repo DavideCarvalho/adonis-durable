@@ -98,15 +98,27 @@ export async function createDurableTables(db: Database, connectionName?: string)
       table.bigInteger('enqueued_at');
       table.bigInteger('started_at').notNullable();
       table.bigInteger('finished_at').notNullable();
+      table.bigInteger('last_heartbeat_at');
+      table.text('heartbeat_progress');
       table.primary(['run_id', 'seq']);
       table.index(['run_id', 'name'], 'durable_checkpoints_name_idx');
     });
-  } else if (!(await conn().hasColumn(DURABLE_TABLES.checkpoints, 'parallel_group'))) {
-    // Auto-migrate an older checkpoints table: add the nullable `parallel_group` column in place.
-    // Nullable (no default) so a legacy (non-parallel) checkpoint reads back untagged.
-    await conn().alterTable(DURABLE_TABLES.checkpoints, (table) => {
-      table.string('parallel_group');
-    });
+  } else {
+    if (!(await conn().hasColumn(DURABLE_TABLES.checkpoints, 'parallel_group'))) {
+      // Auto-migrate an older checkpoints table: add the nullable `parallel_group` column in place.
+      // Nullable (no default) so a legacy (non-parallel) checkpoint reads back untagged.
+      await conn().alterTable(DURABLE_TABLES.checkpoints, (table) => {
+        table.string('parallel_group');
+      });
+    }
+    if (!(await conn().hasColumn(DURABLE_TABLES.checkpoints, 'last_heartbeat_at'))) {
+      // Heartbeat-persistence wave: nullable, so a step whose handler never beats reads back with
+      // no liveness claim (absent ≠ silent-since-epoch).
+      await conn().alterTable(DURABLE_TABLES.checkpoints, (table) => {
+        table.bigInteger('last_heartbeat_at');
+        table.text('heartbeat_progress');
+      });
+    }
   }
 
   if (!(await conn().hasTable(DURABLE_TABLES.attributes))) {

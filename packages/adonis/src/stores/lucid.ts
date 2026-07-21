@@ -132,6 +132,25 @@ export class LucidStateStore implements StateStore {
     await this.upsertCheckpoint(this.client(), checkpoint);
   }
 
+  /** Persist the latest worker heartbeat on the step's checkpoint row (see the interface doc).
+   *  A targeted two-column UPDATE — never an upsert: a beat racing the checkpoint's own insert (or
+   *  outliving a deleted run) matches zero rows and is a silent no-op, by design. */
+  async recordStepHeartbeat(
+    runId: string,
+    seq: number,
+    at: Date,
+    progress?: unknown,
+  ): Promise<void> {
+    await this.client()
+      .from(DURABLE_TABLES.checkpoints)
+      .where('run_id', runId)
+      .andWhere('seq', seq)
+      .update({
+        last_heartbeat_at: at.getTime(),
+        heartbeat_progress: progress === undefined ? null : JSON.stringify(progress),
+      });
+  }
+
   /** Upsert a checkpoint keyed by `(run_id, seq)`, portable across dialects (read-then-write in a tx). */
   private async upsertCheckpoint(client: Client, checkpoint: StepCheckpoint): Promise<void> {
     const row = checkpointToRow(checkpoint);
