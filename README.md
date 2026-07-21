@@ -34,6 +34,9 @@ production, select a driver by name in `config/durable.ts` — the `queue`
 each lazily importing its optional peer only when chosen. The engine is a faithful
 port of `@dudousxd/nestjs-durable-core`.
 
+Full docs live under [`docs/`](./docs) — if a run is stuck and you need to know which
+knob heals it, start at [Failure modes & recovery](./docs/reliability/failure-modes.mdx).
+
 ## License
 
 MIT © Davi Carvalho

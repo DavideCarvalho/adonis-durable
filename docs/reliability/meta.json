@@ -1,5 +1,5 @@
 {
   "title": "Reliability",
   "icon": "ShieldCheck",
-  "pages": ["index", "retries", "sagas", "flow-control", "dead-letter"]
+  "pages": ["index", "retries", "sagas", "flow-control", "dead-letter", "failure-modes"]
 }
