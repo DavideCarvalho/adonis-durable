@@ -189,6 +189,11 @@ export class QueueTransport implements Transport, ControlPlane {
    *  (`stalledCheckIntervalMs <= 0`) or the adapter can't `recoverStalledJobs`. Separate from
    *  {@link #pollers} because the sweep cadence is unrelated to the fast job-poll cadence. */
   readonly #reclaimPollers: Pollers | undefined;
+  /** When set (see {@link deferConsumers}), {@link QueueTransport.#startLoop} parks its loop here
+   *  instead of polling — {@link startConsumers} flushes the parked starts. Dispatching (`pushOn`)
+   *  is never deferred; only consumption is. */
+  #consumersDeferred = false;
+  readonly #deferredStarts: Array<() => void> = [];
 
   constructor(options: QueueTransportOptions) {
     this.#adapter = options.adapter();
@@ -212,6 +217,36 @@ export class QueueTransport implements Transport, ControlPlane {
   /** Stable id stamped on heartbeats and control `from`. */
   get instanceId(): string {
     return this.#instanceId;
+  }
+
+  /**
+   * Park every consumer loop registered from now on ({@link handle}, {@link onResult},
+   * {@link onHeartbeat}, {@link onControl}) instead of starting it, until {@link startConsumers}.
+   *
+   * WHY this exists: these queues are point-to-point — whoever pops a job owns it. Any process that
+   * subscribes therefore competes with the real worker fleet for production jobs, and a process not
+   * built to be a worker (an ace command, a REPL, a boot script) claims jobs it will die with:
+   * observed in production as step jobs stuck in `active` stamped with the worker ids of long-gone
+   * one-off commands, and as a boot-time command that never exited because the burst-drain loop kept
+   * feeding it queued jobs. Deferring consumption makes such a process a pure *producer* — it can
+   * still dispatch, publish and read the store — while the jobs stay on the queue for a real worker.
+   *
+   * Call it before any subscriptions are made (the provider does, right after building the
+   * transport); loops already started are not retroactively stopped. The stalled-job reclaim sweep
+   * needs no gating: it only walks queues this instance actually consumes, so it is a no-op until
+   * {@link startConsumers} runs.
+   */
+  deferConsumers(): void {
+    this.#consumersDeferred = true;
+  }
+
+  /** Start every consumer loop parked by {@link deferConsumers} and stop deferring — the explicit
+   *  "this process IS a worker" declaration (`durable:work` makes it via `engine.startConsumers()`).
+   *  Idempotent; a no-op when consumption was never deferred. */
+  startConsumers(): void {
+    if (!this.#consumersDeferred) return;
+    this.#consumersDeferred = false;
+    for (const start of this.#deferredStarts.splice(0)) start();
   }
 
   /**
@@ -356,6 +391,25 @@ export class QueueTransport implements Transport, ControlPlane {
    * invisible.
    */
   #startLoop(queue: string, onJob: (job: JobData) => Promise<void>): PollLoop {
+    // Deferred consumption (see deferConsumers): park the start; startConsumers() flushes it. The
+    // handle returned now still stops the loop whether it is flushed later or never.
+    if (this.#consumersDeferred) {
+      let cancelled = false;
+      let live: PollLoop | undefined;
+      this.#deferredStarts.push(() => {
+        if (!cancelled) live = this.#reallyStartLoop(queue, onJob);
+      });
+      return {
+        stop: () => {
+          cancelled = true;
+          live?.stop();
+        },
+      };
+    }
+    return this.#reallyStartLoop(queue, onJob);
+  }
+
+  #reallyStartLoop(queue: string, onJob: (job: JobData) => Promise<void>): PollLoop {
     // Record every queue we consume from so the reclaim sweep can walk exactly this set.
     this.#poppedQueues.add(queue);
     return this.#pollers.start(async () => {

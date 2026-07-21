@@ -798,6 +798,18 @@ export interface Transport {
    * Optional — transports that don't partition simply omit it.
    */
   useNamespace?(namespace: string): void;
+  /**
+   * Park consumer subscriptions (task/result/heartbeat/control loops) instead of starting them,
+   * until {@link Transport.startConsumers}. Optional — only broker transports whose queues are
+   * point-to-point implement it: there, ANY subscribing process competes with the worker fleet for
+   * production jobs, so a process that is not a worker (an ace command, a REPL) must be able to
+   * stay a pure producer. In-process transports have no cross-process queues to protect. Must be
+   * called before subscriptions are made; dispatching is never deferred.
+   */
+  deferConsumers?(): void;
+  /** Start every consumer subscription parked by {@link Transport.deferConsumers} — the explicit
+   *  "this process IS a worker" declaration. Idempotent; a no-op when nothing was deferred. */
+  startConsumers?(): void;
   /** Release the transport's resources (broker workers, queues, connections) for a clean shutdown.
    *  Optional — an in-process transport has nothing to close. Called on `onApplicationShutdown`
    *  after the engine drains, so a deploy hands off instead of leaving the broker to time out. */

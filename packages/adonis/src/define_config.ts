@@ -109,6 +109,18 @@ export interface BaseDurableConfig {
   /** Where a freshly-started run executes. Defaults to in-process (microtask). */
   runDispatcher?: RunDispatcher;
   /**
+   * When this process's transport starts its broker **consumer** loops. `'auto'` (default): a
+   * `console`/`repl` process defers consumption — it can dispatch runs and read the store, but never
+   * claims broker jobs — because those queues are point-to-point and a one-off `node ace` process
+   * that subscribes competes with the real worker fleet: it claims step jobs it dies with, steals
+   * results addressed to the long-lived engine, and (with jobs queued) never exits. `durable:work`
+   * re-enables consumption for itself via `engine.startConsumers()`, so the worker command behaves
+   * identically under either value. `'always'`: every booted process consumes eagerly (the pre-0.17
+   * behavior) — for a console script that must round-trip remote steps inline. Web and test
+   * processes always consume eagerly; in-process transports (memory/event-emitter) are unaffected.
+   */
+  consumers?: 'auto' | 'always';
+  /**
    * Opt-in self-heal window (ms) for a remote step with no `timeoutMs` whose dispatched job was LOST
    * — the worker crashed mid-step, or the transport dropped the job (a store flush/eviction, or a
    * broker moving a stalled job to `failed`). By design, the reconcile re-drive re-suspends a

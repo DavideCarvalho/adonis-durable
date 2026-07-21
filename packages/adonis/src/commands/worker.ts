@@ -130,6 +130,10 @@ export async function runWorkerLoop(
   options: WorkerLoopOptions,
 ): Promise<number> {
   const sleep = options.sleep ?? realSleep;
+  // THIS process is a worker: flush consumer subscriptions a deferred transport parked at boot
+  // (see Transport.deferConsumers) — without this, a worker booted in a console environment would
+  // poll the store but never claim broker jobs.
+  engine.startConsumers();
   let stopped = false;
   void options.stopSignal.then(() => {
     stopped = true;

@@ -93,6 +93,14 @@ export class TransportPool {
     }
   }
 
+  /** Flush deferred consumer subscriptions on every transport that deferred them (see
+   *  {@link Transport.startConsumers}); a transport that never defers is skipped. */
+  startConsumers(): void {
+    for (const { transport } of this.transports) {
+      transport.startConsumers?.();
+    }
+  }
+
   /** Pinned `preferId` first, then the rest (failover order). */
   private ordered(preferId?: string): NamedTransport[] {
     if (!preferId) return this.transports;
