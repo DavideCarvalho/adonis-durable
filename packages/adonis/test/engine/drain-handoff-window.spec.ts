@@ -141,3 +141,59 @@ describe('drain waits for internal run handoffs (continue-as-new / deferred chil
     expect((await store.getRun('p~1'))?.status).toBe('completed');
   });
 });
+
+describe('drain timeout on a long / hot continue-as-new chain', () => {
+  it('consumes the whole timeout, then leaves the frontier link leased for recovery (no loss)', async () => {
+    const store = new InMemoryStateStore();
+    const engine = new WorkflowEngine({ store });
+    const FRONTIER = 6; // links p → p~1 → … → p~6
+    const LIMIT = 7; // one link past the frontier, so the chain terminates cleanly once released
+    let releaseFrontier!: () => void;
+    const frontierGate = new Promise<void>((r) => {
+      releaseFrontier = r;
+    });
+    const reached: number[] = [];
+
+    engine.register('chain', '1', async (ctx, input) => {
+      const { n } = input as { n: number };
+      reached.push(n);
+      // The frontier link parks mid-execution: it is persisted + leased but never settles, so the
+      // chain can't finish and drain() must lean on its timeout — a stand-in for a perpetually hot
+      // continue-as-new loop that keeps handing off faster than it drains.
+      if (n === FRONTIER) await frontierGate;
+      if (n < LIMIT) await ctx.continueAsNew({ n: n + 1 });
+      return `done-${n}`;
+    });
+
+    await engine.start('chain', { n: 0 }, 'p');
+    // The chain flows across every link through the tracked handoffs until the frontier (p~6) parks.
+    for (let i = 0; i < 500 && !reached.includes(FRONTIER); i += 1) await flush();
+    expect(reached).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect((await store.getRun('p~5'))?.status).toBe('completed');
+
+    // drain() can't reach steady-state empty (the frontier is in-flight and about to hand off again),
+    // so it must be CUT by the timeout — not return early, not hang forever. Assert it returns at
+    // ~timeoutMs: this is the "a hot continue-as-new loop consumes the whole timeout" property.
+    const timeoutMs = 150;
+    const t0 = Date.now();
+    await engine.drain(timeoutMs);
+    const elapsed = Date.now() - t0;
+    expect(elapsed).toBeGreaterThanOrEqual(timeoutMs - 30);
+    expect(elapsed).toBeLessThan(timeoutMs + 500);
+
+    // No loss: at the timeout the frontier link is PERSISTED and LEASED (running, lockedBy set), i.e.
+    // owned in-flight work a fresh boot's recoverIncomplete() re-drives — not a dropped/vanished run.
+    const frontier = await store.getRun('p~6');
+    expect(frontier?.status).toBe('running');
+    expect(frontier?.lockedBy).toBeTruthy();
+
+    // And prove the frontier work is genuinely resumable, not stranded: release it and let the chain
+    // finish. p~6 hands off to p~7, which is past LIMIT and completes. Nothing was lost to the timeout.
+    releaseFrontier();
+    for (let i = 0; i < 500 && (await store.getRun('p~7'))?.status !== 'completed'; i += 1) {
+      await flush();
+    }
+    expect((await store.getRun('p~6'))?.status).toBe('completed');
+    expect((await store.getRun('p~7'))?.output).toBe('done-7');
+  });
+});
