@@ -311,7 +311,13 @@ export default class DashboardProvider {
   ): Promise<boolean> {
     const allowed = await config.authorize(ctx);
     if (!allowed) {
-      ctx.response.status(403).json({ error: 'forbidden' });
+      // A custom hook may have WRITTEN its own denial before returning false — typically a redirect
+      // to the host app's login page (`ctx.response.redirect('/login')`), the natural UX when the
+      // dashboard is guarded by the app's own session instead of a bearer token. Respect it: only
+      // fall back to the uniform 403 when the hook left the response untouched (no Location header).
+      if (!ctx.response.getHeader('location')) {
+        ctx.response.status(403).json({ error: 'forbidden' });
+      }
       return false;
     }
 
