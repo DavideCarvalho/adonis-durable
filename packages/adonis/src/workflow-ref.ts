@@ -78,6 +78,41 @@ export function workflowSchedules(target: unknown): ScheduledWorkflow[] {
   }));
 }
 
+/**
+ * Class-decorator form of the colocated schedule — the same declaration `static schedule = {...}`
+ * makes, for codebases that prefer decorators:
+ *
+ * ```ts
+ * @Scheduled({ cron: '0 4 * * *', timezone: 'America/Sao_Paulo' })
+ * export default class CrawlWorkflow extends BaseWorkflow {
+ *   static workflow = { name: 'crawl' }
+ *   async run(ctx: WorkflowCtx) { … }
+ * }
+ * ```
+ *
+ * It only stamps `static schedule` on the class — normalization (key defaults, `workflow` fill-in)
+ * stays in {@link workflowSchedules}, so both authoring forms behave identically, including the
+ * requirement of a `static workflow` config (a decorated class without one is not registrable and
+ * its schedules are ignored, same as a bare `static schedule`).
+ *
+ * Composes: repeated `@Scheduled(...)` applications and an existing `static schedule` accumulate.
+ * Decorators apply bottom-up, so each application PREPENDS — the final array reads in **source
+ * order** (top decorator first, then lower ones, then the `static schedule` literal). With several
+ * schedules on one class, prefer explicit `key`s over the positional `${name}:${i}` defaults: the
+ * key is part of the deterministic run id, and reordering declarations would silently re-key them.
+ */
+export function Scheduled(config: WorkflowScheduleConfig | WorkflowScheduleConfig[]): ClassDecorator {
+  return (target) => {
+    const cls = target as unknown as {
+      schedule?: WorkflowScheduleConfig | WorkflowScheduleConfig[];
+    };
+    const existing =
+      cls.schedule === undefined ? [] : Array.isArray(cls.schedule) ? cls.schedule : [cls.schedule];
+    const added = Array.isArray(config) ? config : [config];
+    cls.schedule = [...added, ...existing];
+  };
+}
+
 /** Structural shape of a workflow class — its `run(ctx, input)` carries the input/output types. */
 export type WorkflowClass<TInput = unknown, TOutput = unknown> = abstract new (
   ...args: never[]
