@@ -3159,6 +3159,13 @@ export class WorkflowEngine {
   private async completeRemoteResult(result: StepResult): Promise<void> {
     const cp = await this.store.getCheckpoint(result.runId, result.seq);
     if (!cp) return;
+    const run = await this.store.getRun(result.runId);
+    const terminal =
+      run != null &&
+      (run.status === 'completed' ||
+        run.status === 'failed' ||
+        run.status === 'cancelled' ||
+        run.status === 'dead');
     // This does TWO durable things — settle the checkpoint, then resume the run — and only the first
     // is idempotent by its own state. So an already-settled checkpoint does NOT mean the resume half
     // also happened: the instance that settled it may have died in between, or thrown on the resume
@@ -3166,17 +3173,38 @@ export class WorkflowEngine {
     // `wakeAt` — no timer or recovery sweep would ever pick it up again. A redelivered result must
     // therefore re-drive the resume rather than be dropped. Resuming twice is safe (the run lease
     // admits one executor and replay is positional); dropping the last copy is not.
+    //
+    // UNLESS the run is TERMINAL: resuming replays it back to LIFE (observed in production — a late
+    // batch result resurrected a `failed` run into `suspended`, which then continued executing as if
+    // the failure never happened, racing whatever the operator did about it, and after any saga
+    // compensations already ran). Terminal is terminal — recovery of a failed run belongs to an
+    // explicit `requeue`/`durable:retry`, never to a stray result.
     if (cp.status !== 'pending') {
-      await this.resume(result.runId);
+      if (!terminal) await this.resume(result.runId);
       return;
     }
     // A result settling this step frees its flow-control slot (no-op if it wasn't queued). Done
-    // before the cancelled-run early-return below, so a cancellation can't leak the slot.
+    // before the terminal-run early-returns below, so a cancellation can't leak the slot.
     await this.releaseQueueSlot(cp.stepId);
     // Drop a late result for a run that was cancelled/finished meanwhile — don't complete the step
     // or resume (the run is already terminal). This is the engine side of cooperative cancellation.
-    const run = await this.store.getRun(result.runId);
     if (run && (run.status === 'cancelled' || run.status === 'completed')) return;
+    // A late SUCCESS for a failed/dead run: salvage the finished work onto the checkpoint — an
+    // explicit retry's replay then short-circuits this step instead of re-running it (the work may
+    // be minutes of real compute) — but never resume. A late FAILURE has nothing to salvage: drop.
+    if (run && (run.status === 'failed' || run.status === 'dead')) {
+      if (result.status === 'completed') {
+        await this.store.saveCheckpoint({
+          ...cp,
+          status: 'completed',
+          output: result.output,
+          events: result.events ?? cp.events,
+          startedAt: result.startedAt ? new Date(result.startedAt) : cp.startedAt,
+          finishedAt: new Date(),
+        });
+      }
+      return;
+    }
     const finishedAt = new Date();
     const startedAt = result.startedAt ? new Date(result.startedAt) : cp.startedAt;
     await this.store.saveCheckpoint({
