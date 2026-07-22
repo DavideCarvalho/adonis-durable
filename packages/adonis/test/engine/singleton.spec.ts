@@ -57,9 +57,63 @@ describe('singleton (serialize runs by key)', () => {
     for (let i = 0; i < 100 && !ran.includes('B'); i++) await new Promise((r) => setTimeout(r, 2));
     expect(ran).toEqual(['A', 'C', 'B']);
 
-    // And the durable retry timer is a harmless no-op now (B already woken; its wakeAt was cleared).
+    // And the durable retry timer is a harmless no-op now (B already woken and holding its own
+    // signal wait — no due wakeAt remains for the poller to act on).
     now += 60_000;
     await engine.resumeDueTimers(now);
     expect(ran).toEqual(['A', 'C', 'B']);
+  });
+
+  it('a gated run survives a NO-OP runDispatcher: release leaves it DUE for the timer poller', async () => {
+    const store = new InMemoryStateStore();
+    let now = 1000;
+    // Poll-only deployment (a documented mode): `start` only enqueues; every pickup belongs to the
+    // worker loop. The notify-on-release dispatch is a no-op here — so if release CLEARED the gated
+    // run's wakeAt (the old behavior), nothing would ever pick it up again: suspended, no wake time,
+    // invisible to runPending/recoverIncomplete/resumeDueTimers, forever. Observed in production.
+    const engine = new WorkflowEngine({
+      store,
+      clock: () => now,
+      runDispatcher: { dispatch: () => {} },
+    });
+    engine.register(
+      'job',
+      '1',
+      async (ctx, input) => {
+        const { id } = input as { id: string };
+        if (id === 'A') await ctx.waitForSignal('go:A'); // A holds the slot
+        return `done:${id}`;
+      },
+      { singleton: { key: () => 'k' } },
+    );
+
+    await engine.start('job', { id: 'A' }, 'a');
+    await engine.runPending(now);
+    expect((await store.getRun('a'))?.status).toBe('suspended'); // holding its signal wait
+
+    await engine.start('job', { id: 'B' }, 'b');
+    now += 10;
+    await engine.runPending(now);
+    expect((await store.getRun('b'))?.status).toBe('suspended'); // gated behind A
+
+    // A settles → wakeNext fires. The dispatcher is a no-op, so the ONLY road back for B is a due
+    // wakeAt. The post-settle wake is fire-and-forget — poll until it lands (never drain(): that
+    // marks the engine as shutting down and resumeDueTimers would refuse to lease).
+    await engine.signal('go:A', undefined);
+    for (let i = 0; i < 100 && (await store.getRun('b'))?.wakeAt === undefined; i++) {
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    expect((await store.getRun('a'))?.status).toBe('completed');
+
+    const gated = await store.getRun('b');
+    expect(gated?.status).toBe('suspended');
+    expect(gated?.wakeAt).not.toBeUndefined();
+    expect(gated!.wakeAt!).toBeLessThanOrEqual(now);
+
+    // The next worker tick's timer phase picks B up and it completes — no dispatcher involved.
+    const resumed = await engine.resumeDueTimers(now);
+    expect(resumed.map((r) => r.runId)).toContain('b');
+    expect((await store.getRun('b'))?.status).toBe('completed');
+    expect((await store.getRun('b'))?.output).toBe('done:B');
   });
 });

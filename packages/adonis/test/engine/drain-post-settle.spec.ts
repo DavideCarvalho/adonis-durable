@@ -29,8 +29,10 @@ class GatedWakeStore extends InMemoryStateStore {
   }
 
   override async updateRun(runId: string, patch: Partial<WorkflowRun>): Promise<void> {
-    const isWakeClear = 'wakeAt' in patch && patch.wakeAt === undefined;
-    if (this.gateRunId != null && runId === this.gateRunId && isWakeClear) {
+    // The wakeNext handoff write: stamps a due-now wakeAt (and nothing else — no status change).
+    // It used to CLEAR wakeAt instead; that left a gated run unreachable under a no-op dispatcher.
+    const isWakeHandoff = 'wakeAt' in patch && !('status' in patch);
+    if (this.gateRunId != null && runId === this.gateRunId && isWakeHandoff) {
       this.wakeWriteStarted = true;
       await this.gate;
       await super.updateRun(runId, patch);

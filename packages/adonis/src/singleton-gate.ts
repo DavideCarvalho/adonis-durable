@@ -94,13 +94,16 @@ export class SingletonGate {
       await this.deps.store.listRuns({ tag, workflow: settled.workflow, statuses: ['suspended'] })
     ).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id));
     for (const next of gated.slice(0, cfg.limit ?? 1)) {
-      // Clear the durable retry timer as we hand the run over, so the timer poller can't also pick it
-      // up and double-dispatch. Only for runs that carry a wakeAt; dispatch after the clear commits.
-      if (next.wakeAt != null) {
-        await this.deps.store
-          .updateRun(next.id, { wakeAt: undefined, updatedAt: new Date() })
-          .catch(() => undefined);
-      }
+      // Make the run due NOW rather than clearing its retry timer. The dispatch below goes through
+      // the configured runDispatcher, which may legitimately be a NO-OP (a poll-only deployment
+      // where `durable:work` owns every pickup) — clearing `wakeAt` before a no-op dispatch left
+      // the gated run `suspended` with NO wake time, unreachable by every poll path, forever
+      // (observed in production). A due `wakeAt` keeps the timer poller as the guaranteed pickup;
+      // a dispatch+timer double-drive is safe — the run lease admits one executor and the loser's
+      // pickup is a cheap no-op.
+      await this.deps.store
+        .updateRun(next.id, { wakeAt: this.deps.clock(), updatedAt: new Date() })
+        .catch(() => undefined);
       this.deps.dispatch(next.id);
     }
   }
