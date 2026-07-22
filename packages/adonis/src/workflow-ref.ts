@@ -101,7 +101,9 @@ export function workflowSchedules(target: unknown): ScheduledWorkflow[] {
  * schedules on one class, prefer explicit `key`s over the positional `${name}:${i}` defaults: the
  * key is part of the deterministic run id, and reordering declarations would silently re-key them.
  */
-export function Scheduled(config: WorkflowScheduleConfig | WorkflowScheduleConfig[]): ClassDecorator {
+export function Scheduled(
+  config: WorkflowScheduleConfig | WorkflowScheduleConfig[],
+): ClassDecorator {
   return (target) => {
     const cls = target as unknown as {
       schedule?: WorkflowScheduleConfig | WorkflowScheduleConfig[];
