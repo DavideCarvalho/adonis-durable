@@ -43,6 +43,9 @@ export interface StepConfig {
    *  worker dead and fails the dispatch with a `RemoteStepTimeout` (retryable — re-dispatches per
    *  `retries`). Omit to wait indefinitely. */
   timeoutMs?: number | undefined;
+  /** Pre-first-heartbeat liveness window (queue wait + pickup) — see `StepOptions.pickupTimeoutMs`.
+   *  Defaults to `timeoutMs`. */
+  pickupTimeoutMs?: number | undefined;
   /** Capabilities a live worker must advertise to run this step (design §7.5). Dispatch parks the run
    *  `blocked` when no live capable+protocol-compatible worker exists. Absent/empty = runs anywhere. */
   requires?: string[] | undefined;

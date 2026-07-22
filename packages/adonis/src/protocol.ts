@@ -88,6 +88,11 @@ export async function runStepHandler(
         ).catch(() => undefined);
       }
     : undefined;
+  // Automatic pickup beat: the moment a worker claims the task, tell the engine "execution
+  // started". This is what lets `pickupTimeoutMs` (queue-wait allowance) hand over to the tighter
+  // `timeoutMs` (max silence while running) — and it stamps `lastHeartbeatAt` even for handlers
+  // that never beat manually, so "queued" vs "executing" is visible on the checkpoint.
+  beat?.();
   return withRestoredContext(task.context, async () => {
     try {
       const output = await handler(task.input, createStepLogger(events, Date.now, beat));

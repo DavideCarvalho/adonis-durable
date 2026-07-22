@@ -1006,6 +1006,17 @@ export interface StepOptions {
    */
   timeoutMs?: number;
   /**
+   * Liveness window (ms) for the stretch BEFORE the worker's first heartbeat — i.e. the queue wait
+   * plus execution start. Defaults to `timeoutMs`. Set it LARGER than `timeoutMs` when jobs can
+   * legitimately queue behind long work with no one beating for them (a single-concurrency worker
+   * whose batches run ~15min: the next batch waits silently the whole time) — otherwise the
+   * dispatch-anchored window false-fails a healthy-but-busy fleet. The worker emits an automatic
+   * pickup beat when it claims the task, so once execution starts the (tighter) `timeoutMs` governs:
+   * `pickupTimeoutMs` = "how long may it stay queued", `timeoutMs` = "max silence while running".
+   * Only meaningful together with `timeoutMs`.
+   */
+  pickupTimeoutMs?: number;
+  /**
    * Saga compensation: if this step completes but the run later **fails**, the engine runs the
    * registered `compensate` callbacks in reverse order (undo what was done). Local steps only.
    * Idempotency note: a step is already deduplicated by its deterministic `stepId` (runId:seq) —
@@ -1075,6 +1086,9 @@ export interface StepDispatchOpts {
   /** Liveness window for this dispatched step (ms): presume the worker dead and re-dispatch on
    *  timeout (retryable per `retries`). Omit to wait indefinitely. Overrides the `@Step` value. */
   timeoutMs?: number;
+  /** Pre-first-heartbeat liveness window (queue wait + pickup; see {@link StepOptions.pickupTimeoutMs}).
+   *  Overrides the `@Step` value. Defaults to `timeoutMs`. */
+  pickupTimeoutMs?: number;
   /** Capabilities a live worker must advertise to run this step (design §7.5). Overrides/augments the
    *  `@Step`-declared `requires`. If no live capable+compatible worker exists the run parks `blocked`
    *  with a precise reason rather than dispatching into a queue nobody consumes. Absent = no

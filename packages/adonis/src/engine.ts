@@ -751,24 +751,29 @@ export class WorkflowEngine {
     this.admission.register(config);
   }
 
-  /** Last persisted-beat time per stepId — the write throttle for {@link persistHeartbeat}. */
-  private readonly heartbeatPersists = new Map<string, number>();
+  /** Last persisted beat per stepId (time + whether it carried progress) — the write throttle for
+   *  {@link persistHeartbeat}. */
+  private readonly heartbeatPersists = new Map<string, { at: number; hadProgress: boolean }>();
 
   /**
    * Persist a worker heartbeat on its step's checkpoint (see {@link StepCheckpoint.lastHeartbeatAt}),
    * best-effort and THROTTLED per step (≥10s between writes) — beats may arrive every few seconds
    * from a hot batch loop, and liveness observability must not turn into a per-item UPDATE storm.
-   * Optional store capability: no `recordStepHeartbeat` → no-op. Failures are swallowed (a lost
-   * liveness update never harms the run). The throttle map is cleared wholesale past 1024 entries —
-   * a rare extra write, never a leak.
+   * One exemption: a beat CARRYING progress punches through when the last persisted one had none —
+   * the automatic pickup beat lands first (no payload) and must not shadow the handler's first real
+   * progress for a whole window. Optional store capability: no `recordStepHeartbeat` → no-op.
+   * Failures are swallowed (a lost liveness update never harms the run). The throttle map is cleared
+   * wholesale past 1024 entries — a rare extra write, never a leak.
    */
   private persistHeartbeat(beat: Heartbeat): void {
     if (!this.store.recordStepHeartbeat) return;
     const now = this.clock();
     const last = this.heartbeatPersists.get(beat.stepId);
-    if (last !== undefined && now - last < 10_000) return;
+    const upgradesToProgress =
+      beat.progress !== undefined && last !== undefined && !last.hadProgress;
+    if (last !== undefined && now - last.at < 10_000 && !upgradesToProgress) return;
     if (this.heartbeatPersists.size > 1024) this.heartbeatPersists.clear();
-    this.heartbeatPersists.set(beat.stepId, now);
+    this.heartbeatPersists.set(beat.stepId, { at: now, hadProgress: beat.progress !== undefined });
     void this.store
       .recordStepHeartbeat(beat.runId, beat.seq, new Date(beat.at ?? now), beat.progress)
       .catch(() => undefined);
@@ -3283,7 +3288,7 @@ export class WorkflowEngine {
       );
       try {
         const resolution = step.timeoutMs
-          ? await this.awaitWithHeartbeat(id, resultPromise, step.timeoutMs)
+          ? await this.awaitWithHeartbeat(id, resultPromise, step.timeoutMs, step.pickupTimeoutMs)
           : await resultPromise;
         const output = (
           step.output ? step.output.parse(resolution.output) : resolution.output
@@ -3322,22 +3327,33 @@ export class WorkflowEngine {
     id: string,
     resultPromise: Promise<RemoteResolution>,
     timeoutMs: number,
+    pickupTimeoutMs?: number,
   ): Promise<RemoteResolution> {
     return new Promise<RemoteResolution>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout>;
+      // Two windows, one timer: until the FIRST beat arrives the job may be sitting in the broker
+      // queue behind long work — a stretch that produces no heartbeats by definition, so it gets
+      // `pickupTimeoutMs` (default: `timeoutMs`, the historical behavior). The worker's automatic
+      // pickup beat flips to the (typically tighter) `timeoutMs`, which then means "max silence
+      // while RUNNING". Without the split, a dispatch-anchored window false-failed a healthy
+      // single-concurrency fleet whose next batch queued ~15min behind the current one.
+      let seenBeat = false;
+      const window = () => (seenBeat ? timeoutMs : (pickupTimeoutMs ?? timeoutMs));
       const cleanup = () => {
         clearTimeout(timer);
         this.heartbeatResets.delete(id);
       };
       const arm = () => {
+        const ms = window();
         timer = setTimeout(() => {
           cleanup();
           this.pending.delete(id);
-          reject(new RemoteStepTimeout(id, timeoutMs));
-        }, timeoutMs);
+          reject(new RemoteStepTimeout(id, ms));
+        }, ms);
         (timer as { unref?: () => void }).unref?.();
       };
       this.heartbeatResets.set(id, () => {
+        seenBeat = true;
         clearTimeout(timer);
         arm();
       });
