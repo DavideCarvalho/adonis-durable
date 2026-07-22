@@ -71,3 +71,59 @@ describe('DashboardProvider — boots inside a real AdonisJS app', () => {
     );
   });
 });
+
+describe('DashboardProvider — authorize hook owns its denial response', () => {
+  /** Minimal HttpContext double: just the response surface `enforce` touches. */
+  function fakeCtx() {
+    const state = { status: 0, body: undefined as unknown, headers: new Map<string, string>() };
+    const response = {
+      getHeader: (name: string) => state.headers.get(name.toLowerCase()),
+      status(code: number) {
+        state.status = code;
+        return response;
+      },
+      json(body: unknown) {
+        state.body = body;
+        return response;
+      },
+      redirect: (path: string) => {
+        state.status = 302;
+        state.headers.set('location', path);
+      },
+    };
+    return { ctx: { response } as never, state };
+  }
+
+  async function runEnforce(authorize: (ctx: unknown) => boolean | Promise<boolean>) {
+    const { default: DashboardProvider } = await import('../providers/dashboard_provider.js');
+    const { resolveConfig } = await import('../src/dashboard/define_config.js');
+    const provider = new DashboardProvider({} as never);
+    const config = resolveConfig({ authorize: authorize as never });
+    const { ctx, state } = fakeCtx();
+    // `enforce` is TS-private (compile-time only) — reached via index access on purpose.
+    const allowed = await (
+      provider as unknown as {
+        enforce(c: unknown, x: unknown, m: 'page' | 'api'): Promise<boolean>;
+      }
+    ).enforce(config, ctx, 'page');
+    return { allowed, state };
+  }
+
+  it('a hook that redirects to the host login keeps its 302 (no 403 overwrite)', async () => {
+    const { allowed, state } = await runEnforce((ctx) => {
+      (ctx as { response: { redirect(p: string): void } }).response.redirect('/login');
+      return false;
+    });
+    expect(allowed).toBe(false);
+    expect(state.status).toBe(302);
+    expect(state.headers.get('location')).toBe('/login');
+    expect(state.body).toBeUndefined(); // the uniform 403 body was NOT written over it
+  });
+
+  it('a hook that just returns false still gets the uniform 403', async () => {
+    const { allowed, state } = await runEnforce(() => false);
+    expect(allowed).toBe(false);
+    expect(state.status).toBe(403);
+    expect(state.body).toEqual({ error: 'forbidden' });
+  });
+});
